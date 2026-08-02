@@ -38,8 +38,9 @@ Gets a complete list of students enrolled in a course.
   - `courseId`: string
 - Optional parameters:
   - `includeEmail`: boolean (default: false)
+  - `includeInactive`: boolean (default: false) — include inactive/concluded enrollments
   - `anonymous`: boolean (default: true) — whether to anonymize student names/emails
-- Returns student names, IDs, and optional email addresses
+- Returns student names, IDs, enrollment status, and optional email addresses
 - **Privacy**: Student data is anonymized by default (use "with actual names" to override)
 
 ## Assignments
@@ -539,9 +540,10 @@ Current grade for every student in a course, sorted lowest first.
   - `courseId`: string
 - Optional parameters:
   - `belowScore`: number — only students under this percentage
-  - `includeInactive`: boolean (default: false)
+  - `includeInactive`: boolean (default: false) — include inactive/concluded enrollments
+  - `limit`: number (default: 0 = all) — return only the N lowest-scoring students
   - `anonymous`: boolean (default: **false**)
-- Returns current/final score and grade, points, `unposted_current_score`, and `last_activity_at`
+- Returns current/final score and grade, points, `unposted_current_score`, `last_activity_at`, and enrollment `state`
 
 ### list-missing-submissions
 Every missing (and optionally late) submission in a course, grouped by student.
@@ -550,17 +552,22 @@ Every missing (and optionally late) submission in a course, grouped by student.
 - Optional parameters:
   - `includeLate`: boolean (default: false)
   - `studentIds`: string[]
+  - `includeInactive`: boolean (default: false) — include inactive/concluded enrollments
   - `anonymous`: boolean (default: **false**)
-- Returns per-student missing/late counts and the specific assignments, sorted by most outstanding
+- Returns per-student missing/late counts, enrollment `state`, and the specific assignments, sorted by most outstanding
 
 ### get-student-engagement
 Per-student page views, participations, and on-time/late/missing breakdown from Canvas Analytics.
 - Required parameters:
   - `courseId`: string
 - Optional parameters:
+  - `limit`: number (default: 0 = all) — return only the N least-engaged students
+  - `includeInactive`: boolean (default: false) — include inactive/concluded enrollments
   - `anonymous`: boolean (default: **false**)
-- Returns engagement rows sorted least-engaged first
+- Returns engagement rows with enrollment `state`, sorted least-engaged first
 - Requires Analytics to be enabled by your Canvas admin
+
+> **Enrollment status is consistent across the roster tools.** `list-students`, `get-course-grades`, `list-missing-submissions`, and `get-student-engagement` all default to currently-enrolled students only (`active` + `invited`), all accept `includeInactive` to widen to `inactive` + `completed`, and all label each row with its enrollment state. The default matters for intervention work: a student who dropped the course should not appear on an outreach list.
 
 ## New Quizzes
 

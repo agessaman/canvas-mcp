@@ -8,25 +8,45 @@ import { CanvasClient } from "../canvasClient.js";
 const ANON = z.boolean().default(false)
   .describe("Anonymize student names (default: false — intervention planning needs real names)");
 
-// Build a user_id -> name map for the whole course. Deliberately includes
-// concluded and inactive enrollments: analytics and submission data can both
-// reference students who have since been dropped, and leaving them out renders
-// those rows as "Unknown".
-async function buildNameMap(
+const INCLUDE_INACTIVE = z.boolean().default(false)
+  .describe("Include inactive and concluded enrollments. Off by default: a student who dropped the course shouldn't land on an outreach list.");
+
+// Enrollment states considered "currently enrolled".
+const CURRENT_STATES = new Set(['active', 'invited']);
+
+interface RosterEntry { name: string; state: string; }
+
+// Build a user_id -> { name, state } map for the whole course.
+//
+// Reads the enrollments endpoint rather than the users endpoint because it
+// carries enrollment_state directly — /courses/:id/users only filters by state,
+// it doesn't report it back. Every state is fetched so callers can label rows
+// accurately; deciding what to *show* is left to each tool's includeInactive.
+async function buildRoster(
   canvas: CanvasClient,
   courseId: string,
   anonymous: boolean
-): Promise<Map<string, string>> {
-  const roster = await canvas.listStudents(
+): Promise<Map<string, RosterEntry>> {
+  const enrollments = await canvas.listCourseEnrollments(
     courseId,
     {
-      enrollment_type: ['student'],
-      enrollment_state: ['active', 'invited', 'inactive', 'completed'],
+      type: ['StudentEnrollment'],
+      state: ['active', 'invited', 'inactive', 'completed'],
       per_page: 100
     },
     { anonymous }
-  ) as any[];
-  return new Map<string, string>(roster.map(u => [String(u.id), u.name]));
+  );
+
+  const roster = new Map<string, RosterEntry>();
+  for (const e of enrollments) {
+    const key = String(e.user_id);
+    const existing = roster.get(key);
+    // A student enrolled in two sections has two enrollments; an active one
+    // wins so cross-listed students aren't mislabelled as concluded.
+    if (existing && CURRENT_STATES.has(existing.state)) continue;
+    roster.set(key, { name: e.user?.name ?? 'Unknown', state: e.enrollment_state });
+  }
+  return roster;
 }
 
 export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
@@ -37,7 +57,7 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
     {
       courseId: z.string().describe("The ID of the course"),
       belowScore: z.number().optional().describe("Only return students whose current score is below this percentage (e.g. 70)"),
-      includeInactive: z.boolean().default(false).describe("Include inactive and concluded enrollments"),
+      includeInactive: INCLUDE_INACTIVE,
       limit: z.number().default(0).describe("Return only the N lowest-scoring students (0 = all). Large courses return a lot of rows."),
       anonymous: ANON
     },
@@ -105,10 +125,11 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
       courseId: z.string().describe("The ID of the course"),
       includeLate: z.boolean().default(false).describe("Also include submitted-but-late work"),
       studentIds: z.array(z.string()).optional().describe("Optional: restrict to these student IDs"),
+      includeInactive: INCLUDE_INACTIVE,
       anonymous: ANON
     },
     { readOnlyHint: true },
-    async ({ courseId, includeLate = false, studentIds, anonymous = false }: { courseId: string; includeLate?: boolean; studentIds?: string[]; anonymous?: boolean }) => {
+    async ({ courseId, includeLate = false, studentIds, includeInactive = false, anonymous = false }: { courseId: string; includeLate?: boolean; studentIds?: string[]; includeInactive?: boolean; anonymous?: boolean }) => {
       try {
         // include[]=user is deliberately NOT requested here: it inflates an
         // already-large payload, and names are joined from the roster instead.
@@ -117,7 +138,7 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
           per_page: 100
         };
         const submissions = await canvas.listCourseStudentSubmissions(courseId, params, { anonymous: false });
-        const nameById = await buildNameMap(canvas, courseId, anonymous);
+        const roster = await buildRoster(canvas, courseId, anonymous);
 
         // Join assignment titles in separately — including them on every
         // submission would balloon the payload for a large course.
@@ -132,10 +153,16 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
         const byStudent = new Map<string, any>();
         for (const sub of flagged) {
           const key = String(sub.user_id);
+          const rosterEntry = roster.get(key);
+          const state = rosterEntry?.state ?? 'unknown';
+          // Don't put dropped or concluded students on an outreach list
+          // unless they were explicitly asked for.
+          if (!includeInactive && !CURRENT_STATES.has(state)) continue;
           if (!byStudent.has(key)) {
             byStudent.set(key, {
               user_id: sub.user_id,
-              name: nameById.get(key) ?? 'Unknown',
+              name: rosterEntry?.name ?? 'Unknown',
+              state,
               missing_count: 0,
               late_count: 0,
               items: [] as any[],
@@ -183,25 +210,29 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
     {
       courseId: z.string().describe("The ID of the course"),
       limit: z.number().default(0).describe("Return only the N least-engaged students (0 = all). Large courses return a lot of rows."),
+      includeInactive: INCLUDE_INACTIVE,
       anonymous: ANON
     },
     { readOnlyHint: true },
-    async ({ courseId, limit = 0, anonymous = false }: { courseId: string; limit?: number; anonymous?: boolean }) => {
+    async ({ courseId, limit = 0, includeInactive = false, anonymous = false }: { courseId: string; limit?: number; includeInactive?: boolean; anonymous?: boolean }) => {
       try {
         const summaries = await canvas.getStudentSummaries(courseId, { per_page: 100 });
 
         // student_summaries is keyed by user id only; join the roster for names.
-        const nameById = await buildNameMap(canvas, courseId, anonymous);
+        const roster = await buildRoster(canvas, courseId, anonymous);
 
         const rows = summaries.map((s: any) => ({
           user_id: s.id,
-          name: nameById.get(String(s.id)) ?? 'Unknown',
+          name: roster.get(String(s.id))?.name ?? 'Unknown',
+          state: roster.get(String(s.id))?.state ?? 'unknown',
           page_views: s.page_views ?? 0,
           participations: s.participations ?? 0,
           on_time: s.tardiness_breakdown?.on_time ?? 0,
           late: s.tardiness_breakdown?.late ?? 0,
           missing: s.tardiness_breakdown?.missing ?? 0,
-        })).sort((a: any, b: any) => a.participations - b.participations);
+        }))
+          .filter((r: any) => includeInactive || CURRENT_STATES.has(r.state))
+          .sort((a: any, b: any) => a.participations - b.participations);
 
         const shown = limit && limit > 0 ? rows.slice(0, limit) : rows;
         const truncated = shown.length < rows.length

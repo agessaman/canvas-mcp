@@ -10,24 +10,38 @@ export function registerStudentTools(server: McpServer, canvas: CanvasClient) {
     {
       courseId: z.string().describe("The ID of the course"),
       includeEmail: z.boolean().default(false).describe("Whether to include student email addresses"),
+      includeInactive: z.boolean().default(false).describe("Include inactive and concluded enrollments (they are labelled in the output)"),
       anonymous: z.boolean().default(true).describe("Whether to anonymize student names and emails (default: true for privacy)")
     },
     { readOnlyHint: true },
-    async ({ courseId, includeEmail, anonymous = true }: { courseId: string; includeEmail?: boolean; anonymous?: boolean }) => {
+    async ({ courseId, includeEmail, includeInactive = false, anonymous = true }: { courseId: string; includeEmail?: boolean; includeInactive?: boolean; anonymous?: boolean }) => {
       try {
         // listStudents fetches every page internally; only request email when asked for.
+        // enrollments is included so each student's status can be reported —
+        // /courses/:id/users filters on enrollment_state but never returns it.
+        const include: string[] = ['avatar_url', 'enrollments'];
+        if (includeEmail) include.push('email');
         const params: any = {
           enrollment_type: ['student'],
           per_page: 100,
-          include: includeEmail ? ['email', 'avatar_url'] : ['avatar_url'],
-          enrollment_state: ['active', 'invited']
+          include,
+          enrollment_state: includeInactive
+            ? ['active', 'invited', 'inactive', 'completed']
+            : ['active', 'invited']
         };
         const students = (await canvas.listStudents(courseId, params, { anonymous }) as any[]);
         const formattedStudents = students
           .map(student => {
+            // A student cross-listed into two sections has multiple
+            // enrollments; an active one is the meaningful status.
+            const states = (student.enrollments ?? []).map((e: any) => e.enrollment_state);
+            const status = states.find((s: string) => s === 'active' || s === 'invited')
+              ?? states[0]
+              ?? 'unknown';
             const parts = [
               `Name: ${student.name}`,
               `ID: ${student.id}`,
+              `Status: ${status}`,
               `SIS ID: ${student.sis_user_id || 'N/A'}`,
               `Avatar URL: ${student.avatar_url || 'N/A'}`
             ];
