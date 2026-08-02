@@ -131,41 +131,26 @@ export function buildItemEntry(input: BuildItemInput): Record<string, any> {
     }
 
     case 'matching': {
-      const pairs = input.matchPairs;
-      if (!pairs || pairs.length < 2) {
-        throw new Error('interactionType "matching" requires at least 2 matchPairs of { left, right }');
-      }
-
-      // Empirically confirmed against a live Canvas instance, and it differs
-      // from the published appendix in two ways worth not re-discovering:
-      //   1. scoring_algorithm is DeepEquals / PartialDeep — NOT a type-specific
-      //      name like "Matching", which the API rejects outright.
-      //   2. scoring_data.value is an ARRAY OF STRINGS shaped "questionId:answerId".
-      //      The docs show a { questionId: answerText } map; sending objects
-      //      fails with "property '#/value/0' of type object did not match ...
-      //      type: string".
-      const questions = pairs.map(pair => ({
-        id: randomUUID(),
-        item_body: asHtml(pair.left),
-      }));
-      const answers = pairs.map(pair => ({
-        id: randomUUID(),
-        item_body: asHtml(pair.right),
-      }));
-      // Distractors are extra right-hand options that match nothing.
-      const extras = (input.distractors ?? []).map(text => ({
-        id: randomUUID(),
-        item_body: asHtml(text),
-      }));
-
-      return {
-        ...base,
-        interaction_data: { questions, answers: [...answers, ...extras] },
-        scoring_data: {
-          value: questions.map((question, i) => `${question.id}:${answers[i].id}`),
-        },
-        scoring_algorithm: input.partialCredit ? 'PartialDeep' : 'DeepEquals',
-      };
+      // Disabled deliberately, and the old implementation deleted rather than
+      // left here to be copied — see git history for it.
+      //
+      // It emitted interaction_data.answers as objects {id, item_body}. Canvas
+      // accepted that, stored it, and returned it unchanged on readback; the
+      // Canvas UI then could not render it at all. Opening the quiz died with
+      // "Minified React error #31: Objects are not valid as a React child
+      // (found: object with keys {id, itemBody})" — the answers. One such item
+      // takes down the entire quiz page, not just itself, so failing loudly
+      // here beats handing a teacher a quiz that won't open.
+      //
+      // Re-enable only after rebuilding this from a matching question authored
+      // in the Canvas UI and read back with get-new-quiz-item. Readback of an
+      // API-created item proves nothing: this shape round-tripped perfectly.
+      throw new Error(
+        'Matching questions are temporarily unsupported: the shape this builder produces is ' +
+        'accepted by the Canvas API but crashes the Canvas quiz editor, which takes the whole ' +
+        'quiz page down with it. Author matching questions in the Canvas UI for now, or pass a ' +
+        'known-good entry via rawEntry.'
+      );
     }
 
     case 'numeric': {

@@ -1,7 +1,10 @@
 // The expected shapes here were read back off a live Canvas instance on
-// 2026-08-02 (course 18473, quiz 371566), one item per supported type. Where
-// the published appendix disagrees with these, the appendix is wrong — see the
-// comments in src/newQuizItemBuilder.ts.
+// 2026-08-02 (course 18473, quiz 371566), one item per supported type.
+//
+// Readback alone is NOT proof of correctness: it only shows Canvas stored what
+// it was sent. The matching test below is skipped for exactly that reason — it
+// round-tripped cleanly and still broke the quiz in the UI. A shape is only
+// confirmed once the quiz has been opened in the Canvas editor.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildItemEntry } from '../dist/newQuizItemBuilder.js';
@@ -68,7 +71,16 @@ test('numeric: margin of error is sent as strings, as Canvas stores it', () => {
   assert.equal(answer.margin_type, 'absolute');
 });
 
-test('matching: value is "questionId:answerId" strings, never an object map', () => {
+// SKIPPED, and the assertions below are known-wrong. They describe what the
+// builder emits today, which Canvas stores happily and the Canvas UI cannot
+// render: loading the quiz dies with "Minified React error #31: Objects are not
+// valid as a React child (found: object with keys {id, itemBody})" — the answers
+// below. One bad matching item takes down the whole quiz page.
+// Rewrite these against a matching question authored in the Canvas UI and read
+// back with get-new-quiz-item; do not derive the shape from the appendix again.
+test('matching: value is "questionId:answerId" strings, never an object map', {
+  skip: 'builder emits a shape the Canvas UI cannot render — rebuild from a UI exemplar',
+}, () => {
   const entry = buildItemEntry({
     interactionType: 'matching', body: 'Country to capital.',
     matchPairs: [{ left: 'France', right: 'Paris' }, { left: 'Japan', right: 'Tokyo' }],
@@ -118,10 +130,14 @@ test('a mismatched answer key fails with a teacher-readable message', () => {
     () => buildItemEntry({ interactionType: 'true-false', body: 'q' }),
     /requires correctBoolean/
   );
+});
+
+test('matching refuses to build rather than produce a quiz that will not open', () => {
   assert.throws(
     () => buildItemEntry({
-      interactionType: 'matching', body: 'q', matchPairs: [{ left: 'a', right: 'b' }],
+      interactionType: 'matching', body: 'q',
+      matchPairs: [{ left: 'a', right: 'b' }, { left: 'c', right: 'd' }],
     }),
-    /at least 2 matchPairs/
+    /temporarily unsupported/
   );
 });
