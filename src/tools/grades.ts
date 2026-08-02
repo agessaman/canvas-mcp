@@ -8,6 +8,27 @@ import { CanvasClient } from "../canvasClient.js";
 const ANON = z.boolean().default(false)
   .describe("Anonymize student names (default: false — intervention planning needs real names)");
 
+// Build a user_id -> name map for the whole course. Deliberately includes
+// concluded and inactive enrollments: analytics and submission data can both
+// reference students who have since been dropped, and leaving them out renders
+// those rows as "Unknown".
+async function buildNameMap(
+  canvas: CanvasClient,
+  courseId: string,
+  anonymous: boolean
+): Promise<Map<string, string>> {
+  const roster = await canvas.listStudents(
+    courseId,
+    {
+      enrollment_type: ['student'],
+      enrollment_state: ['active', 'invited', 'inactive', 'completed'],
+      per_page: 100
+    },
+    { anonymous }
+  ) as any[];
+  return new Map<string, string>(roster.map(u => [String(u.id), u.name]));
+}
+
 export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
   // Tool: get-course-grades
   server.tool(
@@ -17,10 +38,11 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
       courseId: z.string().describe("The ID of the course"),
       belowScore: z.number().optional().describe("Only return students whose current score is below this percentage (e.g. 70)"),
       includeInactive: z.boolean().default(false).describe("Include inactive and concluded enrollments"),
+      limit: z.number().default(0).describe("Return only the N lowest-scoring students (0 = all). Large courses return a lot of rows."),
       anonymous: ANON
     },
     { readOnlyHint: true },
-    async ({ courseId, belowScore, includeInactive = false, anonymous = false }: { courseId: string; belowScore?: number; includeInactive?: boolean; anonymous?: boolean }) => {
+    async ({ courseId, belowScore, includeInactive = false, limit = 0, anonymous = false }: { courseId: string; belowScore?: number; includeInactive?: boolean; limit?: number; anonymous?: boolean }) => {
       try {
         const params: any = {
           type: ['StudentEnrollment'],
@@ -55,12 +77,16 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
           return a.current_score - b.current_score;
         });
 
+        const shown = limit && limit > 0 ? rows.slice(0, limit) : rows;
+        const truncated = shown.length < rows.length
+          ? ` (showing the ${shown.length} lowest of ${rows.length})`
+          : '';
         const header = belowScore !== undefined
-          ? `${rows.length} student(s) below ${belowScore}% in course ${courseId}`
-          : `Grades for ${rows.length} student(s) in course ${courseId}`;
+          ? `${rows.length} student(s) below ${belowScore}% in course ${courseId}${truncated}`
+          : `Grades for ${rows.length} student(s) in course ${courseId}${truncated}`;
 
         return {
-          content: [{ type: "text", text: `${header}:\n\n${JSON.stringify(rows, null, 2)}` }]
+          content: [{ type: "text", text: `${header}:\n\n${JSON.stringify(shown, null, 2)}` }]
         };
       } catch (error: any) {
         if (error instanceof Error) {
@@ -84,12 +110,14 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
     { readOnlyHint: true },
     async ({ courseId, includeLate = false, studentIds, anonymous = false }: { courseId: string; includeLate?: boolean; studentIds?: string[]; anonymous?: boolean }) => {
       try {
+        // include[]=user is deliberately NOT requested here: it inflates an
+        // already-large payload, and names are joined from the roster instead.
         const params: any = {
           student_ids: studentIds?.length ? studentIds : ['all'],
-          include: ['user'],
           per_page: 100
         };
-        const submissions = await canvas.listCourseStudentSubmissions(courseId, params, { anonymous });
+        const submissions = await canvas.listCourseStudentSubmissions(courseId, params, { anonymous: false });
+        const nameById = await buildNameMap(canvas, courseId, anonymous);
 
         // Join assignment titles in separately — including them on every
         // submission would balloon the payload for a large course.
@@ -107,7 +135,7 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
           if (!byStudent.has(key)) {
             byStudent.set(key, {
               user_id: sub.user_id,
-              name: sub.user?.name ?? 'Unknown',
+              name: nameById.get(key) ?? 'Unknown',
               missing_count: 0,
               late_count: 0,
               items: [] as any[],
@@ -154,20 +182,16 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
     "Get per-student engagement data for a course: page views, participations, and a breakdown of on-time/late/missing work. Complements grades when deciding who needs outreach.",
     {
       courseId: z.string().describe("The ID of the course"),
+      limit: z.number().default(0).describe("Return only the N least-engaged students (0 = all). Large courses return a lot of rows."),
       anonymous: ANON
     },
     { readOnlyHint: true },
-    async ({ courseId, anonymous = false }: { courseId: string; anonymous?: boolean }) => {
+    async ({ courseId, limit = 0, anonymous = false }: { courseId: string; limit?: number; anonymous?: boolean }) => {
       try {
         const summaries = await canvas.getStudentSummaries(courseId, { per_page: 100 });
 
         // student_summaries is keyed by user id only; join the roster for names.
-        const roster = await canvas.listStudents(
-          courseId,
-          { enrollment_type: ['student'], enrollment_state: ['active', 'invited'], per_page: 100 },
-          { anonymous }
-        ) as any[];
-        const nameById = new Map<string, string>(roster.map(u => [String(u.id), u.name]));
+        const nameById = await buildNameMap(canvas, courseId, anonymous);
 
         const rows = summaries.map((s: any) => ({
           user_id: s.id,
@@ -179,11 +203,16 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
           missing: s.tardiness_breakdown?.missing ?? 0,
         })).sort((a: any, b: any) => a.participations - b.participations);
 
+        const shown = limit && limit > 0 ? rows.slice(0, limit) : rows;
+        const truncated = shown.length < rows.length
+          ? ` (showing the ${shown.length} least engaged of ${rows.length})`
+          : '';
+
         return {
           content: [{
             type: "text",
             text: rows.length > 0
-              ? `Engagement for ${rows.length} student(s) in course ${courseId} (least engaged first):\n\n${JSON.stringify(rows, null, 2)}`
+              ? `Engagement in course ${courseId}, least engaged first${truncated}:\n\n${JSON.stringify(shown, null, 2)}`
               : "No analytics data available for this course. Analytics may be disabled by your Canvas admin."
           }]
         };

@@ -156,10 +156,27 @@ export class CanvasClient {
     return results;
   }
 
-  // Centralized error handler
+  // Centralized error handler.
+  // Canvas puts the useful detail in several different shapes depending on the
+  // endpoint, and a bare "Request failed with status code 400" is undebuggable,
+  // so surface the status, the path, and whatever body came back.
   private handleError(error: any): never {
-    if (error.response?.data?.errors) {
-      throw new Error(JSON.stringify(error.response.data.errors));
+    const status = error.response?.status;
+    const data = error.response?.data;
+    const method = error.config?.method?.toUpperCase();
+    const url = error.config?.url;
+    const where = method && url ? ` on ${method} ${url}` : '';
+
+    if (data !== undefined && data !== null && data !== '') {
+      let detail: string;
+      if (data.errors) detail = JSON.stringify(data.errors);
+      else if (data.message) detail = String(data.message);
+      else if (typeof data === 'string') detail = data;
+      else detail = JSON.stringify(data);
+      throw new Error(`Canvas API ${status ?? 'error'}${where}: ${detail.slice(0, 800)}`);
+    }
+    if (status) {
+      throw new Error(`Canvas API ${status}${where} (no response body)`);
     }
     if (error instanceof Error) {
       throw new Error(error.message);
