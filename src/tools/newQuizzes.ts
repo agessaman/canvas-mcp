@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { jsonObjectParam } from "../jsonObjectParam.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 import { buildItemEntry, InteractionType } from "../newQuizItemBuilder.js";
@@ -83,7 +84,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
       shuffleAnswers: z.boolean().optional().describe("Shuffle answer order"),
       timeLimitMinutes: z.number().optional().describe("Session time limit in minutes"),
       maxAttempts: z.number().optional().describe("Maximum attempts allowed (omit for a single attempt)"),
-      quizSettings: z.any().optional().describe("Escape hatch: raw quiz_settings object merged over the above")
+      quizSettings: jsonObjectParam("Escape hatch: raw quiz_settings object merged over the above").optional()
     },
     { destructiveHint: false },
     async (args: any) => {
@@ -141,7 +142,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
       dueAt: z.string().optional().describe("Due date (ISO 8601)"),
       unlockAt: z.string().optional().describe("Unlock date (ISO 8601)"),
       lockAt: z.string().optional().describe("Lock date (ISO 8601)"),
-      quizSettings: z.any().optional().describe("Raw quiz_settings object to apply")
+      quizSettings: jsonObjectParam("Raw quiz_settings object to apply").optional()
     },
     { idempotentHint: true },
     async (args: any) => {
@@ -282,7 +283,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
         correct: z.string().optional(),
         incorrect: z.string().optional()
       }).optional().describe("Feedback shown to students after submitting"),
-      rawEntry: z.any().optional().describe("Escape hatch: a complete `entry` object for types the builder doesn't cover (matching, categorization, ordering, formula, hot-spot, rich-fill-blank)")
+      rawEntry: jsonObjectParam("Escape hatch: a complete `entry` object for types the builder doesn't cover (categorization, ordering, formula, hot-spot, rich-fill-blank)").optional()
     },
     { destructiveHint: false },
     async (args: any) => {
@@ -349,7 +350,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
       pointsPossible: z.number().optional().describe("New point value"),
       position: z.number().optional().describe("New position in the quiz"),
       stimulusQuizEntryId: z.string().optional().describe("Attach this existing question to a stimulus by its item ID"),
-      rawEntry: z.any().optional().describe("Complete replacement `entry` object")
+      rawEntry: jsonObjectParam("Complete replacement `entry` object").optional()
     },
     { idempotentHint: true },
     async (args: any) => {

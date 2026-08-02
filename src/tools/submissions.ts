@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { jsonObjectParam } from "../jsonObjectParam.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 
@@ -57,7 +58,7 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
       userId: z.string().describe("The ID of the student/user"),
       posted_grade: z.string().optional(),
       score: z.number().optional(),
-      rubric_assessment: z.any().optional(),
+      rubric_assessment: jsonObjectParam("Rubric assessment object, keyed by criterion id: {\"criterion_id\": {\"points\": 5, \"comments\": \"...\"}}").optional(),
       comment: z.string().optional()
     },
     { idempotentHint: true },

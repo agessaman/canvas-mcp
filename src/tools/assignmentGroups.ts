@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { jsonObjectParam } from "../jsonObjectParam.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 
@@ -43,8 +44,8 @@ export function registerAssignmentGroupTools(server: McpServer, canvas: CanvasCl
       position: z.number().optional(),
       group_weight: z.number().optional(),
       sis_source_id: z.string().optional(),
-      integration_data: z.any().optional(),
-      rules: z.any().optional()
+      integration_data: jsonObjectParam("Arbitrary integration key/value data").optional(),
+      rules: jsonObjectParam("Group grading rules, e.g. {\"drop_lowest\": 1}").optional()
     },
     { destructiveHint: false },
     async (args: any) => {
