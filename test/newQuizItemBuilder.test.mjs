@@ -2,9 +2,10 @@
 // 2026-08-02 (course 18473, quiz 371566), one item per supported type.
 //
 // Readback alone is NOT proof of correctness: it only shows Canvas stored what
-// it was sent. The matching test below is skipped for exactly that reason — it
-// round-tripped cleanly and still broke the quiz in the UI. A shape is only
-// confirmed once the quiz has been opened in the Canvas editor.
+// it was sent. Matching round-tripped cleanly for a whole session and still
+// broke the quiz page in the UI. A shape is only confirmed once the quiz has
+// been opened in the Canvas editor — or, better, copied from an item the editor
+// itself authored, which is where the matching expectations below come from.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildItemEntry } from '../dist/newQuizItemBuilder.js';
@@ -71,40 +72,48 @@ test('numeric: margin of error is sent as strings, as Canvas stores it', () => {
   assert.equal(answer.margin_type, 'absolute');
 });
 
-// SKIPPED, and the assertions below are known-wrong. They describe what the
-// builder emits today, which Canvas stores happily and the Canvas UI cannot
-// render: loading the quiz dies with "Minified React error #31: Objects are not
-// valid as a React child (found: object with keys {id, itemBody})" — the answers
-// below. One bad matching item takes down the whole quiz page.
-// Rewrite these against a matching question authored in the Canvas UI and read
-// back with get-new-quiz-item; do not derive the shape from the appendix again.
-test('matching: value is "questionId:answerId" strings, never an object map', {
-  skip: 'builder emits a shape the Canvas UI cannot render — rebuild from a UI exemplar',
-}, () => {
+// Asserted against a matching question authored in the Canvas UI and read back
+// with get-new-quiz-item (course 18473, quiz 371566, item 9092). An earlier
+// version of this test asserted the opposite of nearly every line below and
+// passed the whole time, because the item it described round-tripped through
+// the API cleanly while making the Canvas editor throw React error #31.
+test('matching: matches the shape the Canvas UI authors', () => {
   const entry = buildItemEntry({
     interactionType: 'matching', body: 'Country to capital.',
     matchPairs: [{ left: 'France', right: 'Paris' }, { left: 'Japan', right: 'Tokyo' }],
     distractors: ['Madrid'],
   });
-  assert.equal(entry.scoring_algorithm, 'DeepEquals');
-  // The published appendix shows { questionId: answerText }; Canvas rejects it
-  // with "property '#/value/0' of type object did not match ... type: string".
-  for (const pair of entry.scoring_data.value) {
-    assert.equal(typeof pair, 'string');
-    assert.match(pair, /^[0-9a-f-]{36}:[0-9a-f-]{36}$/);
-  }
-  // Answers are objects with item_body, not plain strings.
-  assert.equal(entry.interaction_data.answers.length, 3, 'distractor must be included');
+
+  // 1. Answers are plain strings. Objects here are what broke the editor.
+  assert.deepEqual(entry.interaction_data.answers, ['Paris', 'Tokyo', 'Madrid']);
   for (const answer of entry.interaction_data.answers) {
-    assert.equal(typeof answer.item_body, 'string');
-    assert.match(answer.id, UUID);
+    assert.equal(typeof answer, 'string');
   }
-  assert.equal(entry.interaction_data.questions.length, 2, 'distractor is not a question');
-  const [first] = entry.scoring_data.value;
-  assert.equal(
-    first,
-    `${entry.interaction_data.questions[0].id}:${entry.interaction_data.answers[0].id}`
-  );
+
+  // 2. Questions carry raw text, not <p>-wrapped HTML, with short numeric ids.
+  const [france, japan] = entry.interaction_data.questions;
+  assert.equal(france.item_body, 'France');
+  assert.match(france.id, /^[0-9]{5}$/);
+  assert.notEqual(france.id, japan.id);
+
+  // 3. scoring_data.value is a map of question id -> answer TEXT.
+  assert.deepEqual(entry.scoring_data.value, { [france.id]: 'Paris', [japan.id]: 'Tokyo' });
+
+  // 4. edit_data is what the editor populates its match rows from.
+  assert.deepEqual(entry.scoring_data.edit_data, {
+    matches: [
+      { answer_body: 'Paris', question_id: france.id, question_body: 'France' },
+      { answer_body: 'Tokyo', question_id: japan.id, question_body: 'Japan' },
+    ],
+    distractors: ['Madrid'],
+  });
+
+  // The UI writes no answer_type; neither should we.
+  assert.equal(entry.answer_type, undefined);
+  assert.equal(entry.interaction_data.answer_type, undefined);
+
+  assert.deepEqual(entry.properties, { shuffle_rules: { questions: { shuffled: false } } });
+  assert.equal(entry.scoring_algorithm, 'DeepEquals');
   assert.equal(
     buildItemEntry({
       interactionType: 'matching', body: 'x',
@@ -113,6 +122,15 @@ test('matching: value is "questionId:answerId" strings, never an object map', {
     }).scoring_algorithm,
     'PartialDeep'
   );
+});
+
+test('matching: a shared answer is offered once but keyed to both prompts', () => {
+  const entry = buildItemEntry({
+    interactionType: 'matching', body: 'x',
+    matchPairs: [{ left: 'A', right: 'same' }, { left: 'B', right: 'same' }],
+  });
+  assert.deepEqual(entry.interaction_data.answers, ['same']);
+  assert.deepEqual(Object.values(entry.scoring_data.value), ['same', 'same']);
 });
 
 test('a mismatched answer key fails with a teacher-readable message', () => {
@@ -130,14 +148,17 @@ test('a mismatched answer key fails with a teacher-readable message', () => {
     () => buildItemEntry({ interactionType: 'true-false', body: 'q' }),
     /requires correctBoolean/
   );
-});
-
-test('matching refuses to build rather than produce a quiz that will not open', () => {
+  assert.throws(
+    () => buildItemEntry({
+      interactionType: 'matching', body: 'q', matchPairs: [{ left: 'a', right: 'b' }],
+    }),
+    /at least 2 matchPairs/
+  );
   assert.throws(
     () => buildItemEntry({
       interactionType: 'matching', body: 'q',
-      matchPairs: [{ left: 'a', right: 'b' }, { left: 'c', right: 'd' }],
+      matchPairs: [{ left: 'a', right: '' }, { left: 'c', right: 'd' }],
     }),
-    /temporarily unsupported/
+    /non-empty left and right/
   );
 });
