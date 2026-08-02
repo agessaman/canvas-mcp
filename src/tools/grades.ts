@@ -86,6 +86,9 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
           state: e.enrollment_state,
           current_score: e.grades?.current_score ?? null,
           current_grade: e.grades?.current_grade ?? null,
+          // Distinguishes "scored 0%" from "nothing has been graded at all" —
+          // both show a low score but they need different follow-up.
+          has_graded_work: e.grades?.current_score !== null && e.grades?.current_score !== undefined,
           final_score: e.grades?.final_score ?? null,
           current_points: e.grades?.current_points ?? null,
           // What the grade would be if every hidden/unposted grade were released.
@@ -93,15 +96,27 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
           last_activity_at: e.last_activity_at ?? null,
         }));
 
+        // A student with nothing graded has earned nothing, so they belong in
+        // any "below X%" result. Excluding them hid the students who were
+        // furthest behind from the exact filter meant to surface them.
         if (belowScore !== undefined) {
-          rows = rows.filter(r => r.current_score !== null && r.current_score < belowScore);
+          rows = rows.filter(r => r.current_score === null || r.current_score < belowScore);
         }
 
-        // Nulls last: a student with no graded work yet isn't "the lowest score".
         rows.sort((a, b) => {
-          if (a.current_score === null) return 1;
-          if (b.current_score === null) return -1;
-          return a.current_score - b.current_score;
+          const aNull = a.current_score === null;
+          const bNull = b.current_score === null;
+          if (aNull && bNull) return 0;
+          if (aNull || bNull) {
+            // When hunting for at-risk students, nothing graded is the worst
+            // case and sorts first. In an unfiltered listing it sorts last,
+            // since a student with nothing graded yet isn't meaningfully
+            // "the lowest score" — they may simply have nothing due.
+            const nullFirst = belowScore !== undefined;
+            if (aNull) return nullFirst ? -1 : 1;
+            return nullFirst ? 1 : -1;
+          }
+          return (a.current_score as number) - (b.current_score as number);
         });
 
         const shown = limit && limit > 0 ? rows.slice(0, limit) : rows;
