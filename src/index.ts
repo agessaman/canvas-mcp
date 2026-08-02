@@ -18,6 +18,10 @@ import { registerRubricTools } from './tools/rubrics.js';
 import { registerPrompts } from "./tools/prompts.js";
 import { registerQuizTools } from "./tools/quizzes.js";
 import { registerEportfolioTools } from './tools/eportfolios.js';
+import { registerTodoTools } from './tools/todo.js';
+import { registerNewQuizTools } from './tools/newQuizzes.js';
+import { registerGradeTools } from './tools/grades.js';
+import { registerConversationTools } from './tools/conversations.js';
 // Load environment variables
 dotenv.config();
 
@@ -55,6 +59,10 @@ registerRubricTools(server, canvas);
 registerPrompts(server, canvas);
 registerQuizTools(server, canvas);
 registerEportfolioTools(server, canvas);
+registerTodoTools(server, canvas);
+registerNewQuizTools(server, canvas);
+registerGradeTools(server, canvas);
+registerConversationTools(server, canvas);
 // Start the server
 async function startServer() {
   try {

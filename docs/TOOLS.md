@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **60 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **79 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -500,3 +500,167 @@ Lists all pages in an ePortfolio.
 - Required parameters:
   - `eportfolioId`: string
 - Returns page ID, eportfolio_id, position, name, content, and timestamps
+
+## Grading Queue
+
+### list-grading-todo
+The instructor's grading queue across all courses — every assignment with submissions waiting to be graded.
+- No required parameters
+- Optional parameters:
+  - `courseIds`: string[] — restrict to these courses
+  - `includeUngradedQuizzes`: boolean (default: true)
+  - `minNeedsGrading`: number (default: 1)
+- Returns course, assignment, `needs_grading_count`, due date, and Canvas URL, sorted by backlog size
+
+### get-todo-counts
+Fast count of submissions needing grading, without listing them.
+- No parameters
+- Returns `needs_grading_count` and `assignments_needing_submitting`
+
+## Grades & Intervention
+
+### get-course-grades
+Current grade for every student in a course, sorted lowest first.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `belowScore`: number — only students under this percentage
+  - `includeInactive`: boolean (default: false)
+  - `anonymous`: boolean (default: **false**)
+- Returns current/final score and grade, points, `unposted_current_score`, and `last_activity_at`
+
+### list-missing-submissions
+Every missing (and optionally late) submission in a course, grouped by student.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `includeLate`: boolean (default: false)
+  - `studentIds`: string[]
+  - `anonymous`: boolean (default: **false**)
+- Returns per-student missing/late counts and the specific assignments, sorted by most outstanding
+
+### get-student-engagement
+Per-student page views, participations, and on-time/late/missing breakdown from Canvas Analytics.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `anonymous`: boolean (default: **false**)
+- Returns engagement rows sorted least-engaged first
+- Requires Analytics to be enabled by your Canvas admin
+
+## New Quizzes
+
+New Quizzes use a separate API root (`/api/quiz/v1`) from Classic Quizzes. A New Quiz's ID **is** its assignment ID — pass it to `list-assignment-submissions` and `grade-submission` to grade essay responses.
+
+### list-new-quizzes
+Lists New Quizzes in a course.
+- Required parameters:
+  - `courseId`: string
+
+### get-new-quiz
+Fetches a single New Quiz including its settings.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+
+### create-new-quiz
+Creates a New Quiz. Returns the assignment ID used to add questions.
+- Required parameters:
+  - `courseId`: string
+  - `title`: string
+- Optional parameters:
+  - `instructions`, `assignmentGroupId`, `dueAt`, `unlockAt`, `lockAt`: string
+  - `pointsPossible`, `timeLimitMinutes`, `maxAttempts`: number
+  - `gradingType`: `points` | `percent` | `letter_grade` | `gpa_scale` | `pass_fail`
+  - `shuffleQuestions`, `shuffleAnswers`: boolean
+  - `quizSettings`: object — raw `quiz_settings` escape hatch
+
+### update-new-quiz
+Updates an existing New Quiz. Only the fields you pass change.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+
+### delete-new-quiz
+Deletes a New Quiz and its underlying assignment.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+
+### list-new-quiz-items
+Lists questions in a New Quiz.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+- Optional parameters:
+  - `full`: boolean (default: false) — include answer keys
+
+### get-new-quiz-item
+Fetches one question with its full payload and answer key.
+- Required parameters:
+  - `courseId`, `assignmentId`, `itemId`: string
+
+### create-new-quiz-item
+Adds a question. Answer IDs and scoring rules are generated for you.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - `interactionType`: `choice` | `multi-answer` | `true-false` | `essay` | `numeric` (unless using `rawEntry`)
+  - `body`: string (unless using `rawEntry`)
+- Optional parameters:
+  - `title`: string, `pointsPossible`: number (default: 1), `position`: number
+  - `choices`: string[] — for `choice` and `multi-answer`
+  - `correctChoiceIndex`: number — 0-based, for `choice`
+  - `correctChoiceIndexes`: number[] — 0-based, for `multi-answer`
+  - `partialCredit`: boolean — `multi-answer` scoring (default: all-or-nothing)
+  - `correctBoolean`: boolean — for `true-false`
+  - `numericAnswer`, `numericMargin`: number; `numericMarginType`: `absolute` | `percent`
+  - `gradingNotes`: string — for `essay`
+  - `feedback`: `{ neutral?, correct?, incorrect? }`
+  - `rawEntry`: object — full `entry` payload for matching, categorization, ordering, formula, hot-spot, rich-fill-blank
+
+### update-new-quiz-item
+Updates a question's points, position, or full content.
+- Required parameters:
+  - `courseId`, `assignmentId`, `itemId`: string
+- Optional parameters:
+  - `pointsPossible`, `position`: number
+  - `rawEntry`: object — complete replacement entry
+
+### delete-new-quiz-item
+Deletes a question from a New Quiz.
+- Required parameters:
+  - `courseId`, `assignmentId`, `itemId`: string
+
+### get-new-quiz-report
+Generates and retrieves a quiz report. Polls the async job until ready.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+- Optional parameters:
+  - `reportType`: `item_analysis` (default) | `student_analysis`
+  - `format`: `json` (default) | `csv`
+  - `waitSeconds`: number (default: 30)
+
+## Conversations (read-only)
+
+These tools **read** the Canvas inbox only. Sending is deliberately not exposed — student messages deserve human-written replies.
+
+### list-conversations
+Lists inbox messages with participants, subject, preview, and read state.
+- No required parameters
+- Optional parameters:
+  - `scope`: `inbox` (default) | `unread` | `starred` | `archived` | `sent`
+  - `courseId`: string
+  - `limit`: number (default: 25)
+
+### get-conversation
+Reads the full message thread of one conversation.
+- Required parameters:
+  - `conversationId`: string
+- Optional parameters:
+  - `markAsRead`: boolean (default: false) — leaves your inbox untouched unless set
+
+### get-unread-message-count
+Returns the number of unread inbox conversations.
+- No parameters

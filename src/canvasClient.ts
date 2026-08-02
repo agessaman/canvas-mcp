@@ -2,8 +2,9 @@ import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { DataAnonymizer } from './anonymizer.js';
 import { SimpleCache } from './cache.js';
 
-// URL fragments whose responses must never be cached (grade/submission data)
-const UNCACHED_PATTERNS = ['/submissions'];
+// URL fragments whose responses must never be cached (live grade, roster-state,
+// inbox, and grading-queue data — all of which change under the instructor's feet)
+const UNCACHED_PATTERNS = ['/submissions', '/enrollments', '/conversations', '/todo', '/progress'];
 
 export class CanvasClient {
   private axios: AxiosInstance;
@@ -88,6 +89,18 @@ export class CanvasClient {
   async put<T>(url: string, data: any = {}, params: any = {}): Promise<T> {
     try {
       const response = await this.axios.put(url, data, { params });
+      this.invalidateForWrite(url);
+      return response.data;
+    } catch (error: any) {
+      this.handleError(error);
+    }
+  }
+
+  // Generic PATCH with error handling and cache invalidation
+  // (the New Quizzes API uses PATCH where the v1 API uses PUT)
+  async patch<T>(url: string, data: any = {}, params: any = {}): Promise<T> {
+    try {
+      const response = await this.axios.patch(url, data, { params });
       this.invalidateForWrite(url);
       return response.data;
     } catch (error: any) {
@@ -309,6 +322,82 @@ export class CanvasClient {
     } catch (error: any) {
       this.handleError(error);
     }
+  }
+
+  // --- Instructor to-do / grading queue ---
+  async listTodo(params: any = {}) {
+    return this.get('/api/v1/users/self/todo', params);
+  }
+  async getTodoItemCount(params: any = {}) {
+    return this.get('/api/v1/users/self/todo_item_count', params);
+  }
+
+  // --- Grades & intervention ---
+  async listCourseEnrollments(courseId: string, params: any = {}, options: { anonymous?: boolean } = {}) {
+    const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/enrollments`, params);
+    if (options.anonymous !== true) return data;
+    return data.map(e => (e.user ? { ...e, user: DataAnonymizer.anonymizeUser(e.user) } : e));
+  }
+  // Submissions across every assignment in one call (student_ids[]=all).
+  async listCourseStudentSubmissions(courseId: string, params: any = {}, options: { anonymous?: boolean } = {}) {
+    const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/students/submissions`, params);
+    return options.anonymous === true ? DataAnonymizer.anonymizeSubmissions(data) : data;
+  }
+  async getStudentSummaries(courseId: string, params: any = {}) {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/analytics/student_summaries`, params);
+  }
+
+  // --- Conversations (read-only by design) ---
+  // Single page by design: the inbox can be very long and the caller slices to
+  // a limit anyway, so walking every page would be wasted requests.
+  async listConversations(params: any = {}) {
+    return this.get<any[]>('/api/v1/conversations', params);
+  }
+  async getConversation(conversationId: string, params: any = {}) {
+    return this.get(`/api/v1/conversations/${conversationId}`, params);
+  }
+  async getConversationsUnreadCount() {
+    return this.get('/api/v1/conversations/unread_count');
+  }
+
+  // --- New Quizzes (separate API root from Classic Quizzes) ---
+  async listNewQuizzes(courseId: string) {
+    return this.fetchAllPages<any>(`/api/quiz/v1/courses/${courseId}/quizzes`, { per_page: 100 });
+  }
+  async getNewQuiz(courseId: string, assignmentId: string) {
+    return this.get(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}`);
+  }
+  async createNewQuiz(courseId: string, quiz: any) {
+    return this.post(`/api/quiz/v1/courses/${courseId}/quizzes`, { quiz });
+  }
+  async updateNewQuiz(courseId: string, assignmentId: string, quiz: any) {
+    return this.patch(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}`, { quiz });
+  }
+  async deleteNewQuiz(courseId: string, assignmentId: string) {
+    return this.delete(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}`);
+  }
+  async listNewQuizItems(courseId: string, assignmentId: string) {
+    return this.fetchAllPages<any>(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/items`, { per_page: 100 });
+  }
+  async getNewQuizItem(courseId: string, assignmentId: string, itemId: string) {
+    return this.get(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/items/${itemId}`);
+  }
+  async createNewQuizItem(courseId: string, assignmentId: string, item: any) {
+    return this.post(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/items`, { item });
+  }
+  async updateNewQuizItem(courseId: string, assignmentId: string, itemId: string, item: any) {
+    return this.patch(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/items/${itemId}`, { item });
+  }
+  async deleteNewQuizItem(courseId: string, assignmentId: string, itemId: string) {
+    return this.delete(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/items/${itemId}`);
+  }
+  async createNewQuizReport(courseId: string, assignmentId: string, reportType: string, format: string) {
+    return this.post(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/reports`, {
+      quiz_report: { report_type: reportType, format }
+    });
+  }
+  async getProgress(progressId: string) {
+    return this.get(`/api/v1/progress/${progressId}`);
   }
 
   // Get submission documents with file download capability

@@ -106,7 +106,26 @@
     { "name": "delete-quiz-question-group", "description": "Delete a quiz question group" },
     { "name": "list-eportfolios", "description": "List ePortfolios for a user" },
     { "name": "get-eportfolio", "description": "Get ePortfolio details" },
-    { "name": "get-eportfolio-pages", "description": "List pages in an ePortfolio" }
+    { "name": "get-eportfolio-pages", "description": "List pages in an ePortfolio" },
+    { "name": "list-grading-todo", "description": "Get the instructor's grading queue across courses: what needs grading and how much" },
+    { "name": "get-todo-counts", "description": "Fast count of submissions needing grading" },
+    { "name": "list-new-quizzes", "description": "List New Quizzes in a course (separate API from Classic Quizzes)" },
+    { "name": "get-new-quiz", "description": "Fetch a single New Quiz including its settings" },
+    { "name": "create-new-quiz", "description": "Create a New Quiz in a course" },
+    { "name": "update-new-quiz", "description": "Update an existing New Quiz" },
+    { "name": "delete-new-quiz", "description": "Delete a New Quiz from a course" },
+    { "name": "list-new-quiz-items", "description": "List all questions in a New Quiz" },
+    { "name": "get-new-quiz-item", "description": "Fetch a single New Quiz question with its answer key" },
+    { "name": "create-new-quiz-item", "description": "Add a question to a New Quiz with generated answer IDs and scoring rules" },
+    { "name": "update-new-quiz-item", "description": "Update a New Quiz question" },
+    { "name": "delete-new-quiz-item", "description": "Delete a question from a New Quiz" },
+    { "name": "get-new-quiz-report", "description": "Generate and retrieve a New Quiz item analysis or student analysis report" },
+    { "name": "get-course-grades", "description": "Get current grades for every student in a course, lowest first" },
+    { "name": "list-missing-submissions", "description": "List missing and late work in a course, grouped by student" },
+    { "name": "get-student-engagement", "description": "Per-student page views, participations, and tardiness breakdown" },
+    { "name": "list-conversations", "description": "List Canvas inbox messages (read-only)" },
+    { "name": "get-conversation", "description": "Read the full message thread of one conversation (read-only)" },
+    { "name": "get-unread-message-count", "description": "Get the number of unread Canvas inbox messages" }
   ],
   "prompts": [
     {

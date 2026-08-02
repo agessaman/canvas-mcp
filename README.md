@@ -42,12 +42,16 @@
 - **Sections** — list sections and section-filtered submissions
 - **Modules** — full module and module-item CRUD
 - **Pages** — edit content, manage revisions, and use the styleguide system (`generate-styleguide`, `patch-page-content`)
-- **Quizzes** — full quiz, question, and question-group CRUD
+- **Quizzes** — full quiz, question, and question-group CRUD (Classic Quizzes)
+- **New Quizzes** — authoring and item analysis on the separate `/api/quiz/v1` API, with a question builder that generates answer IDs and scoring rules for you
+- **Grading queue** — `list-grading-todo` answers "what do I need to grade?" across every course
+- **Grades & intervention** — course-wide gradebook, missing-work report, and engagement analytics for planning outreach
+- **Conversations** — read-only inbox triage (sending is intentionally not exposed)
 - **ePortfolios** — list and read student ePortfolios
 - **Prompts** — `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**60 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**79 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -237,6 +241,8 @@ List all students in course 123, but show their actual names and emails
 
 Each affected tool accepts an `anonymous` parameter (default: `true`). Your AI assistant sets `anonymous: false` when you ask for real names.
 
+> **Exception — intervention tools default to real names.** `get-course-grades`, `list-missing-submissions`, and `get-student-engagement` default to `anonymous: false`, because "Student 7 is failing" is not something you can act on. They still accept `anonymous: true` when you want to reason about the class in aggregate or share output. Note also that pseudonyms are assigned from an in-memory counter that resets when the server restarts — `Student 3` in one session is not necessarily `Student 3` in the next, so don't carry those labels across conversations.
+
 <details>
 <summary>Why teachers and admins are not anonymized</summary>
 
@@ -269,9 +275,21 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | Modules | 10 | `list-modules`, `list-module-items`, `toggle-module-publish`, `create-module`, `update-module`, `delete-module`, `get-module-item`, `create-module-item`, `update-module-item`, `delete-module-item` |
 | Pages | 9 | `list-pages`, `get-page-content`, `update-page-content`, `list-page-revisions`, `revert-page-revision`, `patch-page-content`, `apply-page-changes`, `generate-styleguide`, `get-styleguide` |
 | Quizzes | 15 | `list-quizzes`, `get-quiz`, `create-quiz`, `update-quiz`, `delete-quiz`, `list-quiz-questions`, `get-quiz-question`, `create-quiz-question`, `update-quiz-question`, `delete-quiz-question`, `list-quiz-question-groups`, `get-quiz-question-group`, `create-quiz-question-group`, `update-quiz-question-group`, `delete-quiz-question-group` |
+| New Quizzes | 11 | `list-new-quizzes`, `get-new-quiz`, `create-new-quiz`, `update-new-quiz`, `delete-new-quiz`, `list-new-quiz-items`, `get-new-quiz-item`, `create-new-quiz-item`, `update-new-quiz-item`, `delete-new-quiz-item`, `get-new-quiz-report` |
+| Grading Queue | 2 | `list-grading-todo`, `get-todo-counts` |
+| Grades & Intervention | 3 | `get-course-grades`, `list-missing-submissions`, `get-student-engagement` |
+| Conversations (read-only) | 3 | `list-conversations`, `get-conversation`, `get-unread-message-count` |
 | ePortfolios | 3 | `list-eportfolios`, `get-eportfolio`, `get-eportfolio-pages` |
 
 **Full parameter reference:** [docs/TOOLS.md](docs/TOOLS.md)
+
+### Classic vs. New Quizzes
+
+Canvas runs two quiz engines on different APIs. `list-quizzes` and friends cover **Classic Quizzes** (`/api/v1/courses/:id/quizzes`); `list-new-quizzes` and friends cover **New Quizzes** (`/api/quiz/v1/courses/:id/quizzes`). If your institution has migrated, use the New Quizzes tools. A New Quiz's ID is also its assignment ID, so grading flows through the existing `list-assignment-submissions` and `grade-submission` tools.
+
+### A note on messaging
+
+This server reads the Canvas inbox but will not send messages. Canvas exposes `POST /api/v1/conversations`, and it is deliberately not wired up: the intended workflow is to triage messages and draft action items, then write the reply to a student yourself.
 
 ## Available Prompts
 
