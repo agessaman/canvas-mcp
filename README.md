@@ -46,13 +46,14 @@
 - **New Quizzes** — authoring and item analysis on the separate `/api/quiz/v1` API, with a question builder that generates answer IDs and scoring rules for you
 - **Grading queue** — `list-grading-todo` answers "what do I need to grade?" across every course
 - **Grades & intervention** — course-wide gradebook, missing-work report, and engagement analytics for planning outreach
+- **Overrides** — differentiated due dates and date accommodations, per student or per section, with `extend-due-date` for the everyday case
 - **Files** — upload local files into a course's Files area (syllabi, handouts, images), publish or unpublish them, and browse what's already there
 - **Conversations** — read-only inbox triage (sending is intentionally not exposed)
 - **ePortfolios** — list and read student ePortfolios
 - **Prompts** — `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**85 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**90 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -280,6 +281,7 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | Grading Queue | 2 | `list-grading-todo`, `get-todo-counts` |
 | Grades & Intervention | 3 | `get-course-grades`, `list-missing-submissions`, `get-student-engagement` |
 | Conversations (read-only) | 3 | `list-conversations`, `get-conversation`, `get-unread-message-count` |
+| Overrides & Accommodations | 5 | `list-assignment-overrides`, `create-assignment-override`, `update-assignment-override`, `delete-assignment-override`, `extend-due-date` |
 | Files | 4 | `upload-course-file`, `set-file-availability`, `list-course-files`, `list-course-folders` |
 | ePortfolios | 3 | `list-eportfolios`, `get-eportfolio`, `get-eportfolio-pages` |
 

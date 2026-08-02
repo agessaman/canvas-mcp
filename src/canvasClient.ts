@@ -228,6 +228,21 @@ export class CanvasClient {
   async getAssignment(courseId: string, assignmentId: string) {
     return this.get(`/api/v1/courses/${courseId}/assignments/${assignmentId}`);
   }
+  // Assignment overrides — differentiated due dates. A New Quiz is backed by an
+  // assignment, so its overrides live here too, not under /quizzes.
+  async listAssignmentOverrides(courseId: string, assignmentId: string) {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides`);
+  }
+  async createAssignmentOverride(courseId: string, assignmentId: string, data: any) {
+    return this.post(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides`, { assignment_override: data });
+  }
+  async updateAssignmentOverride(courseId: string, assignmentId: string, overrideId: string, data: any) {
+    return this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides/${overrideId}`, { assignment_override: data });
+  }
+  async deleteAssignmentOverride(courseId: string, assignmentId: string, overrideId: string) {
+    return this.delete(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides/${overrideId}`);
+  }
+
   async createAssignment(courseId: string, data: any) {
     return this.post(`/api/v1/courses/${courseId}/assignments`, data);
   }
