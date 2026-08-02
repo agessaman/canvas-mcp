@@ -6,6 +6,10 @@ import { SimpleCache } from './cache.js';
 // inbox, and grading-queue data — all of which change under the instructor's feet)
 const UNCACHED_PATTERNS = ['/submissions', '/enrollments', '/conversations', '/todo', '/progress'];
 
+// Safety bound on Link-header following, so a malformed or self-referential
+// `next` link can't loop indefinitely. At per_page=100 this is 50k records.
+const MAX_PAGES = 500;
+
 export class CanvasClient {
   private axios: AxiosInstance;
   private cache = new SimpleCache();
@@ -142,19 +146,28 @@ export class CanvasClient {
     }
     const results: T[] = [];
     const per_page = params.per_page || 100;
-    let page = 1;
+    // Follow the Link header's `next` URL rather than incrementing page=N.
+    // Not all Canvas collections are numerically paginated: bookmark-paginated
+    // endpoints such as /courses/:id/students/submissions reject a page number
+    // outright with "Invalid page; please restart iteration and follow `next`
+    // links". Following `next` is correct for both styles.
+    //
     // Errors must route through handleError like every other verb, or a failed
     // paginated call surfaces as a bare "Request failed with status code 400"
     // with no indication of which request failed or why.
     try {
-      while (true) {
-        const response = await this.axios.get(url, { params: { ...params, page, per_page } });
+      let response = await this.axios.get(url, { params: { ...params, per_page } });
+      // Bounded so a malformed or self-referential Link header can't spin forever.
+      for (let hop = 0; hop < MAX_PAGES; hop++) {
         const data: T[] = response.data;
         if (!Array.isArray(data) || data.length === 0) break;
         results.push(...data);
         const linkHeader = response.headers['link'] as string | undefined;
-        if (!linkHeader || !this.parseLinkHeader(linkHeader).next) break;
-        page++;
+        const next = linkHeader ? this.parseLinkHeader(linkHeader).next : undefined;
+        if (!next) break;
+        // `next` is an absolute URL and already carries its own query string,
+        // so it is requested verbatim — axios bypasses baseURL for absolute URLs.
+        response = await this.axios.get(next);
       }
     } catch (error: any) {
       this.handleError(error);
