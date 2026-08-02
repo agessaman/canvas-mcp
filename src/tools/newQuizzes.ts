@@ -13,6 +13,22 @@ const INTERACTION_TYPES = ['choice', 'true-false', 'multi-answer', 'essay', 'num
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * Canvas accepts a write carrying stimulus_quiz_entry_id, returns 200, and
+ * simply does not store it — no error, no hint. Confirmed live: the field
+ * comes back "" on an item created with it set. Left unreported, a teacher
+ * authors a whole passage's worth of questions that are all detached.
+ * The create/update response already echoes the stored value, so check it.
+ */
+function stimulusWarning(requested: string | undefined, stored: any): string {
+  if (requested === undefined) return '';
+  if (String(stored?.stimulus_quiz_entry_id ?? '') === String(requested)) return '';
+  return ` WARNING: Canvas did not attach this to stimulus ${requested} — it stored `
+    + `"${stored?.stimulus_quiz_entry_id ?? ''}" instead, so the question stands alone. `
+    + `Confirm ${requested} is the item ID of an entry_type "Stimulus" item in this same quiz `
+    + `(list-new-quiz-items shows it); otherwise attach the question in the Canvas UI.`;
+}
+
 export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
   // Tool: list-new-quizzes
   server.tool(
@@ -327,12 +343,9 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
         }
 
         const created = await canvas.createNewQuizItem(args.courseId, args.assignmentId, item) as any;
-        return {
-          content: [{
-            type: "text",
-            text: `Added ${entry.interaction_type_slug ?? 'item'} question (item ID ${created.id}, ${created.points_possible} pts) to quiz ${args.assignmentId}.`
-          }]
-        };
+        const text = `Added ${entry.interaction_type_slug ?? 'item'} question (item ID ${created.id}, ${created.points_possible} pts) to quiz ${args.assignmentId}.`
+          + stimulusWarning(args.stimulusQuizEntryId, created);
+        return { content: [{ type: "text", text }] };
       } catch (error: any) {
         throw new Error(`Failed to create New Quiz item: ${error.message ?? 'Unknown error'}`);
       }
@@ -366,7 +379,9 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
         }
 
         const updated = await canvas.updateNewQuizItem(args.courseId, args.assignmentId, args.itemId, item) as any;
-        return { content: [{ type: "text", text: `Updated item ${updated.id} in quiz ${args.assignmentId}.` }] };
+        const text = `Updated item ${updated.id} in quiz ${args.assignmentId}.`
+          + stimulusWarning(args.stimulusQuizEntryId, updated);
+        return { content: [{ type: "text", text }] };
       } catch (error: any) {
         throw new Error(`Failed to update New Quiz item: ${error.message ?? 'Unknown error'}`);
       }
