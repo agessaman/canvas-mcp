@@ -49,4 +49,16 @@ export class SimpleCache {
       if (key.startsWith(prefix)) this.store.delete(key);
     }
   }
+
+  /**
+   * Drop every entry whose URL contains `fragment`, for resources that are
+   * listed under a different path than they are written to. A file is written
+   * at /files/:id but listed under /courses/:id/files and /folders/:id/files,
+   * so prefix invalidation alone leaves those listings stale.
+   */
+  invalidateContaining(fragment: string): void {
+    for (const key of this.store.keys()) {
+      if (key.includes(fragment)) this.store.delete(key);
+    }
+  }
 }

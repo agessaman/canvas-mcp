@@ -77,7 +77,7 @@ export function registerFileTools(server: McpServer, canvas: CanvasClient) {
   // Tool: upload-course-file
   server.tool(
     "upload-course-file",
-    "Upload a local file into a course's Files area (syllabus PDFs, handouts, images). Give the path to a file on this machine. Folders are addressed by path, e.g. \"/Handouts/Unit 1\" — Canvas creates the folder if it does not exist. Uploaded files are unpublished by default in most courses, so students may not see them until published in Canvas.",
+    "Upload a local file into a course's Files area (syllabus PDFs, handouts, images). Give the path to a file on this machine. Folders are addressed by path, e.g. \"/Handouts/Unit 1\" — Canvas creates the folder if it does not exist. Whether an upload lands published varies by course and folder, so check with list-course-files and use set-file-availability if students need to see it.",
     {
       courseId: z.string().describe("The ID of the course"),
       filePath: z.string().describe("Absolute path to the file on this machine"),
@@ -138,7 +138,7 @@ export function registerFileTools(server: McpServer, canvas: CanvasClient) {
   // Tool: set-file-availability
   server.tool(
     "set-file-availability",
-    "Publish or unpublish a file in a course's Files area, or make it available by direct link only. Files uploaded through the API are often unpublished, meaning students cannot see them — use this to publish them. 'published' = visible in Files; 'unpublished' = hidden from students entirely; 'link-only' = not listed, but reachable from a link on a page or assignment. Find file IDs with list-course-files.",
+    "Publish or unpublish a file in a course's Files area, or make it available by direct link only. 'published' = visible in Files; 'unpublished' = hidden from students entirely; 'link-only' = not listed, but reachable from a link on a page or assignment. Find file IDs with list-course-files.",
     {
       fileId: z.string().describe("The file's ID (from list-course-files)"),
       state: z.enum(['published', 'unpublished', 'link-only']).describe("Desired availability"),

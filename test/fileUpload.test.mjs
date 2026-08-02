@@ -315,3 +315,31 @@ test('scheduled availability is accepted rather than warned about', async () => 
     assert.match(harness.textOf(result), /scheduled/);
   }, { fileState: { locked: false, hidden: false, unlock_at: '2026-09-01T08:00:00Z' } });
 });
+
+// A file is written at /files/:id but listed under /folders/:id/files and
+// /courses/:id/files. Without explicit invalidation the listing keeps serving
+// the pre-write state, which reads exactly like the write having failed.
+// Observed live: publishing a file, then listing its folder, still said
+// "published" after it had been set to link-only.
+test('a file write drops the cached folder and course listings', async () => {
+  await withCanvasAndStorage(async harness => {
+    await harness.callTool('list-course-files', { courseId: '18473', folderId: '172065' });
+    const before = harness.canvasRequests.filter(r => r.method === 'GET').length;
+
+    // Same listing again — served from cache, no new request.
+    await harness.callTool('list-course-files', { courseId: '18473', folderId: '172065' });
+    assert.equal(
+      harness.canvasRequests.filter(r => r.method === 'GET').length, before,
+      'second identical listing should be cached'
+    );
+
+    await harness.callTool('set-file-availability', { fileId: '1335119', state: 'link-only' });
+
+    // ...and now it must go back to Canvas rather than serve the stale state.
+    await harness.callTool('list-course-files', { courseId: '18473', folderId: '172065' });
+    assert.ok(
+      harness.canvasRequests.filter(r => r.method === 'GET').length > before,
+      'the listing must be refetched after a file write'
+    );
+  }, { fileState: { locked: false, hidden: true } });
+});

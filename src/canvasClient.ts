@@ -423,13 +423,13 @@ export class CanvasClient {
 
     // 201 means the store already created the file and handed it back.
     if (uploaded.status === 201 && uploaded.data?.id) {
-      this.invalidateForWrite(`/api/v1/courses/${courseId}/files`);
+      this.invalidateFileListings();
       return uploaded.data;
     }
 
     const location = uploaded.headers?.location;
     if (!location) {
-      this.invalidateForWrite(`/api/v1/courses/${courseId}/files`);
+      this.invalidateFileListings();
       return uploaded.data;
     }
 
@@ -439,7 +439,7 @@ export class CanvasClient {
     const confirmed = this.isSameHostAsCanvas(location)
       ? await this.axios.get(location)
       : await axios.get(location);
-    this.invalidateForWrite(`/api/v1/courses/${courseId}/files`);
+    this.invalidateFileListings();
     return confirmed.data;
   }
 
@@ -470,7 +470,19 @@ export class CanvasClient {
   }
 
   async updateFile(fileId: string, payload: any): Promise<any> {
-    return this.put(`/api/v1/files/${fileId}`, payload);
+    const updated = await this.put(`/api/v1/files/${fileId}`, payload);
+    this.invalidateFileListings();
+    return updated;
+  }
+
+  /**
+   * A file is written at /files/:id but listed under /courses/:id/files and
+   * /folders/:id/files, so the usual prefix invalidation misses both listings.
+   * Observed live: publishing a file and immediately listing its folder still
+   * reported the old state, which reads as the write having failed.
+   */
+  private invalidateFileListings(): void {
+    this.cache.invalidateContaining('/files');
   }
 
   async getFileInfo(fileId: string): Promise<any> {
