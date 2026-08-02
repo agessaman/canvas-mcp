@@ -1,0 +1,21 @@
+# Source and build config — only dist/ is needed at runtime
+src/
+tsconfig.json
+package-lock.json
+
+# Docs (the manifest carries its own description)
+docs/
+DESKTOP_EXTENSION.md
+
+# Local / VCS clutter
+.git/
+.github/
+.env
+.env.*
+*.log
+.DS_Store
+coverage/
+
+# Never ship a previously built bundle inside a new one
+*.mcpb
+*.dxt
