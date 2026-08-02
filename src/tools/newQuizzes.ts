@@ -206,9 +206,14 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
           id: i.id,
           position: i.position,
           points_possible: i.points_possible,
+          entry_type: i.entry_type,
           type: i.entry?.interaction_type_slug,
           title: i.entry?.title,
           item_body: i.entry?.item_body,
+          // Present when this question hangs off a stimulus (reading passage).
+          // Pass it as stimulusQuizEntryId on create-new-quiz-item to attach
+          // another question to the same stimulus.
+          ...(i.stimulus_quiz_entry_id ? { stimulus_quiz_entry_id: i.stimulus_quiz_entry_id } : {}),
         }));
         return {
           content: [{
@@ -247,10 +252,12 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
   // Tool: create-new-quiz-item
   server.tool(
     "create-new-quiz-item",
-    "Add a question to a New Quiz. Give the question text, the choices, and which choice is correct — answer IDs and scoring rules are generated for you. Supports choice, multi-answer, true-false, essay, numeric, and matching; use rawEntry for other types.",
+    "Add a question to a New Quiz. Give the question text, the choices, and which choice is correct — answer IDs and scoring rules are generated for you. Supports choice, multi-answer, true-false, essay, numeric, and matching; use rawEntry for other types. STIMULUS (shared reading passage with several questions hanging off it): Canvas does not allow creating a stimulus through the API — it must be built once in the Canvas UI. Once it exists, run list-new-quiz-items to get its item ID, then create each question with stimulusQuizEntryId set to that ID to attach them to it.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The quiz's assignment ID"),
+      entryType: z.enum(['Item', 'Stimulus', 'Bank', 'BankEntry']).optional().describe("Item kind (default: Item). Note that Canvas rejects Stimulus creation via API — see the tool description."),
+      stimulusQuizEntryId: z.string().optional().describe("Attach this question to an existing stimulus (reading passage), by the stimulus's item ID. Find it via list-new-quiz-items."),
       interactionType: z.enum(INTERACTION_TYPES).optional().describe("Question type. Omit only when supplying rawEntry."),
       body: z.string().optional().describe("The question text (HTML allowed)"),
       title: z.string().optional().describe("Optional short label for the question"),
@@ -307,11 +314,16 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
         }
 
         const item: any = {
-          entry_type: 'Item',
+          entry_type: args.entryType ?? 'Item',
           points_possible: args.pointsPossible ?? 1,
           entry,
         };
         if (args.position !== undefined) item.position = args.position;
+        // Attaches this question to a stimulus (reading passage, chart, etc).
+        // The stimulus itself must already exist — see the tool description.
+        if (args.stimulusQuizEntryId !== undefined) {
+          item.stimulus_quiz_entry_id = args.stimulusQuizEntryId;
+        }
 
         const created = await canvas.createNewQuizItem(args.courseId, args.assignmentId, item) as any;
         return {
@@ -336,6 +348,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
       itemId: z.string().describe("The item (question) ID"),
       pointsPossible: z.number().optional().describe("New point value"),
       position: z.number().optional().describe("New position in the quiz"),
+      stimulusQuizEntryId: z.string().optional().describe("Attach this existing question to a stimulus by its item ID"),
       rawEntry: z.any().optional().describe("Complete replacement `entry` object")
     },
     { idempotentHint: true },
@@ -344,6 +357,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
         const item: any = {};
         if (args.pointsPossible !== undefined) item.points_possible = args.pointsPossible;
         if (args.position !== undefined) item.position = args.position;
+        if (args.stimulusQuizEntryId !== undefined) item.stimulus_quiz_entry_id = args.stimulusQuizEntryId;
         if (args.rawEntry !== undefined) item.entry = args.rawEntry;
 
         if (Object.keys(item).length === 0) {

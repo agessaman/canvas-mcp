@@ -623,6 +623,8 @@ Adds a question. Answer IDs and scoring rules are generated for you.
   - `body`: string (unless using `rawEntry`)
 - Optional parameters:
   - `title`: string, `pointsPossible`: number (default: 1), `position`: number
+  - `entryType`: `Item` (default) | `Stimulus` | `Bank` | `BankEntry`
+  - `stimulusQuizEntryId`: string — attach this question to an existing stimulus
   - `choices`: string[] — for `choice` and `multi-answer`
   - `correctChoiceIndex`: number — 0-based, for `choice`
   - `correctChoiceIndexes`: number[] — 0-based, for `multi-answer`
@@ -634,6 +636,8 @@ Adds a question. Answer IDs and scoring rules are generated for you.
   - `distractors`: string[] — extra unmatched answer options, for `matching`
   - `feedback`: `{ neutral?, correct?, incorrect? }`
   - `rawEntry`: object — full `entry` payload for categorization, ordering, formula, hot-spot, rich-fill-blank
+
+> **Note on stimulus items (a shared reading passage with several questions attached):** Canvas does not permit creating one through the API. The documentation is explicit: *"For now, stimulus items can only be retrieved with the API. They must be created and updated via the UI."* Attempting it returns `scoring_data`, `scoring_algorithm`, and `user_response_type` "can't be blank" errors, because the request is validated as an ordinary interactive item. The working path is: build the stimulus once in the Canvas UI, run `list-new-quiz-items` to read its item ID (items carry `entry_type` and, when attached, `stimulus_quiz_entry_id`), then create each question with `stimulusQuizEntryId` set to that ID. `update-new-quiz-item` accepts the same field to attach questions that already exist.
 
 > **Note on `matching`:** the published appendix disagrees with what a live Canvas instance actually accepts. Two corrections are baked into the builder: `scoring_algorithm` must be `DeepEquals` or `PartialDeep` (a type-specific name like `Matching` is rejected outright), and `scoring_data.value` must be an **array of `"questionId:answerId"` strings** — the docs show a `{ questionId: answerText }` map, and sending objects fails with `property '#/value/0' of type object did not match ... type: string`. If you hand-roll a matching item via `rawEntry`, use the same shapes.
 
