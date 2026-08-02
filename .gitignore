@@ -15,6 +15,9 @@ extension/
 .env
 .env.*
 
+# Local scratch notes (handoffs, working files)
+.scratch/
+
 # IDE and editor files
 .vscode/
 .idea/
