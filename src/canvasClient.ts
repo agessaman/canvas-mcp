@@ -440,6 +440,16 @@ export class CanvasClient {
     return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/files`, params);
   }
 
+  /**
+   * Files in one folder. This needs its own endpoint: /courses/:id/files takes
+   * no folder_id, and passing one is silently ignored rather than rejected —
+   * you get every file in the course back and nothing says the filter was
+   * dropped. Confirmed live against course 18473.
+   */
+  async listFolderFiles(folderId: string, params: any = {}): Promise<any[]> {
+    return this.fetchAllPages<any>(`/api/v1/folders/${folderId}/files`, params);
+  }
+
   async listCourseFolders(courseId: string): Promise<any[]> {
     return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/folders`);
   }

@@ -241,3 +241,24 @@ test('a missing local file fails before anything is sent to Canvas', async () =>
     assert.equal(harness.storageRequests.length, 0);
   });
 });
+
+// /courses/:id/files takes no folder_id — passing one is silently ignored and
+// the whole course comes back. A folder listing must use /folders/:id/files.
+test('listing one folder queries the folder endpoint, not the course', async () => {
+  await withCanvasAndStorage(async harness => {
+    await harness.callTool('list-course-files', { courseId: '18473', folderId: '172065' });
+
+    const listing = harness.canvasRequests.filter(r => r.method === 'GET');
+    assert.ok(
+      listing.some(r => r.url.startsWith('/api/v1/folders/172065/files')),
+      'should query /folders/:id/files'
+    );
+    for (const request of listing) {
+      assert.ok(
+        !/\/courses\/\d+\/files/.test(request.url),
+        `must not fall back to the course endpoint: ${request.url}`
+      );
+      assert.ok(!/folder_id=/.test(request.url), 'folder_id is not a parameter Canvas honors here');
+    }
+  });
+});

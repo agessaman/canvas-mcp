@@ -122,8 +122,11 @@ export function registerFileTools(server: McpServer, canvas: CanvasClient) {
       try {
         const params: any = {};
         if (args.searchTerm) params.search_term = args.searchTerm;
+        // A folder listing has to go to /folders/:id/files. Passing folder_id to
+        // the course endpoint looks like it works and quietly returns the whole
+        // course instead.
         const files = args.folderId
-          ? await canvas.listCourseFiles(args.courseId, { ...params, folder_id: args.folderId })
+          ? await canvas.listFolderFiles(args.folderId, params)
           : await canvas.listCourseFiles(args.courseId, params);
 
         if (files.length === 0) {
