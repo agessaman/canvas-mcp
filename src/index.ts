@@ -3,6 +3,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { createRequire } from "node:module";
 import * as dotenv from "dotenv";
 import { CanvasConfig } from './types.js';
 import { CanvasClient } from './canvasClient.js';
@@ -25,11 +26,30 @@ import { registerConversationTools } from './tools/conversations.js';
 // Load environment variables
 dotenv.config();
 
+// Single source of truth for the version. Hardcoding it here let the server
+// report 1.2.0 while the package and the extension manifest both said 1.4.0,
+// which makes it impossible to tell which build is actually running.
+// Resolves to the package root from both dist/ (packaged) and src/ (tsx dev).
+const require = createRequire(import.meta.url);
+const { version: VERSION } = require("../package.json") as { version: string };
+
 // Create the MCP server
 const server = new McpServer({
   name: "Canvas MCP Server",
-  version: "1.2.0"
+  version: VERSION
 });
+
+// Tool: get-server-version — lets you confirm which build a client has loaded
+// without guessing from tool behaviour.
+server.tool(
+  "get-server-version",
+  "Report the version of this Canvas MCP server build. Use it to confirm which build a client has actually loaded after installing or upgrading the extension.",
+  {},
+  { readOnlyHint: true },
+  async () => ({
+    content: [{ type: "text", text: `Canvas MCP Server v${VERSION}` }]
+  })
+);
 
 // Read configuration from environment variables
 const config: CanvasConfig = {

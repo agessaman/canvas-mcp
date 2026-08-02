@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **80 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **81 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
