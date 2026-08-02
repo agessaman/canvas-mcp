@@ -34,7 +34,7 @@
 
 ## Features
 
-- **Courses** — list active courses, post announcements
+- **Courses** — list courses (including unpublished shells and past terms, with name/code search), look up a course by ID, post announcements
 - **Assignments** — create, update, delete assignments and assignment groups; bulk date updates
 - **Submissions** — grade work, post feedback, download submission files
 - **Rubrics** — view rubrics, analyze statistics, attach rubrics to assignments
@@ -51,7 +51,7 @@
 - **Prompts** — `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**79 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**80 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -265,7 +265,7 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 
 | Category | Count | Tools |
 |----------|-------|-------|
-| Courses | 2 | `list-courses`, `post-announcement` |
+| Courses | 3 | `list-courses`, `get-course`, `post-announcement` |
 | Students | 1 | `list-students` |
 | Assignments | 5 | `list-assignments`, `get-assignment`, `create-assignment`, `update-assignment`, `delete-assignment` |
 | Assignment Groups | 3 | `list-assignment-groups`, `create-assignment-group`, `bulk-update-assignment-dates` |

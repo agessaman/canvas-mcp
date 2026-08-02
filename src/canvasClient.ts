@@ -169,7 +169,12 @@ export class CanvasClient {
 
   // --- Courses ---
   async listCourses(params: any = {}) {
-    return this.get('/api/v1/courses', params);
+    return this.fetchAllPages<any>('/api/v1/courses', params);
+  }
+  // Works for unpublished courses too, which never appear in the course list
+  // under the default filters.
+  async getCourse(courseId: string, params: any = {}) {
+    return this.get(`/api/v1/courses/${courseId}`, params);
   }
   async postAnnouncement(courseId: string, data: any) {
     return this.post(`/api/v1/courses/${courseId}/discussion_topics`, data);

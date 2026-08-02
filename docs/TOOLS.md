@@ -1,13 +1,27 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **79 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **80 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
 ### list-courses
-Lists all active courses for the authenticated user.
+Lists the authenticated user's courses. Defaults to published, currently-active courses.
 - No required parameters
-- Returns course names, IDs, and term information
+- Optional parameters:
+  - `includeUnpublished`: boolean (default: false) — include course shells you're still building
+  - `includeConcluded`: boolean (default: false) — include past-term courses
+  - `searchTerm`: string — case-insensitive filter on course name or code
+  - `enrollmentType`: `teacher` | `ta` | `student` | `designer` | `observer`
+- Returns course names, IDs, codes, term information, and published status
+- Canvas has no server-side search on this endpoint, so `searchTerm` filters client-side
+
+### get-course
+Fetches a single course by ID, including unpublished courses that don't appear in `list-courses`.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `includeSyllabus`: boolean (default: false)
+- Useful when you have a course ID from a Canvas URL but the course isn't published
 
 ### post-announcement
 Posts an announcement to a specific course.

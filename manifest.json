@@ -47,7 +47,8 @@
     }
   },
   "tools": [
-    { "name": "list-courses", "description": "List all active courses for the authenticated user" },
+    { "name": "list-courses", "description": "List your courses, optionally including unpublished shells and past terms, with name/code search" },
+    { "name": "get-course", "description": "Fetch a single course by ID, including unpublished courses" },
     { "name": "post-announcement", "description": "Post an announcement to a specific course" },
     { "name": "list-students", "description": "Get course enrollment with privacy controls" },
     { "name": "list-assignments", "description": "Get assignments with submission status for students" },
