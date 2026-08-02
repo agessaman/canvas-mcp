@@ -49,17 +49,27 @@ export function registerOverrideTools(server: McpServer, canvas: CanvasClient) {
     { readOnlyHint: true },
     async ({ courseId, assignmentId }: { courseId: string; assignmentId: string }) => {
       try {
+        // include[]=all_dates is essential, not a nicety. An assignment's own
+        // due_at is documented as "the due date as it applies to the user
+        // requesting information from the API" — with overrides in play it is
+        // NOT the base date. Observed live: after setting one student's
+        // override to Aug 15, the assignment reported due_at Aug 15, so
+        // reporting it as the everyone-else date would have been a lie about
+        // when the rest of the class is due. all_dates carries an entry flagged
+        // base: true, which is the real everyone-else date.
         const [overrides, assignment] = await Promise.all([
           canvas.listAssignmentOverrides(courseId, assignmentId),
-          canvas.getAssignment(courseId, assignmentId) as Promise<any>,
+          canvas.getAssignment(courseId, assignmentId, { 'include[]': 'all_dates' }) as Promise<any>,
         ]);
+        const baseDate = (assignment?.all_dates ?? []).find((entry: any) => entry.base);
+        const baseDue = baseDate ? (baseDate.due_at ?? 'none set') : 'unknown';
 
         if (overrides.length === 0) {
           return {
             content: [{
               type: "text",
               text: `No overrides on "${assignment?.name ?? assignmentId}". Everyone gets the base due date `
-                + `(${assignment?.due_at ?? 'none set'}).`
+                + `(${baseDue}).`
             }]
           };
         }
@@ -70,8 +80,8 @@ export function registerOverrideTools(server: McpServer, canvas: CanvasClient) {
         // see the assignment at all.
         const base = assignment?.only_visible_to_overrides
           ? `WARNING: "only visible to overrides" is ON for this assignment. Students not covered by an `
-            + `override below cannot see it at all — they are not merely on the base due date.`
-          : `Everyone not listed below gets the base due date (${assignment?.due_at ?? 'none set'}).`;
+            + `override above cannot see it at all — they are not merely on the base due date.`
+          : `Everyone not listed above gets the base due date (${baseDue}).`;
 
         return {
           content: [{

@@ -5,7 +5,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { withMockCanvas } from './helpers/mockCanvas.mjs';
 
-const ASSIGNMENT = { id: 371566, name: 'Unit 3 Quiz', due_at: '2026-09-10T23:59:00Z' };
+// due_at here is deliberately NOT the base date, which is what Canvas actually
+// returns once overrides exist: the assignment's due_at is the date as it
+// applies to the requesting user. all_dates carries the real base.
+const ASSIGNMENT = {
+  id: 371566,
+  name: 'Unit 3 Quiz',
+  due_at: '2026-09-25T23:59:00Z',
+  all_dates: [
+    { base: true, due_at: '2026-09-10T23:59:00Z' },
+    { id: 55, title: 'IEP', due_at: '2026-09-25T23:59:00Z' },
+  ],
+};
 
 // Serves an assignment, a list of overrides, and echoes writes back — with an
 // optional distortion so we can model Canvas quietly not applying something.
@@ -178,5 +189,29 @@ test('an overlapping section override is pointed out', async () => {
     const text = canvas.textOf(result);
     assert.match(text, /section-wide override/);
     assert.match(text, /more generous date/);
+  });
+});
+
+// The assignment's own due_at is the requesting user's effective date, not the
+// base. Reporting it as "what everyone else gets" is a lie about the class
+// deadline — observed live, where a student override moved the assignment's
+// reported due_at with it.
+test('the base due date comes from all_dates, not the assignment due_at', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith({
+      overrides: [{ id: 55, title: 'IEP', student_ids: [6199], due_at: '2026-09-25T23:59:00Z' }],
+    }));
+    const result = await canvas.callTool('list-assignment-overrides', {
+      courseId: '18473', assignmentId: '371566',
+    });
+    const text = canvas.textOf(result);
+
+    assert.ok(
+      canvas.requests.some(r => /all_dates/.test(r.url)),
+      'must request include[]=all_dates'
+    );
+    assert.match(text, /base due date \(2026-09-10T23:59:00Z\)/);
+    // The override's own date must not be presented as the base.
+    assert.doesNotMatch(text, /base due date \(2026-09-25/);
   });
 });

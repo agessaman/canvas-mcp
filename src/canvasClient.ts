@@ -225,8 +225,8 @@ export class CanvasClient {
     const data = await this.get(`/api/v1/courses/${courseId}/assignments`, params) as any[];
     return options.anonymous !== false ? DataAnonymizer.anonymizeAssignments(data) : data;
   }
-  async getAssignment(courseId: string, assignmentId: string) {
-    return this.get(`/api/v1/courses/${courseId}/assignments/${assignmentId}`);
+  async getAssignment(courseId: string, assignmentId: string, params: any = {}) {
+    return this.get(`/api/v1/courses/${courseId}/assignments/${assignmentId}`, params);
   }
   // Assignment overrides — differentiated due dates. A New Quiz is backed by an
   // assignment, so its overrides live here too, not under /quizzes.
