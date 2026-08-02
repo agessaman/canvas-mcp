@@ -22,7 +22,8 @@
     "start": "node dist/index.js",
     "prepublishOnly": "npm run build",
     "pack-extension": "mcpb pack",
-    "build-extension": "npm run build && npm run pack-extension"
+    "build-extension": "npm run build && npm run pack-extension",
+    "test": "npm run build && node --test 'test/**/*.test.mjs'"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

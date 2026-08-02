@@ -1,5 +1,6 @@
 # Source and build config — only dist/ is needed at runtime
 src/
+test/
 tsconfig.json
 package-lock.json
 
