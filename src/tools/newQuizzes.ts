@@ -9,7 +9,7 @@ import { buildItemEntry, InteractionType } from "../newQuizItemBuilder.js";
 // id used throughout this file is an assignment_id — and that same id is what
 // grade-submission takes when hand-grading essay responses.
 
-const INTERACTION_TYPES = ['choice', 'true-false', 'multi-answer', 'essay', 'numeric', 'matching'] as const;
+const INTERACTION_TYPES = ['choice', 'true-false', 'multi-answer', 'essay', 'numeric', 'matching', 'rich-fill-blank', 'ordering', 'categorization'] as const;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -269,7 +269,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
   // Tool: create-new-quiz-item
   server.tool(
     "create-new-quiz-item",
-    "Add a question to a New Quiz. Give the question text, the choices, and which choice is correct — answer IDs and scoring rules are generated for you. Supports choice, multi-answer, true-false, essay, numeric, and matching; use rawEntry for other types (categorization, ordering, formula, hot-spot, file-upload, and rich-fill-blank / fill-in-the-blank). STIMULUS (shared reading passage with several questions hanging off it): Canvas does not allow creating a stimulus through the API — it must be built once in the Canvas UI. Once it exists, run list-new-quiz-items to get its item ID, then create each question with stimulusQuizEntryId set to that ID to attach them to it.",
+    "Add a question to a New Quiz. Give the question text, the choices, and which choice is correct — answer IDs and scoring rules are generated for you. Supports choice, multi-answer, true-false, essay, numeric, matching, rich-fill-blank (fill in the blank), ordering, and categorization; use rawEntry for formula, hot-spot and file-upload. FILL IN THE BLANK: mark each blank by putting backticks around the correct answer in the body, e.g. \"The capital of France is `Paris`.\" — one blank per backticked run. STIMULUS (shared reading passage with several questions hanging off it): Canvas does not allow creating a stimulus through the API — it must be built once in the Canvas UI. Once it exists, run list-new-quiz-items to get its item ID, then create each question with stimulusQuizEntryId set to that ID to attach them to it.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The quiz's assignment ID"),
@@ -293,7 +293,15 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
         left: z.string().describe("The prompt shown on the left"),
         right: z.string().describe("The answer it should be matched to")
       })).optional().describe("Correct pairings, for matching"),
-      distractors: z.array(z.string()).optional().describe("Extra unmatched answer options, for matching"),
+      distractors: z.array(z.string()).optional().describe("Extra options that belong to no answer — unmatched right-hand options for matching, uncategorized items for categorization"),
+      blankMatching: z.enum(['contains', 'exact', 'close-enough', 'regex']).optional().describe("How fill-in-the-blank answers are matched (default: contains, which is what the Canvas UI uses)"),
+      orderItems: z.array(z.string()).optional().describe("For ordering: the items in their CORRECT order — Canvas shuffles them for students"),
+      topLabel: z.string().optional().describe("For ordering: label shown above the list, e.g. \"Earliest\""),
+      bottomLabel: z.string().optional().describe("For ordering: label shown below the list, e.g. \"Latest\""),
+      categories: z.array(z.object({
+        name: z.string(),
+        items: z.array(z.string())
+      })).optional().describe("For categorization: each category and the items belonging in it"),
       feedback: z.object({
         neutral: z.string().optional(),
         correct: z.string().optional(),
@@ -326,6 +334,11 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
             partialCredit: args.partialCredit,
             matchPairs: args.matchPairs,
             distractors: args.distractors,
+            blankMatching: args.blankMatching,
+            orderItems: args.orderItems,
+            topLabel: args.topLabel,
+            bottomLabel: args.bottomLabel,
+            categories: args.categories,
             feedback: args.feedback,
           });
         }

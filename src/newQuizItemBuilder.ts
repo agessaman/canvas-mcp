@@ -11,7 +11,21 @@ export type InteractionType =
   | 'multi-answer'
   | 'essay'
   | 'numeric'
-  | 'matching';
+  | 'matching'
+  | 'rich-fill-blank'
+  | 'ordering'
+  | 'categorization';
+
+// Canvas's per-blank matching methods. The UI writes TextContainsAnswer by
+// default; the others come from the documented set.
+const BLANK_ALGORITHMS = {
+  contains: 'TextContainsAnswer',
+  exact: 'TextEquivalence',
+  'close-enough': 'TextCloseEnough',
+  regex: 'TextRegex',
+} as const;
+
+export type BlankMatching = keyof typeof BLANK_ALGORITHMS;
 
 export interface BuildItemInput {
   interactionType: InteractionType;
@@ -28,6 +42,11 @@ export interface BuildItemInput {
   partialCredit?: boolean;
   matchPairs?: { left: string; right: string }[];
   distractors?: string[];
+  blankMatching?: BlankMatching;
+  orderItems?: string[];
+  topLabel?: string;
+  bottomLabel?: string;
+  categories?: { name: string; items: string[] }[];
   feedback?: { neutral?: string; correct?: string; incorrect?: string };
 }
 
@@ -211,6 +230,136 @@ export function buildItemEntry(input: BuildItemInput): Record<string, any> {
           },
         },
         scoring_algorithm: input.partialCredit ? 'PartialDeep' : 'DeepEquals',
+      };
+    }
+
+    case 'rich-fill-blank': {
+      // Shape copied from UI-authored item 9094. Blanks are marked in the body
+      // with backticks around the correct answer — which is exactly how Canvas
+      // stores it internally in scoring_data.working_item_body, so the teacher's
+      // input and Canvas's own working copy are the same string.
+      //
+      //   "The capital of France is `Paris`."
+      //
+      // item_body then replaces each backticked run with an empty marker span
+      // whose id is "blank_<uuid>", while interaction_data.blanks carries the
+      // bare "<uuid>". The two must line up or the blank renders unanswerable.
+      const wrapped = asHtml(input.body);
+      const answers = [...wrapped.matchAll(/`([^`]+)`/g)].map(match => match[1]);
+      if (answers.length === 0) {
+        throw new Error(
+          'interactionType "rich-fill-blank" needs at least one blank: put backticks around ' +
+          'each answer in the body, e.g. "The capital of France is `Paris`."'
+        );
+      }
+
+      const algorithm = BLANK_ALGORITHMS[input.blankMatching ?? 'contains'];
+      const blanks = answers.map(answer => ({ id: randomUUID(), answer }));
+
+      let index = 0;
+      const itemBody = wrapped.replace(
+        /`([^`]+)`/g,
+        () => `<span id="blank_${blanks[index++].id}"></span>`
+      );
+
+      return {
+        ...base,
+        item_body: itemBody,
+        properties: { shuffle_rules: { blanks: {} } },
+        interaction_data: {
+          blanks: blanks.map(blank => ({ id: blank.id, answer_type: 'openEntry' })),
+        },
+        scoring_data: {
+          value: blanks.map(blank => ({
+            id: blank.id,
+            scoring_data: { value: blank.answer, blank_text: blank.answer },
+            scoring_algorithm: algorithm,
+          })),
+          // Canvas keeps the backticked original so the editor can reconstruct
+          // the sentence with its blanks; without it the item opens empty.
+          working_item_body: wrapped,
+        },
+        scoring_algorithm: 'MultipleMethods',
+      };
+    }
+
+    case 'ordering': {
+      // Shape copied from UI-authored item 9093. Two details differ from every
+      // other type: interaction_data.choices is a MAP keyed by id rather than an
+      // array, and interaction_data carries its own empty item_body.
+      const items = input.orderItems;
+      if (!items || items.length < 2) {
+        throw new Error('interactionType "ordering" requires at least 2 orderItems, in the correct order');
+      }
+
+      const built = items.map(text => ({ id: randomUUID(), item_body: asHtml(text) }));
+      const choices: Record<string, { id: string; item_body: string }> = {};
+      for (const choice of built) choices[choice.id] = choice;
+
+      const includeLabels = !!(input.topLabel || input.bottomLabel);
+      return {
+        ...base,
+        properties: {
+          top_label: input.topLabel ?? '',
+          bottom_label: input.bottomLabel ?? '',
+          shuffle_rules: null,
+          include_labels: includeLabels,
+          display_answers_paragraph: false,
+        },
+        interaction_data: { choices, item_body: '' },
+        // Correct order, as ids.
+        scoring_data: { value: built.map(choice => choice.id) },
+        scoring_algorithm: 'DeepEquals',
+      };
+    }
+
+    case 'categorization': {
+      // Shape copied from UI-authored item 9096. The naming is a trap:
+      // interaction_data.distractors is NOT just the wrong answers — it is the
+      // whole pool of draggable items, correct ones included. Items that belong
+      // in no category are simply the pool entries no category claims.
+      const categories = input.categories;
+      if (!categories || categories.length < 2) {
+        throw new Error('interactionType "categorization" requires at least 2 categories of { name, items }');
+      }
+      for (const category of categories) {
+        if (!category.name?.trim()) throw new Error('every category needs a name');
+        if (!category.items?.length) throw new Error(`category "${category.name}" has no items`);
+      }
+
+      const built = categories.map(category => ({
+        id: randomUUID(),
+        name: category.name,
+        items: category.items.map(text => ({ id: randomUUID(), item_body: text })),
+      }));
+      const extras = (input.distractors ?? []).map(text => ({ id: randomUUID(), item_body: text }));
+
+      const categoryMap: Record<string, { id: string; item_body: string }> = {};
+      for (const category of built) {
+        categoryMap[category.id] = { id: category.id, item_body: category.name };
+      }
+      const pool: Record<string, { id: string; item_body: string }> = {};
+      for (const entry of [...built.flatMap(category => category.items), ...extras]) {
+        pool[entry.id] = entry;
+      }
+
+      return {
+        ...base,
+        properties: { shuffle_rules: { questions: { shuffled: false } } },
+        interaction_data: {
+          categories: categoryMap,
+          distractors: pool,
+          category_order: built.map(category => category.id),
+        },
+        scoring_data: {
+          value: built.map(category => ({
+            id: category.id,
+            scoring_data: { value: category.items.map(item => item.id) },
+            scoring_algorithm: 'AllOrNothing',
+          })),
+          score_method: 'all_or_nothing',
+        },
+        scoring_algorithm: 'Categorization',
       };
     }
 

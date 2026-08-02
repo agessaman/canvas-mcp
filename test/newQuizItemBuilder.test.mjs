@@ -162,3 +162,154 @@ test('a mismatched answer key fails with a teacher-readable message', () => {
     /non-empty left and right/
   );
 });
+
+// Asserted against UI-authored items 9094 (rich-fill-blank), 9093 (ordering)
+// and 9096 (categorization), read back with get-new-quiz-item.
+
+test('rich-fill-blank: backticked answers become marker spans and per-blank scoring', () => {
+  const entry = buildItemEntry({
+    interactionType: 'rich-fill-blank',
+    body: 'The capital of France is `Paris`, and of Japan is `Tokyo`.',
+  });
+
+  assert.equal(entry.scoring_algorithm, 'MultipleMethods');
+  assert.deepEqual(entry.properties, { shuffle_rules: { blanks: {} } });
+
+  // Two blanks, each an openEntry with a UUID.
+  const blanks = entry.interaction_data.blanks;
+  assert.equal(blanks.length, 2);
+  for (const blank of blanks) {
+    assert.match(blank.id, UUID);
+    assert.equal(blank.answer_type, 'openEntry');
+  }
+
+  // The span id is "blank_<uuid>" while interaction_data carries the bare uuid.
+  // If these ever drift apart the blank renders unanswerable.
+  for (const blank of blanks) {
+    assert.ok(
+      entry.item_body.includes(`<span id="blank_${blank.id}"></span>`),
+      'every blank needs a marker span whose id matches interaction_data'
+    );
+  }
+  assert.ok(!entry.item_body.includes('`'), 'backticks must not survive into item_body');
+  assert.ok(entry.item_body.startsWith('<p>The capital of France is <span'));
+
+  // working_item_body keeps the backticked original, which is what the editor
+  // reconstructs the sentence from.
+  assert.equal(
+    entry.scoring_data.working_item_body,
+    '<p>The capital of France is `Paris`, and of Japan is `Tokyo`.</p>'
+  );
+
+  assert.deepEqual(entry.scoring_data.value, [
+    {
+      id: blanks[0].id,
+      scoring_data: { value: 'Paris', blank_text: 'Paris' },
+      scoring_algorithm: 'TextContainsAnswer',
+    },
+    {
+      id: blanks[1].id,
+      scoring_data: { value: 'Tokyo', blank_text: 'Tokyo' },
+      scoring_algorithm: 'TextContainsAnswer',
+    },
+  ]);
+});
+
+test('rich-fill-blank: matching method is selectable, and a body with no blank fails', () => {
+  const entry = buildItemEntry({
+    interactionType: 'rich-fill-blank', body: 'Two plus two is `4`.', blankMatching: 'exact',
+  });
+  assert.equal(entry.scoring_data.value[0].scoring_algorithm, 'TextEquivalence');
+
+  assert.throws(
+    () => buildItemEntry({ interactionType: 'rich-fill-blank', body: 'No blanks here.' }),
+    /backticks around/
+  );
+});
+
+test('ordering: choices are a map keyed by id, and value is the correct order', () => {
+  const entry = buildItemEntry({
+    interactionType: 'ordering', body: 'Order these.',
+    orderItems: ['first', 'second', 'third'],
+    topLabel: 'Earliest', bottomLabel: 'Latest',
+  });
+
+  assert.equal(entry.scoring_algorithm, 'DeepEquals');
+  // A map, not an array — this is the detail that differs from every other type.
+  assert.ok(!Array.isArray(entry.interaction_data.choices));
+  const ids = Object.keys(entry.interaction_data.choices);
+  assert.equal(ids.length, 3);
+  for (const id of ids) {
+    assert.equal(entry.interaction_data.choices[id].id, id, 'map key must match the choice id');
+  }
+  assert.equal(entry.interaction_data.item_body, '');
+  assert.deepEqual(entry.scoring_data.value, ids);
+  assert.equal(entry.interaction_data.choices[ids[0]].item_body, '<p>first</p>');
+
+  assert.equal(entry.properties.top_label, 'Earliest');
+  assert.equal(entry.properties.include_labels, true);
+  assert.equal(entry.properties.shuffle_rules, null);
+  assert.equal(
+    buildItemEntry({ interactionType: 'ordering', body: 'x', orderItems: ['a', 'b'] })
+      .properties.include_labels,
+    false
+  );
+  assert.throws(
+    () => buildItemEntry({ interactionType: 'ordering', body: 'x', orderItems: ['only'] }),
+    /at least 2 orderItems/
+  );
+});
+
+test('categorization: distractors hold the whole draggable pool, not just wrong answers', () => {
+  const entry = buildItemEntry({
+    interactionType: 'categorization', body: 'Sort these.',
+    categories: [
+      { name: 'Mammals', items: ['Badger', 'Beaver'] },
+      { name: 'Objects', items: ['Book'] },
+    ],
+    distractors: ['Atom'],
+  });
+
+  assert.equal(entry.scoring_algorithm, 'Categorization');
+  assert.equal(entry.scoring_data.score_method, 'all_or_nothing');
+
+  // The pool is every item plus the extras — 3 categorized + 1 uncategorized.
+  const pool = entry.interaction_data.distractors;
+  assert.equal(Object.keys(pool).length, 4);
+  const bodies = Object.values(pool).map(entry => entry.item_body).sort();
+  assert.deepEqual(bodies, ['Atom', 'Badger', 'Beaver', 'Book']);
+
+  const categoryIds = entry.interaction_data.category_order;
+  assert.equal(categoryIds.length, 2);
+  assert.equal(entry.interaction_data.categories[categoryIds[0]].item_body, 'Mammals');
+
+  // Each category scores the ids of its own items, and only those.
+  const [mammals, objects] = entry.scoring_data.value;
+  assert.equal(mammals.id, categoryIds[0]);
+  assert.equal(mammals.scoring_algorithm, 'AllOrNothing');
+  assert.deepEqual(
+    mammals.scoring_data.value.map(id => pool[id].item_body).sort(),
+    ['Badger', 'Beaver']
+  );
+  assert.deepEqual(objects.scoring_data.value.map(id => pool[id].item_body), ['Book']);
+
+  // The uncategorized extra belongs to no category.
+  const claimed = entry.scoring_data.value.flatMap(c => c.scoring_data.value);
+  const unclaimed = Object.keys(pool).filter(id => !claimed.includes(id));
+  assert.deepEqual(unclaimed.map(id => pool[id].item_body), ['Atom']);
+
+  assert.throws(
+    () => buildItemEntry({
+      interactionType: 'categorization', body: 'x',
+      categories: [{ name: 'Only', items: ['a'] }],
+    }),
+    /at least 2 categories/
+  );
+  assert.throws(
+    () => buildItemEntry({
+      interactionType: 'categorization', body: 'x',
+      categories: [{ name: 'A', items: ['a'] }, { name: 'B', items: [] }],
+    }),
+    /has no items/
+  );
+});
