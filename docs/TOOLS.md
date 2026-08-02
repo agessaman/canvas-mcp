@@ -619,7 +619,7 @@ Adds a question. Answer IDs and scoring rules are generated for you.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
-  - `interactionType`: `choice` | `multi-answer` | `true-false` | `essay` | `numeric` (unless using `rawEntry`)
+  - `interactionType`: `choice` | `multi-answer` | `true-false` | `essay` | `numeric` | `matching` (unless using `rawEntry`)
   - `body`: string (unless using `rawEntry`)
 - Optional parameters:
   - `title`: string, `pointsPossible`: number (default: 1), `position`: number
@@ -630,8 +630,12 @@ Adds a question. Answer IDs and scoring rules are generated for you.
   - `correctBoolean`: boolean — for `true-false`
   - `numericAnswer`, `numericMargin`: number; `numericMarginType`: `absolute` | `percent`
   - `gradingNotes`: string — for `essay`
+  - `matchPairs`: `{ left, right }[]` — correct pairings, for `matching`
+  - `distractors`: string[] — extra unmatched answer options, for `matching`
   - `feedback`: `{ neutral?, correct?, incorrect? }`
-  - `rawEntry`: object — full `entry` payload for matching, categorization, ordering, formula, hot-spot, rich-fill-blank
+  - `rawEntry`: object — full `entry` payload for categorization, ordering, formula, hot-spot, rich-fill-blank
+
+> **Note on `matching`:** the published appendix disagrees with what a live Canvas instance actually accepts. Two corrections are baked into the builder: `scoring_algorithm` must be `DeepEquals` or `PartialDeep` (a type-specific name like `Matching` is rejected outright), and `scoring_data.value` must be an **array of `"questionId:answerId"` strings** — the docs show a `{ questionId: answerText }` map, and sending objects fails with `property '#/value/0' of type object did not match ... type: string`. If you hand-roll a matching item via `rawEntry`, use the same shapes.
 
 ### update-new-quiz-item
 Updates a question's points, position, or full content.

@@ -8,7 +8,7 @@ import { buildItemEntry, InteractionType } from "../newQuizItemBuilder.js";
 // id used throughout this file is an assignment_id — and that same id is what
 // grade-submission takes when hand-grading essay responses.
 
-const INTERACTION_TYPES = ['choice', 'true-false', 'multi-answer', 'essay', 'numeric'] as const;
+const INTERACTION_TYPES = ['choice', 'true-false', 'multi-answer', 'essay', 'numeric', 'matching'] as const;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -247,7 +247,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
   // Tool: create-new-quiz-item
   server.tool(
     "create-new-quiz-item",
-    "Add a question to a New Quiz. Give the question text, the choices, and which choice is correct — answer IDs and scoring rules are generated for you. Supports choice, multi-answer, true-false, essay, and numeric; use rawEntry for other types.",
+    "Add a question to a New Quiz. Give the question text, the choices, and which choice is correct — answer IDs and scoring rules are generated for you. Supports choice, multi-answer, true-false, essay, numeric, and matching; use rawEntry for other types.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The quiz's assignment ID"),
@@ -265,6 +265,11 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
       numericMargin: z.number().optional().describe("Accepted margin of error for numeric"),
       numericMarginType: z.enum(['absolute', 'percent']).optional().describe("How numericMargin is interpreted"),
       gradingNotes: z.string().optional().describe("Grading guidance shown to the grader (essay)"),
+      matchPairs: z.array(z.object({
+        left: z.string().describe("The prompt shown on the left"),
+        right: z.string().describe("The answer it should be matched to")
+      })).optional().describe("Correct pairings, for matching"),
+      distractors: z.array(z.string()).optional().describe("Extra unmatched answer options, for matching"),
       feedback: z.object({
         neutral: z.string().optional(),
         correct: z.string().optional(),
@@ -295,6 +300,8 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
             numericMarginType: args.numericMarginType,
             gradingNotes: args.gradingNotes,
             partialCredit: args.partialCredit,
+            matchPairs: args.matchPairs,
+            distractors: args.distractors,
             feedback: args.feedback,
           });
         }

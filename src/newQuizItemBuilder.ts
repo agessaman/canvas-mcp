@@ -10,7 +10,8 @@ export type InteractionType =
   | 'true-false'
   | 'multi-answer'
   | 'essay'
-  | 'numeric';
+  | 'numeric'
+  | 'matching';
 
 export interface BuildItemInput {
   interactionType: InteractionType;
@@ -25,6 +26,8 @@ export interface BuildItemInput {
   numericMargin?: number;
   gradingNotes?: string;
   partialCredit?: boolean;
+  matchPairs?: { left: string; right: string }[];
+  distractors?: string[];
   feedback?: { neutral?: string; correct?: string; incorrect?: string };
 }
 
@@ -124,6 +127,44 @@ export function buildItemEntry(input: BuildItemInput): Record<string, any> {
         // Essays are hand-graded; this string is the grading note shown to the grader.
         scoring_data: { value: input.gradingNotes ?? '' },
         scoring_algorithm: 'None',
+      };
+    }
+
+    case 'matching': {
+      const pairs = input.matchPairs;
+      if (!pairs || pairs.length < 2) {
+        throw new Error('interactionType "matching" requires at least 2 matchPairs of { left, right }');
+      }
+
+      // Empirically confirmed against a live Canvas instance, and it differs
+      // from the published appendix in two ways worth not re-discovering:
+      //   1. scoring_algorithm is DeepEquals / PartialDeep — NOT a type-specific
+      //      name like "Matching", which the API rejects outright.
+      //   2. scoring_data.value is an ARRAY OF STRINGS shaped "questionId:answerId".
+      //      The docs show a { questionId: answerText } map; sending objects
+      //      fails with "property '#/value/0' of type object did not match ...
+      //      type: string".
+      const questions = pairs.map(pair => ({
+        id: randomUUID(),
+        item_body: asHtml(pair.left),
+      }));
+      const answers = pairs.map(pair => ({
+        id: randomUUID(),
+        item_body: asHtml(pair.right),
+      }));
+      // Distractors are extra right-hand options that match nothing.
+      const extras = (input.distractors ?? []).map(text => ({
+        id: randomUUID(),
+        item_body: asHtml(text),
+      }));
+
+      return {
+        ...base,
+        interaction_data: { questions, answers: [...answers, ...extras] },
+        scoring_data: {
+          value: questions.map((question, i) => `${question.id}:${answers[i].id}`),
+        },
+        scoring_algorithm: input.partialCredit ? 'PartialDeep' : 'DeepEquals',
       };
     }
 
