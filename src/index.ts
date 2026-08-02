@@ -23,6 +23,7 @@ import { registerTodoTools } from './tools/todo.js';
 import { registerNewQuizTools } from './tools/newQuizzes.js';
 import { registerGradeTools } from './tools/grades.js';
 import { registerConversationTools } from './tools/conversations.js';
+import { registerFileTools } from './tools/files.js';
 // Load environment variables
 dotenv.config();
 
@@ -83,6 +84,7 @@ registerTodoTools(server, canvas);
 registerNewQuizTools(server, canvas);
 registerGradeTools(server, canvas);
 registerConversationTools(server, canvas);
+registerFileTools(server, canvas);
 // Start the server
 async function startServer() {
   try {

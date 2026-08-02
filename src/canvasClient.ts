@@ -14,7 +14,10 @@ export class CanvasClient {
   private axios: AxiosInstance;
   private cache = new SimpleCache();
 
+  private baseUrl: string;
+
   constructor(baseUrl: string, apiToken: string) {
+    this.baseUrl = baseUrl;
     this.axios = axios.create({
       baseURL: baseUrl,
       headers: { Authorization: `Bearer ${apiToken}` }
@@ -337,6 +340,108 @@ export class CanvasClient {
     const params = { include: ['attachments', 'submission_comments'] };
     const data = await this.get(`/api/v1/courses/${courseId}/assignments/${assignmentId}/submissions/${userId}`, params);
     return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions([data])[0] : data;
+  }
+
+  /**
+   * Upload a file into a course. Canvas does not accept file bytes on a normal
+   * API call — this is a three-step handshake, and two steps of it are easy to
+   * get subtly wrong:
+   *
+   *   1. POST the metadata to Canvas, which answers with an upload_url and a
+   *      bag of upload_params.
+   *   2. POST the bytes as multipart/form-data to that upload_url. The URL
+   *      usually points at S3 or inst-fs, NOT at Canvas, so the Canvas bearer
+   *      token must not be attached — hence a bare axios client here. The
+   *      upload_params must also be written before the file field; S3 ignores
+   *      form fields that arrive after the file content.
+   *   3. The upload answers either 201 with the file object, or a redirect that
+   *      has to be followed to finalize. Redirect-following is disabled so the
+   *      Location can be inspected before anything is sent to it.
+   */
+  async uploadCourseFile(
+    courseId: string,
+    file: {
+      name: string;
+      size: number;
+      contentType: string;
+      parentFolderPath?: string;
+      parentFolderId?: string;
+      onDuplicate?: 'overwrite' | 'rename';
+    },
+    contents: Buffer | Uint8Array
+  ): Promise<any> {
+    const metadata: Record<string, any> = {
+      name: file.name,
+      size: file.size,
+      content_type: file.contentType,
+      on_duplicate: file.onDuplicate ?? 'rename',
+    };
+    // parent_folder_id and parent_folder_path are mutually exclusive; sending
+    // both makes Canvas reject the request outright.
+    if (file.parentFolderId) metadata.parent_folder_id = file.parentFolderId;
+    else metadata.parent_folder_path = file.parentFolderPath ?? '/';
+
+    const init: any = await this.post(`/api/v1/courses/${courseId}/files`, metadata);
+    if (!init?.upload_url) {
+      throw new Error(
+        `Canvas did not return an upload_url for "${file.name}"; got ${JSON.stringify(init).slice(0, 300)}`
+      );
+    }
+
+    const form = new FormData();
+    for (const [key, value] of Object.entries(init.upload_params ?? {})) {
+      form.append(key, String(value));
+    }
+    form.append('file', new Blob([contents], { type: file.contentType }), file.name);
+
+    let uploaded;
+    try {
+      uploaded = await axios.post(init.upload_url, form, {
+        maxRedirects: 0,
+        validateStatus: status => status < 400,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      });
+    } catch (error: any) {
+      this.handleError(error);
+    }
+
+    // 201 means the store already created the file and handed it back.
+    if (uploaded.status === 201 && uploaded.data?.id) {
+      this.invalidateForWrite(`/api/v1/courses/${courseId}/files`);
+      return uploaded.data;
+    }
+
+    const location = uploaded.headers?.location;
+    if (!location) {
+      this.invalidateForWrite(`/api/v1/courses/${courseId}/files`);
+      return uploaded.data;
+    }
+
+    // The confirmation step goes back to Canvas and needs the bearer token, but
+    // only send it if the redirect really is pointing at this Canvas instance —
+    // never hand the token to whatever host a Location header names.
+    const confirmed = this.isSameHostAsCanvas(location)
+      ? await this.axios.get(location)
+      : await axios.get(location);
+    this.invalidateForWrite(`/api/v1/courses/${courseId}/files`);
+    return confirmed.data;
+  }
+
+  private isSameHostAsCanvas(url: string): boolean {
+    try {
+      return new URL(url).host === new URL(this.baseUrl).host;
+    } catch {
+      return false;
+    }
+  }
+
+  async listCourseFiles(courseId: string, params: any = {}): Promise<any[]> {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/files`, params);
+  }
+
+  async listCourseFolders(courseId: string): Promise<any[]> {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/folders`);
   }
 
   async getFileInfo(fileId: string): Promise<any> {
