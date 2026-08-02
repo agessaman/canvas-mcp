@@ -454,6 +454,10 @@ export class CanvasClient {
     return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/folders`);
   }
 
+  async updateFile(fileId: string, payload: any): Promise<any> {
+    return this.put(`/api/v1/files/${fileId}`, payload);
+  }
+
   async getFileInfo(fileId: string): Promise<any> {
     return this.get(`/api/v1/files/${fileId}`);
   }

@@ -40,6 +40,33 @@ function guessContentType(fileName: string): string {
   return CONTENT_TYPES[path.extname(fileName).toLowerCase()] ?? 'application/octet-stream';
 }
 
+// Canvas has no "published" field on a file. Availability is the combination of
+// two flags, which is why the Files UI has three states rather than a checkbox:
+//
+//   locked=true              -> Unpublished. Students cannot see it at all.
+//   locked=false hidden=true -> Published but not listed; reachable only by a
+//                               direct link, e.g. from a page or assignment.
+//   both false               -> Published and visible in Files.
+//
+// unlock_at / lock_at schedule the transition, and Canvas reports a file with
+// dates set as 'scheduled' regardless of the flags.
+type FileState = 'published' | 'unpublished' | 'link-only';
+
+function describeState(file: any): string {
+  if (file?.locked) return 'unpublished';
+  if (file?.unlock_at || file?.lock_at) return 'scheduled';
+  if (file?.hidden) return 'link-only';
+  return 'published';
+}
+
+function flagsForState(state: FileState): { locked: boolean; hidden: boolean } {
+  switch (state) {
+    case 'unpublished': return { locked: true, hidden: false };
+    case 'link-only': return { locked: false, hidden: true };
+    case 'published': return { locked: false, hidden: false };
+  }
+}
+
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -108,6 +135,53 @@ export function registerFileTools(server: McpServer, canvas: CanvasClient) {
     }
   );
 
+  // Tool: set-file-availability
+  server.tool(
+    "set-file-availability",
+    "Publish or unpublish a file in a course's Files area, or make it available by direct link only. Files uploaded through the API are often unpublished, meaning students cannot see them — use this to publish them. 'published' = visible in Files; 'unpublished' = hidden from students entirely; 'link-only' = not listed, but reachable from a link on a page or assignment. Find file IDs with list-course-files.",
+    {
+      fileId: z.string().describe("The file's ID (from list-course-files)"),
+      state: z.enum(['published', 'unpublished', 'link-only']).describe("Desired availability"),
+      availableFrom: z.string().optional().describe("Publish automatically at this time (ISO 8601). Only meaningful with state 'published'."),
+      availableUntil: z.string().optional().describe("Stop being available at this time (ISO 8601). Only meaningful with state 'published'.")
+    },
+    { idempotentHint: true },
+    async (args: any) => {
+      try {
+        const payload: any = flagsForState(args.state);
+        if (args.availableFrom !== undefined) payload.unlock_at = args.availableFrom;
+        if (args.availableUntil !== undefined) payload.lock_at = args.availableUntil;
+
+        const updated: any = await canvas.updateFile(args.fileId, payload);
+
+        // Canvas answers 200 on writes it has quietly not applied — that has
+        // bitten this server three times — so confirm from what came back
+        // rather than reporting the state that was asked for.
+        const actual = describeState(updated);
+        const name = updated?.display_name ?? updated?.filename ?? args.fileId;
+        const scheduled = args.availableFrom || args.availableUntil;
+        if (actual !== args.state && !(scheduled && actual === 'scheduled')) {
+          return {
+            content: [{
+              type: "text",
+              text: `WARNING: asked Canvas to set "${name}" to ${args.state}, but it reports "${actual}" `
+                + `(locked=${updated?.locked}, hidden=${updated?.hidden}). The change may not have applied — `
+                + `check the file in Canvas.`
+            }]
+          };
+        }
+        const window = scheduled
+          ? ` Available ${args.availableFrom ?? 'now'}${args.availableUntil ? ` until ${args.availableUntil}` : ''}.`
+          : '';
+        return {
+          content: [{ type: "text", text: `"${name}" is now ${actual}.${window}` }]
+        };
+      } catch (error: any) {
+        throw new Error(`Failed to set file availability: ${error.message ?? 'Unknown error'}`);
+      }
+    }
+  );
+
   // Tool: list-course-files
   server.tool(
     "list-course-files",
@@ -138,7 +212,8 @@ export function registerFileTools(server: McpServer, canvas: CanvasClient) {
           size: humanSize(file.size ?? 0),
           content_type: file['content-type'] ?? file.content_type,
           folder_id: file.folder_id,
-          locked: file.locked ?? false,
+          // Two flags decoded into the state the Canvas UI actually shows.
+          state: describeState(file),
           updated_at: file.updated_at,
         }));
         return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };

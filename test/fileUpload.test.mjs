@@ -17,7 +17,7 @@ const serverEntry = path.resolve(
   '../dist/index.js'
 );
 
-async function withCanvasAndStorage(run, { finalize = 'redirect' } = {}) {
+async function withCanvasAndStorage(run, { finalize = 'redirect', fileState } = {}) {
   const canvasRequests = [];
   const storageRequests = [];
   let canvasOrigin;
@@ -50,6 +50,17 @@ async function withCanvasAndStorage(run, { finalize = 'redirect' } = {}) {
       const body = Buffer.concat(chunks).toString();
       canvasRequests.push({ method: req.method, url: req.url, headers: req.headers, body });
 
+      if (req.method === 'PUT' && /\/files\/\d+$/.test(req.url)) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          id: 1335119,
+          display_name: 'upload-check.md',
+          locked: false,
+          hidden: false,
+          ...(fileState ?? {}),
+        }));
+        return;
+      }
       if (req.url.includes('/files/77/confirm')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id: 77, display_name: 'notes.pdf', folder_id: 5, url: 'https://files/77' }));
@@ -261,4 +272,46 @@ test('listing one folder queries the folder endpoint, not the course', async () 
       assert.ok(!/folder_id=/.test(request.url), 'folder_id is not a parameter Canvas honors here');
     }
   });
+});
+
+// Canvas expresses file availability as two flags, not a published boolean.
+// Getting the combination wrong silently leaves a file invisible to students.
+test('availability states map onto the right locked/hidden flags', async () => {
+  const cases = [
+    ['published', { locked: false, hidden: false }],
+    ['unpublished', { locked: true, hidden: false }],
+    ['link-only', { locked: false, hidden: true }],
+  ];
+  for (const [state, expected] of cases) {
+    await withCanvasAndStorage(async harness => {
+      await harness.callTool('set-file-availability', { fileId: '1335119', state });
+      const put = harness.canvasRequests.find(r => r.method === 'PUT');
+      assert.ok(put, `${state} should PUT to the file`);
+      assert.equal(put.url, '/api/v1/files/1335119');
+      assert.deepEqual(JSON.parse(put.body), expected, `wrong flags for ${state}`);
+    }, { fileState: expected });
+  }
+});
+
+test('a state Canvas did not actually apply is reported, not claimed as success', async () => {
+  await withCanvasAndStorage(async harness => {
+    const result = await harness.callTool('set-file-availability', {
+      fileId: '1335119', state: 'published',
+    });
+    assert.match(harness.textOf(result), /WARNING/);
+    assert.match(harness.textOf(result), /unpublished/);
+    // Canvas ignored the write and kept the file locked.
+  }, { fileState: { locked: true, hidden: false } });
+});
+
+test('scheduled availability is accepted rather than warned about', async () => {
+  await withCanvasAndStorage(async harness => {
+    const result = await harness.callTool('set-file-availability', {
+      fileId: '1335119', state: 'published', availableFrom: '2026-09-01T08:00:00Z',
+    });
+    const put = harness.canvasRequests.find(r => r.method === 'PUT');
+    assert.equal(JSON.parse(put.body).unlock_at, '2026-09-01T08:00:00Z');
+    assert.doesNotMatch(harness.textOf(result), /WARNING/);
+    assert.match(harness.textOf(result), /scheduled/);
+  }, { fileState: { locked: false, hidden: false, unlock_at: '2026-09-01T08:00:00Z' } });
 });
