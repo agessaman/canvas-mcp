@@ -143,14 +143,21 @@ export class CanvasClient {
     const results: T[] = [];
     const per_page = params.per_page || 100;
     let page = 1;
-    while (true) {
-      const response = await this.axios.get(url, { params: { ...params, page, per_page } });
-      const data: T[] = response.data;
-      if (!Array.isArray(data) || data.length === 0) break;
-      results.push(...data);
-      const linkHeader = response.headers['link'] as string | undefined;
-      if (!linkHeader || !this.parseLinkHeader(linkHeader).next) break;
-      page++;
+    // Errors must route through handleError like every other verb, or a failed
+    // paginated call surfaces as a bare "Request failed with status code 400"
+    // with no indication of which request failed or why.
+    try {
+      while (true) {
+        const response = await this.axios.get(url, { params: { ...params, page, per_page } });
+        const data: T[] = response.data;
+        if (!Array.isArray(data) || data.length === 0) break;
+        results.push(...data);
+        const linkHeader = response.headers['link'] as string | undefined;
+        if (!linkHeader || !this.parseLinkHeader(linkHeader).next) break;
+        page++;
+      }
+    } catch (error: any) {
+      this.handleError(error);
     }
     if (cacheable) this.cache.set(key, results);
     return results;

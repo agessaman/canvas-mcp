@@ -25,13 +25,20 @@ interface RosterEntry { name: string; state: string; }
 async function buildRoster(
   canvas: CanvasClient,
   courseId: string,
-  anonymous: boolean
+  anonymous: boolean,
+  includeInactive: boolean
 ): Promise<Map<string, RosterEntry>> {
+  // Only widen the state filter when the caller actually wants the extra
+  // students. Anyone missing from the map is reported as state "unknown" and
+  // filtered out by default anyway, so the narrow query loses nothing — and it
+  // keeps the common path on a filter combination that is known to work.
   const enrollments = await canvas.listCourseEnrollments(
     courseId,
     {
       type: ['StudentEnrollment'],
-      state: ['active', 'invited', 'inactive', 'completed'],
+      state: includeInactive
+        ? ['active', 'invited', 'inactive', 'completed']
+        : ['active', 'invited'],
       per_page: 100
     },
     { anonymous }
@@ -138,7 +145,7 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
           per_page: 100
         };
         const submissions = await canvas.listCourseStudentSubmissions(courseId, params, { anonymous: false });
-        const roster = await buildRoster(canvas, courseId, anonymous);
+        const roster = await buildRoster(canvas, courseId, anonymous, includeInactive);
 
         // Join assignment titles in separately — including them on every
         // submission would balloon the payload for a large course.
@@ -219,7 +226,7 @@ export function registerGradeTools(server: McpServer, canvas: CanvasClient) {
         const summaries = await canvas.getStudentSummaries(courseId, { per_page: 100 });
 
         // student_summaries is keyed by user id only; join the roster for names.
-        const roster = await buildRoster(canvas, courseId, anonymous);
+        const roster = await buildRoster(canvas, courseId, anonymous, includeInactive);
 
         const rows = summaries.map((s: any) => ({
           user_id: s.id,
