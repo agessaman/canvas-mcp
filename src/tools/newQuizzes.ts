@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { jsonObjectParam } from "../jsonObjectParam.js";
+import {
+  NEW_QUIZ_SETTING_PARAMS, buildQuizSettings, validateSettings, touchesSettings, formatQuizSettings,
+} from "../newQuizSettings.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 import { buildItemEntry, InteractionType } from "../newQuizItemBuilder.js";
@@ -96,29 +99,18 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
       dueAt: z.string().optional().describe("Due date (ISO 8601)"),
       unlockAt: z.string().optional().describe("Unlock date (ISO 8601)"),
       lockAt: z.string().optional().describe("Lock date (ISO 8601)"),
-      shuffleQuestions: z.boolean().optional().describe("Shuffle question order"),
-      shuffleAnswers: z.boolean().optional().describe("Shuffle answer order"),
-      timeLimitMinutes: z.number().optional().describe("Session time limit in minutes"),
-      maxAttempts: z.number().optional().describe("Maximum attempts allowed (omit for a single attempt)"),
-      quizSettings: jsonObjectParam("Escape hatch: raw quiz_settings object merged over the above").optional()
+      ...NEW_QUIZ_SETTING_PARAMS,
+      quizSettings: jsonObjectParam(
+        "Escape hatch for settings without a parameter of their own — IP filtering especially. Merged over "
+        + "everything above, so it wins on conflict."
+      ).optional()
     },
     { destructiveHint: false },
     async (args: any) => {
       try {
-        const settings: any = {};
-        if (args.shuffleQuestions !== undefined) settings.shuffle_questions = args.shuffleQuestions;
-        if (args.shuffleAnswers !== undefined) settings.shuffle_answers = args.shuffleAnswers;
-        if (args.timeLimitMinutes !== undefined) {
-          settings.has_time_limit = true;
-          settings.session_time_limit_in_seconds = args.timeLimitMinutes * 60;
-        }
-        if (args.maxAttempts !== undefined) {
-          settings.multiple_attempts = {
-            multiple_attempts_enabled: true,
-            attempt_limit: true,
-            max_attempts: args.maxAttempts,
-          };
-        }
+        validateSettings(args);
+        // No `current` on create: there is nothing to merge the nested groups into.
+        const settings: any = buildQuizSettings(args);
         Object.assign(settings, args.quizSettings ?? {});
 
         const quiz: any = { title: args.title };
@@ -158,11 +150,21 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
       dueAt: z.string().optional().describe("Due date (ISO 8601)"),
       unlockAt: z.string().optional().describe("Unlock date (ISO 8601)"),
       lockAt: z.string().optional().describe("Lock date (ISO 8601)"),
-      quizSettings: jsonObjectParam("Raw quiz_settings object to apply").optional()
+      published: z.boolean().optional().describe(
+        "Publish or unpublish the quiz. A New Quiz is published through its assignment rather than the quiz "
+        + "API, which this handles for you."
+      ),
+      ...NEW_QUIZ_SETTING_PARAMS,
+      quizSettings: jsonObjectParam(
+        "Escape hatch for settings without a parameter of their own — IP filtering especially. Merged over "
+        + "everything above, so it wins on conflict."
+      ).optional()
     },
     { idempotentHint: true },
     async (args: any) => {
       try {
+        validateSettings(args);
+
         const quiz: any = {};
         if (args.title !== undefined) quiz.title = args.title;
         if (args.instructions !== undefined) quiz.instructions = args.instructions;
@@ -171,15 +173,70 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
         if (args.dueAt !== undefined) quiz.due_at = args.dueAt;
         if (args.unlockAt !== undefined) quiz.unlock_at = args.unlockAt;
         if (args.lockAt !== undefined) quiz.lock_at = args.lockAt;
-        if (args.quizSettings !== undefined) quiz.quiz_settings = args.quizSettings;
 
-        if (Object.keys(quiz).length === 0) {
+        // The nested settings groups (multiple_attempts, result_view_settings)
+        // are merged into what the quiz already has, so changing one field
+        // cannot drop the ones beside it. That is correct whether or not Canvas
+        // merges them itself, which is why it does not depend on knowing.
+        if (touchesSettings(args) || args.quizSettings !== undefined) {
+          let current: any = {};
+          if (touchesSettings(args)) {
+            try {
+              const existing: any = await canvas.getNewQuiz(args.courseId, args.assignmentId);
+              current = existing?.quiz_settings ?? {};
+            } catch (error: any) {
+              throw new Error(
+                `Could not read New Quiz ${args.assignmentId} before updating its settings, so nothing was `
+                + `changed. The attempt and result-view settings are nested groups that have to be merged into `
+                + `what is already there; writing without reading could drop settings this call never mentions. `
+                + `Canvas said: ${error?.message ?? 'unknown error'}`
+              );
+            }
+          }
+          const settings = buildQuizSettings(args, current);
+          Object.assign(settings, args.quizSettings ?? {});
+          if (Object.keys(settings).length > 0) quiz.quiz_settings = settings;
+        }
+
+        const publishing = args.published !== undefined;
+        if (Object.keys(quiz).length === 0 && !publishing) {
           return { content: [{ type: "text", text: "No fields provided; nothing was changed." }] };
         }
 
-        const updated = await canvas.updateNewQuiz(args.courseId, args.assignmentId, quiz) as any;
+        let updated: any = null;
+        if (Object.keys(quiz).length > 0) {
+          updated = await canvas.updateNewQuiz(args.courseId, args.assignmentId, quiz);
+        }
+
+        // Publishing is an ASSIGNMENT field. The New Quizzes API does not carry
+        // it, and a New Quiz's ID is its assignment ID, so this routes there
+        // rather than making the caller know that.
+        let publishNote = '';
+        if (publishing) {
+          await canvas.updateAssignment(args.courseId, args.assignmentId, {
+            assignment: { published: args.published },
+          });
+          publishNote = `\n\n${args.published ? 'Published' : 'Unpublished'} — done through the quiz's `
+            + `assignment, which is where Canvas keeps that flag.`;
+        }
+
+        // Re-read rather than trust the write's echo, and show the settings the
+        // way a teacher reads them.
+        let settingsNote = '';
+        try {
+          const after: any = await canvas.getNewQuiz(args.courseId, args.assignmentId);
+          settingsNote = `\n\n${formatQuizSettings(after?.quiz_settings)}`;
+        } catch {
+          settingsNote = '\n\n(The quiz could not be read back, so its stored settings are unconfirmed.)';
+        }
+
         return {
-          content: [{ type: "text", text: `Updated New Quiz "${updated.title}" (assignment ID ${updated.id}).` }]
+          content: [{
+            type: "text",
+            text: `Updated New Quiz "${updated?.title ?? args.assignmentId}" (assignment ID ${args.assignmentId}).`
+              + publishNote
+              + settingsNote
+          }]
         };
       } catch (error: any) {
         throw new Error(`Failed to update New Quiz: ${error.message ?? 'Unknown error'}`);
