@@ -257,11 +257,23 @@ export function registerLatePolicyTools(server: McpServer, canvas: CanvasClient)
             + `what Canvas stored is unconfirmed. Canvas said: ${error?.message ?? 'unknown error'}`;
         }
 
-        const retroactive = policy.missing_submission_deduction_enabled === true
-          || policy.late_submission_deduction_enabled === true
+        const turningOn = policy.missing_submission_deduction_enabled === true
+          || policy.late_submission_deduction_enabled === true;
+        // Turning a policy OFF does not undo what it already did. Verified
+        // live: a missing policy graded two submissions 2.5/10, and disabling
+        // it left both at 2.5. The grades are real grades once written, not a
+        // view over the policy, so "off" is not an undo and saying nothing here
+        // would let a teacher believe it was.
+        const turningOff = policy.missing_submission_deduction_enabled === false
+          || policy.late_submission_deduction_enabled === false;
+        const retroactive = turningOn
           ? `\n\nThis applies to the whole course, not just future work: Canvas recomputes affected grades, so `
             + `scores students have already seen may change. Check a few in the gradebook.`
-          : '';
+          : turningOff
+            ? `\n\nNote: turning a policy off stops it applying to anything further, but does NOT undo grades it `
+              + `has already written — those are real grades now and stay as they are. Any that should go back `
+              + `have to be changed in the gradebook.`
+            : '';
 
         return {
           content: [{

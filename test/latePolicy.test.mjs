@@ -208,6 +208,18 @@ test('turning a policy off does not warn about recomputed grades', async () => {
   });
 });
 
+// Turning a policy off is not an undo. Verified live: a missing policy graded
+// two submissions 2.5/10, and disabling it left both sitting at 2.5. Those are
+// real grades once written, so a teacher who reads "off" as "reverted" would be
+// wrong about every student it already touched.
+test('turning a policy off says it does not undo the grades it already wrote', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => storedPolicy());
+    const result = await canvas.callTool('set-late-policy', { courseId: '1', applyMissingPolicy: false });
+    assert.match(canvas.textOf(result), /does NOT undo grades it has already written/);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
