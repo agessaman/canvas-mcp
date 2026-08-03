@@ -347,6 +347,44 @@ export class CanvasClient {
   async updateAssignment(courseId: string, assignmentId: string, data: any) {
     return this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}`, data);
   }
+  // result_type=Quiz asks Canvas to serialize the copy as a quiz, which it needs
+  // for New Quizzes. Duplication can also be asynchronous: the copy comes back
+  // with workflow_state 'duplicating' and finishes later.
+  async duplicateAssignment(courseId: string, assignmentId: string, params: any = {}) {
+    return this.post(`/api/v1/courses/${courseId}/assignments/${assignmentId}/duplicate`, {}, params);
+  }
+
+  // --- Calendar events ---
+  async listCalendarEvents(params: any = {}) {
+    return this.fetchAllPages<any>('/api/v1/calendar_events', params);
+  }
+  async createCalendarEvent(data: any) {
+    const created = await this.post('/api/v1/calendar_events', data);
+    this.invalidateCalendarListings();
+    return created;
+  }
+  async updateCalendarEvent(eventId: string, data: any, params: any = {}) {
+    const updated = await this.put(`/api/v1/calendar_events/${eventId}`, data, params);
+    this.invalidateCalendarListings();
+    return updated;
+  }
+  async deleteCalendarEvent(eventId: string, params: any = {}) {
+    const deleted = await this.delete(`/api/v1/calendar_events/${eventId}`, params);
+    this.invalidateCalendarListings();
+    return deleted;
+  }
+
+  /**
+   * An event is written at /calendar_events/:id but listed at
+   * /calendar_events — and the parent of the write path is exactly the case
+   * invalidateForWrite refuses to touch, since climbing there would be too
+   * broad for most collections. Without this, editing or deleting an event
+   * leaves the listing showing it unchanged, which is indistinguishable from
+   * Canvas having ignored the write. Same failure the file tools hit.
+   */
+  private invalidateCalendarListings(): void {
+    this.cache.invalidateContaining('/calendar_events');
+  }
 
   // --- Assignment Groups ---
   async listAssignmentGroups(courseId: string) {

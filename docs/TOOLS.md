@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **101 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **106 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -82,6 +82,18 @@ Deletes (archives) an assignment from a course.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
+
+### duplicate-assignment
+Copies an assignment within a course — the starting point for next week's version of a recurring task.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string (a New Quiz's ID is its assignment ID)
+- Optional parameters:
+  - `newName`: string — rename the copy instead of leaving it as "<original> Copy"
+  - `dueAt`: string (ISO 8601) — otherwise it inherits the original's due date
+  - `publish`: boolean (default: false) — a duplicate is usually a draft
+- Works for New Quizzes: the tool reads the assignment first and adds `result_type=Quiz` when it is quiz-LTI backed, so the caller does not have to know which engine is involved
+- Canvas sometimes duplicates **asynchronously**, returning the copy with `workflow_state: "duplicating"`. When that happens the rename, due date and publish are skipped rather than applied — editing an assignment mid-duplication races Canvas's own write — and the tool says so.
 
 ## Assignment Groups
 
@@ -746,6 +758,54 @@ Marks a page as the course's front page.
 - Optional parameters:
   - `makeLandingPage`: boolean (default: false) — also set the course to open on it
 - An unpublished page cannot be a front page; Canvas declines quietly, so the tool raises it as an error
+
+## Calendar
+
+### list-calendar-events
+Lists a course's calendar events — meetings, exams, office hours; anything dated that is not an assignment.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `startDate`, `endDate`: string (ISO 8601 date) — default today through 60 days out
+  - `allEvents`: boolean (default: false) — ignore the date range entirely
+  - `includeAssignments`: boolean (default: false) — also include assignment due dates, which Canvas serves as a separate event type (a second request)
+
+### create-calendar-event
+Puts an event on a course calendar, optionally as a recurring series.
+- Required parameters:
+  - `courseId`: string
+  - `title`: string
+  - `startAt`: string (ISO 8601)
+- Optional parameters:
+  - `endAt`: string (ISO 8601)
+  - `description`: string — HTML
+  - `locationName`: string — a room or a meeting link
+  - `allDay`: boolean (default: false)
+  - `repeatCount`: integer 0–200 — how many *additional* copies; 9 gives 10 events
+  - `repeatFrequency`: `daily` | `weekly` | `monthly` — required with `repeatCount`
+  - `repeatInterval`: integer — gap in units of the frequency; 2 with `weekly` is fortnightly
+- **Calendar events have no draft state.** In a published course, students see the event as soon as it exists.
+- `repeatCount` and `repeatFrequency` are refused unless both are present: a count with no frequency has no rhythm, and a frequency with no count silently creates a single event
+- Canvas interprets a bare date in the *course's* time zone, so a stored start that differs from the one requested is reported rather than passed over
+
+### update-calendar-event
+Moves or edits an event.
+- Required parameters:
+  - `eventId`: string
+- Optional parameters:
+  - `title`, `startAt`, `endAt`, `description`, `locationName`
+  - `which`: `one` (default) | `all` | `following` — for a recurring series, whether this touches one occurrence, the whole series, or this one and every later one
+- Defaults to a single occurrence, so a series is never rewritten by accident
+- Diffs what Canvas stored against what was asked for and warns on a mismatch
+
+### delete-calendar-event
+Removes an event.
+- Required parameters:
+  - `eventId`: string
+- Optional parameters:
+  - `which`: `one` (default) | `all` | `following`
+  - `cancelReason`: string — shown to students who had it on their calendar
+- `which: 'all'` deletes an entire recurring series and cannot be undone from here
 
 ## Course Copy
 

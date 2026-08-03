@@ -229,4 +229,86 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
       }
     }
   );
+
+  // Tool: duplicate-assignment
+  //
+  // Canvas names the copy "<original> Copy" and leaves it unpublished, which is
+  // the right default — a duplicate is a draft of next week's version. The
+  // optional rename and due date save the follow-up call that always comes next,
+  // but only when Canvas finished the copy synchronously: New Quizzes duplicate
+  // asynchronously, and editing an assignment mid-duplication is a race.
+  server.tool(
+    "duplicate-assignment",
+    "Copy an assignment within a course — the starting point for next week's version of a recurring task. The copy is named \"<original> Copy\" and arrives unpublished. Works for New Quizzes too; the quiz engine is detected rather than asked for. Optionally rename the copy and give it a due date in the same call.",
+    {
+      courseId: z.string().describe("The ID of the course"),
+      assignmentId: z.string().describe("The assignment to copy (a New Quiz's ID is its assignment ID)"),
+      newName: z.string().optional().describe("Rename the copy instead of leaving it as \"<original> Copy\""),
+      dueAt: z.string().optional().describe("Give the copy a due date (ISO 8601). Without one it inherits the original's."),
+      publish: z.boolean().default(false).describe("Publish the copy immediately. Off by default: a duplicate is usually a draft.")
+    },
+    { destructiveHint: false },
+    async ({ courseId, assignmentId, newName, dueAt, publish = false }: any) => {
+      try {
+        // A New Quiz needs result_type=Quiz for Canvas to serialize the copy
+        // correctly. Detect it rather than making the caller know which engine
+        // backs the assignment.
+        const original: any = await canvas.getAssignment(courseId, assignmentId);
+        const isNewQuiz = !!original?.is_quiz_lti_assignment;
+
+        const copy: any = await canvas.duplicateAssignment(
+          courseId,
+          assignmentId,
+          isNewQuiz ? { result_type: 'Quiz' } : {}
+        );
+
+        if (!copy?.id) {
+          throw new Error(`Canvas returned no assignment for the copy: ${JSON.stringify(copy).slice(0, 300)}`);
+        }
+
+        // Canvas reports an in-flight copy as workflow_state 'duplicating' and
+        // finishes it in the background. Editing it now would race that.
+        const stillCopying = copy.workflow_state === 'duplicating';
+        const wantsEdit = newName !== undefined || dueAt !== undefined || publish;
+
+        let edited: any = null;
+        if (wantsEdit && !stillCopying) {
+          const changes: any = {};
+          if (newName !== undefined) changes.name = newName;
+          if (dueAt !== undefined) changes.due_at = dueAt;
+          if (publish) changes.published = true;
+          edited = await canvas.updateAssignment(courseId, String(copy.id), { assignment: changes });
+        }
+
+        const finalState = edited ?? copy;
+        const pendingNote = stillCopying
+          ? `\n\nCanvas is still building this copy (workflow_state "duplicating") and finishes it in the background`
+            + (wantsEdit
+              ? `, so the rename, due date and publish were NOT applied — editing an assignment mid-duplication races `
+                + `Canvas's own write. Check it with get-assignment, then apply them with update-assignment.`
+              : `. Check it with get-assignment in a moment.`)
+          : '';
+
+        return {
+          content: [{
+            type: "text",
+            text: `Duplicated "${original?.name ?? assignmentId}"${isNewQuiz ? ' (a New Quiz)' : ''} in course ${courseId}.\n`
+              + `${JSON.stringify({
+                id: finalState.id,
+                name: finalState.name,
+                due_at: finalState.due_at ?? null,
+                points_possible: finalState.points_possible,
+                published: !!finalState.published,
+              }, null, 2)}`
+              + pendingNote
+              + (!stillCopying && !finalState.published
+                ? `\n\nThe copy is unpublished, so students cannot see it yet.`
+                : '')
+          }]
+        };
+      } catch (error: any) {
+        throw new Error(`Failed to duplicate assignment: ${error.message ?? 'Unknown error'}`);
+      }
+    }
+  );
 } 

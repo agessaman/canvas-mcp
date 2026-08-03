@@ -2,7 +2,7 @@
   "manifest_version": "0.1",
   "name": "canvas-mcp",
   "display_name": "Canvas LMS Integration",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "Comprehensive Canvas LMS integration for course management, assignments, pages, students, and rubric analysis",
   "long_description": "This extension provides full Canvas LMS integration capabilities including course management, assignment creation and grading, page editing with styleguide support, student management with privacy controls, module organization, submission tracking, and comprehensive rubric statistics analysis. It also covers the instructor grading queue (what needs grading across every course), New Quizzes authoring and item analysis on the separate /api/quiz/v1 API, course-wide grades with missing-work and engagement reports for intervention planning, and read-only Canvas inbox triage. Perfect for educators who want to streamline their Canvas workflows directly from Claude Desktop.",
   "author": {
@@ -147,7 +147,12 @@
     { "name": "set-front-page", "description": "Mark a page as the course front page and optionally the landing page" },
     { "name": "copy-course-content", "description": "Copy a whole course into another, optionally shifting every date onto the new term" },
     { "name": "get-content-migration", "description": "Check a course copy's progress and what it failed to bring across" },
-    { "name": "list-content-migrations", "description": "List the copies and imports run into a course" }
+    { "name": "list-content-migrations", "description": "List the copies and imports run into a course" },
+    { "name": "duplicate-assignment", "description": "Copy an assignment or New Quiz within a course, optionally renaming and dating it" },
+    { "name": "list-calendar-events", "description": "List a course's calendar events over a date range" },
+    { "name": "create-calendar-event", "description": "Add a meeting, exam date, or recurring office hours to a course calendar" },
+    { "name": "update-calendar-event", "description": "Move or edit a calendar event, one occurrence or a whole series" },
+    { "name": "delete-calendar-event", "description": "Remove a calendar event or a recurring series" }
   ],
   "prompts": [
     {
