@@ -436,6 +436,76 @@ test('update-rubric sends free_form_criterion_comments as "1"/"0", preserving th
   });
 });
 
+// An outcome-aligned criterion carries a learning_outcome_id and its own
+// mastery_points, neither of which this tool's criterion shape can express. Since
+// Canvas replaces the whole rubric on update, re-sending one would silently
+// demote it to a plain criterion — under a message saying the update succeeded.
+test('update-rubric refuses to touch a rubric with an outcome-aligned criterion', async () => {
+  const withOutcome = storedRubric({
+    data: [
+      {
+        id: '_1', description: 'Sourcing (outcome)', points: 5,
+        learning_outcome_id: 4321, mastery_points: 3,
+        ratings: [{ id: '_1a', description: 'Mastery', points: 5 }],
+      },
+      {
+        id: '_2', description: 'Evidence', points: 4,
+        ratings: [{ id: '_2a', description: 'Ample', points: 4 }],
+      },
+    ],
+  });
+
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => withOutcome);
+
+    // A title-only change is the dangerous case: nothing about the request
+    // mentions the criteria, and it would still have wiped the alignment.
+    const result = await canvas.callTool('update-rubric', {
+      courseId: '1', rubricId: '55', title: 'Renamed',
+    });
+
+    assert.equal(canvas.requests.filter(r => r.method === 'PUT').length, 0, 'must not PUT');
+    const text = JSON.stringify(result);
+    assert.match(text, /aligned to a learning outcome/);
+    assert.match(text, /Sourcing \(outcome\)/);
+    // The unaligned criterion must not be named as a casualty.
+    assert.doesNotMatch(text, /"Evidence"/);
+  });
+});
+
+test('update-rubric still edits a rubric whose criteria carry no outcome alignment', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ method }) => (method === 'PUT'
+      ? { rubric: storedRubric({ title: 'Renamed' }) }
+      : storedRubric()));
+
+    await canvas.callTool('update-rubric', { courseId: '1', rubricId: '55', title: 'Renamed' });
+    assert.equal(canvas.requests.filter(r => r.method === 'PUT').length, 1);
+  });
+});
+
+// The update sends no rubric_association, so this readback is the only evidence
+// the rubric is still linked to the course and visible in the UI.
+test('an update that cannot be read back afterwards is reported as possibly invisible', async () => {
+  await withMockCanvas(async canvas => {
+    let gets = 0;
+    canvas.setResponse(({ method }) => {
+      if (method === 'PUT') return { rubric: storedRubric({ title: 'Renamed' }) };
+      gets += 1;
+      // The pre-read succeeds; the readback after the write does not.
+      return gets === 1 ? storedRubric() : { __status: 404, __body: { message: 'Rubric not found' } };
+    });
+
+    const result = await canvas.callTool('update-rubric', {
+      courseId: '1', rubricId: '55', title: 'Renamed',
+    });
+    const text = canvas.textOf(result);
+    assert.match(text, /WARNING/);
+    assert.match(text, /association with the course/);
+    assert.match(text, /Rubrics page/);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------

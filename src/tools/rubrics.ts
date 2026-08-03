@@ -197,6 +197,32 @@ function criteriaOf(rubric: any): any[] {
   return Array.isArray(criteria) ? criteria : [];
 }
 
+/**
+ * Criteria this tool cannot faithfully put back.
+ *
+ * An outcome-aligned criterion carries a learning_outcome_id, its own
+ * mastery_points, and sometimes ignore_for_scoring. None of that is expressible
+ * in this tool's criterion shape, and Canvas's update is a full replace — so
+ * resending one through storedAsInput would demote it to a plain criterion and
+ * quietly unlink the outcome, while the tool reported a successful rename. That
+ * is the exact false-success this server exists to avoid, so update-rubric
+ * refuses instead. It refuses even when the caller supplies criteria in full,
+ * because the input schema cannot express the alignment either.
+ *
+ * Detection depends on Canvas serializing these fields. If it does not, an
+ * outcome rubric will not be recognised here and will be demoted as before —
+ * which is why this needs a live check against a UI-authored outcome rubric.
+ */
+function outcomeAlignedCriteria(rubric: any): string[] {
+  return criteriaOf(rubric)
+    .filter((criterion: any) =>
+      criterion?.learning_outcome_id != null
+      || criterion?.outcome_id != null
+      || criterion?.mastery_points != null
+      || criterion?.ignore_for_scoring === true)
+    .map((criterion: any, index: number) => `"${criterion.description ?? `criterion ${index + 1}`}"`);
+}
+
 /** Turn a rubric Canvas returned back into the input shape, for resend-on-update. */
 function storedAsInput(rubric: any): CriterionInput[] {
   return criteriaOf(rubric).map((criterion: any) => ({
@@ -767,7 +793,8 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
     + "pass the complete list you want the rubric to end up with, which is most easily got by reading it with "
     + "get-rubric first and editing from there. Anything you leave out is re-sent unchanged rather than wiped. "
     + "Note that editing a rubric that has already been used to grade can detach existing scores from the criteria "
-    + "they belong to, so prefer create-rubric for a new version once marking has started.",
+    + "they belong to, so prefer create-rubric for a new version once marking has started. A rubric with criteria "
+    + "aligned to learning outcomes cannot be edited here at all — that has to be done in the Canvas UI.",
     {
       courseId: z.string().describe("The ID of the course"),
       rubricId: z.string().describe("The rubric's ID"),
@@ -800,6 +827,21 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
             + `was not attempted. Canvas's rubric update replaces the whole rubric — writing without knowing what `
             + `is there would delete any criterion this call does not mention. Canvas said: `
             + `${error?.message ?? 'unknown error'}`
+          );
+        }
+
+        // Canvas replaces the whole rubric, and neither this tool's input shape
+        // nor its re-send of the stored criteria carries outcome alignment. So
+        // any update to a rubric containing one would strip it — including an
+        // update that only changes the title.
+        const aligned = outcomeAlignedCriteria(current);
+        if (aligned.length > 0) {
+          throw new Error(
+            `Rubric ${args.rubricId} has ${aligned.length} criterion/criteria aligned to a learning outcome `
+            + `(${aligned.join(', ')}), and this update was not attempted. Canvas's rubric update replaces every `
+            + `criterion with what the request contains, and this tool cannot express an outcome alignment — so any `
+            + `change here, even just the title, would unlink the outcome and turn it into a plain criterion. Edit `
+            + `this rubric in the Canvas UI instead, or build a separate rubric with create-rubric.`
           );
         }
 
@@ -866,8 +908,19 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
         try {
           stored = await canvas.getRubric(args.courseId, readId);
         } catch (error: any) {
-          readbackNote = `\n\nWARNING — the update returned 200 but rubric ${readId} could not be read back, so `
-            + `what Canvas actually stored is unconfirmed. Canvas said: ${error?.message ?? 'unknown error'}`;
+          // This readback is doing double duty. Canvas resolves this endpoint
+          // through the rubric's *bookmarked association with the course*, not
+          // through the rubric row, so reading the rubric back is also the only
+          // available proof that the association survived the update — and the
+          // update sends no association of its own, since the one Canvas wants
+          // (rubric_association_id) is not something the read exposes. A rubric
+          // that cannot be read back here is one that will not appear in the
+          // course's Rubrics page either.
+          readbackNote = `\n\nWARNING — the update returned 200 but rubric ${readId} could not be read back from `
+            + `course ${args.courseId}, so what Canvas stored is unconfirmed. Canvas finds a rubric through its `
+            + `association with the course, so this may also mean the rubric is no longer linked to the course and `
+            + `has disappeared from the Canvas UI. Check the course's Rubrics page. Canvas said: `
+            + `${error?.message ?? 'unknown error'}`;
         }
 
         const preserved: string[] = [];
