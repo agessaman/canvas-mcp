@@ -249,6 +249,57 @@ test('a student in neither the successful nor the failed list is reported as hav
   });
 });
 
+// The worst case, and the one the first version of this check walked straight
+// past: Canvas answers 200 with an empty successful array, so the grant reads as
+// applied when nobody has it.
+test('a 200 that confirms nobody is reported as nobody having the accommodation', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith({
+      engine: 'new',
+      accommodationResponse: { message: 'Accommodations processed', successful: [], failed: [] },
+    }));
+    const result = await canvas.callTool('extend-quiz-time', {
+      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+    });
+    const text = canvas.textOf(result);
+    assert.match(text, /WARNING/);
+    assert.match(text, /NO accommodation: 6199/);
+  });
+});
+
+// A body with no arrays at all is absence of evidence. Canvas has never been
+// seen to answer this way, and inventing a failure from it would cry wolf.
+test('a message-only response is not turned into a false alarm', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith({
+      engine: 'new',
+      accommodationResponse: { message: 'Accommodations processed' },
+    }));
+    const result = await canvas.callTool('extend-quiz-time', {
+      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+    });
+    assert.doesNotMatch(canvas.textOf(result), /WARNING — Canvas did not apply/);
+  });
+});
+
+// The exact body Canvas returns, pasted from a live call, must read as success.
+test('the real Canvas success body produces no warning', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith({
+      engine: 'new',
+      accommodationResponse: {
+        message: 'Accommodations processed',
+        successful: [{ user_id: 6199 }],
+        failed: [],
+      },
+    }));
+    const result = await canvas.callTool('extend-quiz-time', {
+      courseId: '18473', quizId: '371565', studentIds: ['6199'], extraMinutes: 30,
+    });
+    assert.doesNotMatch(canvas.textOf(result), /WARNING — Canvas did not apply/);
+  });
+});
+
 // Verified in the Canvas UI: a course-wide 45 plus a per-quiz 30 reads as
 // "+1 hr 15 min". Neither value can be read back, so the tool cannot detect the
 // overlap — it can only say that it happens.

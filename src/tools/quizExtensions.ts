@@ -202,29 +202,44 @@ function verifyClassic(requested: any[], response: any): string {
 }
 
 /**
- * New Quizzes reports per-student outcomes in successful/failed arrays instead
- * of echoing the stored record, and offers no way to read accommodations back
- * afterwards. That response is therefore the only evidence the accommodation
- * exists, so a partial failure has to be surfaced rather than summarized.
+ * New Quizzes reports per-student outcomes instead of echoing the stored record,
+ * and offers no way to read accommodations back afterwards, so this response is
+ * the only evidence the accommodation exists.
+ *
+ * The shape, captured live from `/api/quiz/v1/.../accommodations`:
+ *
+ *   {"message":"Accommodations processed","successful":[{"user_id":6199}],"failed":[]}
+ *
+ * Both arrays are always present on a 200, and `successful` holds objects rather
+ * than bare IDs. An unknown user does not land in `failed` — the whole request
+ * 404s with `{"error":"Users with IDs N were not found"}` and nothing is applied
+ * — so what `failed` is actually for remains unknown. It is still reported: an
+ * empty array that never fills costs nothing, and a populated one would be the
+ * only sign that Canvas took some students and not others.
  */
 function verifyNewQuiz(requested: any[], response: any): string {
   const problems: string[] = [];
   const failed: any[] = Array.isArray(response?.failed) ? response.failed : [];
-  const succeeded: any[] = Array.isArray(response?.successful) ? response.successful : [];
 
   if (failed.length > 0) {
     problems.push(`Canvas rejected these: ${JSON.stringify(failed)}`);
   }
 
-  // Only treat a short success list as a problem when Canvas actually returned
-  // one; an instance that answers with just a message is not evidence of failure.
-  if (succeeded.length > 0 && succeeded.length < requested.length) {
-    const named = new Set(succeeded.map((entry: any) => String(entry?.user_id ?? entry)));
+  // Every student asked for must come back named in `successful`. The earlier
+  // version only checked when that array was non-empty, which left the worst
+  // case unguarded: a 200 carrying `successful: []` would have been reported as
+  // a granted accommodation that nobody actually has. An instance that answers
+  // with a message and no array at all is still not treated as failure — that
+  // is absence of evidence, not evidence of absence.
+  if (Array.isArray(response?.successful)) {
+    const named = new Set(response.successful.map((entry: any) => String(entry?.user_id ?? entry)));
     const missing = requested
       .map(r => String(r.user_id))
       .filter(id => !named.has(id));
     if (missing.length > 0) {
-      problems.push(`these students are in neither list and have NO accommodation: ${missing.join(', ')}`);
+      problems.push(
+        `Canvas did not confirm these students and they have NO accommodation: ${missing.join(', ')}`
+      );
     }
   }
 
