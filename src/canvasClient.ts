@@ -458,6 +458,25 @@ export class CanvasClient {
     const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/assignments/${assignmentId}/submissions`, params);
     return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions(data) : data;
   }
+  /**
+   * A rubric write lands on the ASSIGNMENT as well as the rubric.
+   *
+   * Attaching is written at /courses/:id/rubric_associations but read at
+   * /courses/:id/assignments/:id, and creating or editing a rubric that drives
+   * a grade rewrites that assignment's points_possible. invalidateForWrite
+   * cannot bridge either gap: the only common ancestor is /courses/:id, which
+   * it deliberately refuses to climb to.
+   *
+   * Without this, attaching a rubric and then checking it read has_rubric:
+   * false straight out of the cache — a stale read that is indistinguishable
+   * from Canvas having ignored the write, and which made the tool's own
+   * verification warn about an attachment that had in fact worked. Third time
+   * this pattern has bitten this server (files 1.6.2, calendar 1.10.0).
+   */
+  private invalidateAssignments(courseId: string): void {
+    this.cache.invalidatePrefix(`/api/v1/courses/${courseId}/assignments`);
+  }
+
   // Attaching a rubric means creating a RubricAssociation, not setting a field
   // on the assignment. This used to PUT /assignments/:id with an empty body and
   // a rubric_id query param, which Canvas rejects outright:
@@ -478,7 +497,9 @@ export class CanvasClient {
     };
     // Same "1"/"0" encoding hazard as the rubric booleans.
     if (useForGrading !== undefined) association.use_for_grading = useForGrading ? '1' : '0';
-    return this.post(`/api/v1/courses/${courseId}/rubric_associations`, { rubric_association: association });
+    const result = await this.post(`/api/v1/courses/${courseId}/rubric_associations`, { rubric_association: association });
+    this.invalidateAssignments(courseId);
+    return result;
   }
   // GET /courses/:id/rubrics/:id.
   //
@@ -504,12 +525,17 @@ export class CanvasClient {
   // bare Rubric — and which renders { error: true, messages: [...] } under a 200
   // when validation fails. Callers must inspect the body, not the status.
   async createRubric(courseId: string, data: any) {
-    return this.post(`/api/v1/courses/${courseId}/rubrics`, data);
+    const result = await this.post(`/api/v1/courses/${courseId}/rubrics`, data);
+    // A rubric that drives a grade rewrites its assignment's points_possible.
+    this.invalidateAssignments(courseId);
+    return result;
   }
   // PUT /courses/:id/rubrics/:id — same controller action as create, with the
   // same non-standard response shape and the same 200-on-failure behaviour.
   async updateRubric(courseId: string, rubricId: string, data: any) {
-    return this.put(`/api/v1/courses/${courseId}/rubrics/${rubricId}`, data);
+    const result = await this.put(`/api/v1/courses/${courseId}/rubrics/${rubricId}`, data);
+    this.invalidateAssignments(courseId);
+    return result;
   }
 
   // --- Students ---

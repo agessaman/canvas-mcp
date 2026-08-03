@@ -392,8 +392,18 @@ function formatRubric(rubric: any): string {
       + `${ratings ? `\n${ratings}` : '\n    (no ratings — Canvas scores this criterion 0)'}`;
   }).join('\n');
 
+  // An outcome-aligned criterion behaves differently — its points come from the
+  // outcome's mastery scale, and update-rubric refuses to touch the rubric at
+  // all — so say so rather than rendering it as an ordinary row.
+  const alignedCount = outcomeAlignedCriteria(rubric).length;
+  const outcomeNote = alignedCount > 0
+    ? `\n\n${alignedCount === 1 ? 'One criterion is' : `${alignedCount} criteria are`} aligned to a learning `
+      + `outcome. update-rubric cannot edit this rubric — not even its title — because it cannot express that `
+      + `alignment and Canvas replaces the whole rubric on every update. Edit it in the Canvas UI.`
+    : '';
+
   const ids = criteria.map((criterion: any) => `"${criterion.id}"`).join(', ');
-  return `${header}\n${body}\n\n`
+  return `${header}\n${body}${outcomeNote}\n\n`
     + `To grade against this rubric, pass grade-submission a rubric_assessment keyed by CRITERION ID, not by `
     + `name — for this rubric that is ${ids}. Each entry takes { "points": n, "comments": "..." }, e.g. `
     + `{ "${criteria[0]?.id}": { "points": ${points(criteria[0]?.points)}, "comments": "..." } }.`;
@@ -673,8 +683,10 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
           throw new Error(
             `Rubric ${rubricId} could not be read in course ${courseId}. Canvas looks this up through the rubric's `
             + `association with the course, so this means either the ID is wrong, or the rubric exists but is not `
-            + `linked to this course (it may belong to another course or to the account). Check list-rubrics for `
-            + `IDs that are readable here. Canvas said: ${message}`
+            + `linked to this course (it may belong to another course or to the account, or be a copy Canvas made `
+            + `while updating a rubric that was in use in more than one place). Note that list-rubrics will show `
+            + `such a rubric even though this tool cannot read it — the two go through different lookups, confirmed `
+            + `live. Canvas said: ${message}`
           );
         }
         throw new Error(`Failed to fetch rubric: ${message}`);

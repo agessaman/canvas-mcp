@@ -622,6 +622,49 @@ test('an attachment Canvas accepted but did not apply is reported', async () => 
   });
 });
 
+// The association is written at /rubric_associations but read at
+// /assignments/:id, and invalidateForWrite cannot bridge that — the only common
+// ancestor is /courses/:id, which it refuses to climb to. Live, this made the
+// tool's own verification warn "still reports no rubric" about an attachment
+// that had worked: a stale read indistinguishable from a failed write.
+test('attaching a rubric drops the cached assignment, so the check is not stale', async () => {
+  await withMockCanvas(async canvas => {
+    let hasRubric = false;
+    canvas.setResponse(({ method }) => {
+      if (method === 'POST') { hasRubric = true; return { id: 12 }; }
+      return { id: 371868, points_possible: 10, has_rubric: hasRubric };
+    });
+
+    const result = await canvas.callTool('attach-rubric-to-assignment', {
+      courseId: '1', assignmentId: '371868', rubricId: '55',
+    });
+
+    // Two assignment GETs must actually reach Canvas: the before-read and the
+    // verification. If the second is served from cache it sees has_rubric false
+    // and cries wolf.
+    const gets = canvas.requests.filter(r => r.method === 'GET' && /assignments\/371868/.test(r.url));
+    assert.equal(gets.length, 2, 'the verification read must not come from cache');
+    assert.doesNotMatch(canvas.textOf(result), /still reports no rubric/);
+  });
+});
+
+test('get-rubric renders an outcome-aligned criterion as one update-rubric cannot edit', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => storedRubric({
+      data: [{
+        id: '1785772277267', description: 'DBQ Big Picture', points: 4,
+        learning_outcome_id: 4321, mastery_points: 3,
+        ratings: [{ id: '_4344', description: 'Exceeds Mastery', points: 4 }],
+      }],
+    }));
+
+    const result = await canvas.callTool('get-rubric', { courseId: '1', rubricId: '40398' });
+    const text = canvas.textOf(result);
+    assert.match(text, /aligned to a learning outcome/);
+    assert.match(text, /cannot edit this rubric/);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
