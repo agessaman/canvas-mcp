@@ -593,18 +593,50 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
   // Tool: attach-rubric-to-assignment
   server.tool(
     "attach-rubric-to-assignment",
-    "Attach a rubric to an assignment.",
+    "Put an EXISTING rubric on an assignment, so it can be used to grade there. Use create-rubric instead to write "
+    + "a new rubric. A rubric can be attached to several assignments; note that Canvas copies a rubric that is in "
+    + "use in more than one place when you later edit it, rather than editing it in place.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment"),
-      rubricId: z.string().describe("The ID of the rubric to attach")
+      rubricId: z.string().describe("The ID of the rubric to attach"),
+      useForGrading: z.boolean().optional().describe(
+        "Let the rubric's scores drive the assignment's grade, rather than being a scoring guide alongside a "
+        + "separately-entered grade. WARNING: Canvas also rewrites the assignment's points total to match the "
+        + "rubric's when this is on."
+      )
     },
     { idempotentHint: true },
-    async ({ courseId, assignmentId, rubricId }: { courseId: string; assignmentId: string; rubricId: string }) => {
+    async ({ courseId, assignmentId, rubricId, useForGrading }: { courseId: string; assignmentId: string; rubricId: string; useForGrading?: boolean }) => {
       try {
-        await canvas.attachRubricToAssignment(courseId, assignmentId, rubricId);
+        const before: any = await canvas.getAssignment(courseId, assignmentId).catch(() => null);
+        await canvas.attachRubricToAssignment(courseId, assignmentId, rubricId, useForGrading);
+
+        // Canvas answers this cheerfully whether or not the rubric ended up on
+        // the assignment, so check has_rubric rather than the status line.
+        let verification = '';
+        try {
+          const after: any = await canvas.getAssignment(courseId, assignmentId);
+          if (!after?.has_rubric) {
+            verification = `\n\nWARNING — Canvas accepted the request but assignment ${assignmentId} still reports no `
+              + `rubric. Check the assignment in Canvas before grading against it.`;
+          }
+          const pointsBefore = before ? Number(before.points_possible ?? 0) : null;
+          const pointsAfter = Number(after?.points_possible ?? 0);
+          if (pointsBefore !== null && pointsBefore !== pointsAfter) {
+            verification += `\n\nNote: the assignment's points total changed from ${pointsBefore} to ${pointsAfter} — `
+              + `Canvas rewrites it to the rubric's total when the rubric drives the grade.`;
+          }
+        } catch {
+          verification = `\n\nNote: the attachment could not be confirmed by re-reading assignment ${assignmentId}.`;
+        }
+
         return {
-          content: [{ type: "text", text: `Rubric ${rubricId} attached to assignment ${assignmentId} in course ${courseId}.` }]
+          content: [{
+            type: "text",
+            text: `Rubric ${rubricId} attached to assignment ${assignmentId} in course ${courseId}`
+              + `${useForGrading ? ', driving the grade' : ''}.${verification}`
+          }]
         };
       } catch (error: any) {
         if (error instanceof Error) {
@@ -826,6 +858,10 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
       ).optional(),
       freeFormComments: z.boolean().optional().describe(
         "Let graders type their own comment on each criterion. Omit to keep the current setting."
+      ),
+      keepAssignmentPoints: z.boolean().optional().describe(
+        "Stop Canvas from rewriting the points total of any assignment this rubric grades. Relevant whenever the "
+        + "edit changes the rubric's total, since Canvas pushes the new total onto the assignment."
       )
     },
     { idempotentHint: true },
@@ -906,6 +942,13 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
         if (typeof current?.hide_score_total === 'boolean') {
           payload.rubric.hide_score_total = canvasBool(current.hide_score_total);
         }
+        if (args.keepAssignmentPoints) {
+          // Top level and the string "true" — the controller reads
+          // params[:skip_updating_points_possible] and matches it with /true/i.
+          // Confirmed live on create: the documented rubric[...] spelling is
+          // inert, this one works.
+          payload.skip_updating_points_possible = 'true';
+        }
 
         const response: any = await canvas.updateRubric(args.courseId, args.rubricId, payload);
         assertNotSilentFailure(response, 'update this rubric');
@@ -940,7 +983,26 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
         if (args.title === undefined) preserved.push('title');
         const preservedNote = preserved.length > 0
           ? `\n\nCanvas's rubric update replaces the whole rubric, so the existing ${preserved.join(' and ')} `
-            + `${preserved.length > 1 ? 'were' : 'was'} read back and re-sent unchanged rather than being wiped.`
+            + `${preserved.length > 1 || preserved[0] === 'criteria' ? 'were' : 'was'} read back and re-sent `
+            + `unchanged rather than being wiped.`
+          : '';
+
+        // Editing a rubric reaches out and changes a DIFFERENT object: Canvas
+        // pushes the new total onto every assignment the rubric grades. Caught
+        // live — an assignment created with keepAssignmentPoints, and therefore
+        // deliberately left at 25 points, was silently rewritten to 13 when a
+        // criterion was added later. keepAssignmentPoints has to be passed again
+        // on each update; it is not a property the rubric remembers.
+        const oldTotal = Number(current?.points_possible ?? 0);
+        const newTotal = expectedTotal(criteria);
+        const totalNote = newTotal !== oldTotal
+          ? (args.keepAssignmentPoints
+            ? `\n\nThis rubric's total changed from ${points(oldTotal)} to ${points(newTotal)}. Canvas was asked NOT `
+              + `to change the points total of any assignment it grades — confirm that on the assignment.`
+            : `\n\nWARNING — this rubric's total changed from ${points(oldTotal)} to ${points(newTotal)}, and Canvas `
+              + `rewrites the points total of any assignment this rubric grades to match. An assignment that was `
+              + `worth something else is not any more. Pass keepAssignmentPoints to prevent that; it is not `
+              + `remembered from when the rubric was created.`)
           : '';
 
         return {
@@ -949,6 +1011,7 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
             text: `Updated rubric ${readId} in course ${args.courseId}.\n\n`
               + `${stored ? formatRubric(stored) : '(could not be read back)'}`
               + preservedNote
+              + totalNote
               + clonedTo
               + readbackNote
               + (stored ? verifyRubric({ title, criteria, freeFormComments: freeForm }, stored) : '')

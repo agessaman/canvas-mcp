@@ -537,6 +537,91 @@ test('an update that cannot be read back afterwards is reported as possibly invi
   });
 });
 
+// Editing a rubric changes a different object: Canvas pushes the new total onto
+// every assignment the rubric grades. Caught live — an assignment deliberately
+// held at 25 points by keepAssignmentPoints was rewritten to 13 when a criterion
+// was added to its rubric later, with nothing said about it.
+test('update-rubric warns when a changed total will be pushed onto the assignment', async () => {
+  await withMockCanvas(async canvas => {
+    const bigger = storedRubric({ points_possible: 13 });
+    canvas.setResponse(({ method }) => (method === 'PUT' ? { rubric: bigger } : storedRubric()));
+
+    const result = await canvas.callTool('update-rubric', {
+      courseId: '1', rubricId: '55',
+      criteria: [
+        { description: 'Thesis', ratings: [{ description: 'Strong', points: 6 }] },
+        { description: 'Evidence', ratings: [{ description: 'Ample', points: 4 }] },
+        { description: 'Mechanics', ratings: [{ description: 'Clean', points: 3 }] },
+      ],
+    });
+    const text = canvas.textOf(result);
+    assert.match(text, /WARNING/);
+    assert.match(text, /10 to 13/);
+    assert.match(text, /keepAssignmentPoints/);
+  });
+});
+
+test('update-rubric sends skip_updating_points_possible when asked to keep the points', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ method }) => (method === 'PUT' ? { rubric: storedRubric() } : storedRubric()));
+
+    await canvas.callTool('update-rubric', {
+      courseId: '1', rubricId: '55', title: 'Renamed', keepAssignmentPoints: true,
+    });
+    // Top level and the string "true" — the documented rubric[...] spelling is
+    // inert, as the live create test confirmed.
+    assert.equal(bodyOf(canvas, 'PUT').skip_updating_points_possible, 'true');
+  });
+});
+
+test('update-rubric says nothing about points when the total is unchanged', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ method }) => (method === 'PUT' ? { rubric: storedRubric() } : storedRubric()));
+    const result = await canvas.callTool('update-rubric', { courseId: '1', rubricId: '55', title: 'Renamed' });
+    assert.doesNotMatch(canvas.textOf(result), /total changed/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attach-rubric-to-assignment
+// ---------------------------------------------------------------------------
+
+// This used to PUT /assignments/:id with an empty body and a rubric_id query
+// param, which Canvas answers with 400 "assignment is missing". Attaching a
+// rubric means creating a RubricAssociation.
+test('attach-rubric-to-assignment posts a rubric association, not an assignment update', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ method }) => (method === 'POST'
+      ? { id: 12, rubric_id: 55 }
+      : { id: 371868, points_possible: 10, has_rubric: true }));
+
+    await canvas.callTool('attach-rubric-to-assignment', {
+      courseId: '1', assignmentId: '371868', rubricId: '55',
+    });
+
+    const post = canvas.requests.find(r => r.method === 'POST');
+    assert.match(post.url, /\/rubric_associations/);
+    assert.equal(post.body.rubric_association.rubric_id, '55');
+    assert.equal(post.body.rubric_association.association_id, '371868');
+    assert.equal(post.body.rubric_association.association_type, 'Assignment');
+    assert.equal(post.body.rubric_association.purpose, 'grading');
+    assert.equal(canvas.requests.filter(r => r.method === 'PUT').length, 0);
+  });
+});
+
+test('an attachment Canvas accepted but did not apply is reported', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ method }) => (method === 'POST'
+      ? { id: 12 }
+      : { id: 371868, points_possible: 10, has_rubric: false }));
+
+    const result = await canvas.callTool('attach-rubric-to-assignment', {
+      courseId: '1', assignmentId: '371868', rubricId: '55',
+    });
+    assert.match(canvas.textOf(result), /still reports no rubric/);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------

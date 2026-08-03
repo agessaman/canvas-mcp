@@ -458,8 +458,27 @@ export class CanvasClient {
     const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/assignments/${assignmentId}/submissions`, params);
     return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions(data) : data;
   }
-  async attachRubricToAssignment(courseId: string, assignmentId: string, rubricId: string) {
-    return this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}`, {}, { rubric_id: rubricId });
+  // Attaching a rubric means creating a RubricAssociation, not setting a field
+  // on the assignment. This used to PUT /assignments/:id with an empty body and
+  // a rubric_id query param, which Canvas rejects outright:
+  //
+  //   400 [{"message":"assignment is missing"}]
+  //
+  // — the assignment update wants an assignment[...] body, and `rubric_id` is
+  // not an assignment attribute in any case, so there was no body that would
+  // have made that route work. POST /rubric_associations is the real endpoint.
+  // Verified live 2026-08-03. `purpose: grading` is what puts the rubric on the
+  // assignment for marking rather than merely bookmarking it in the course.
+  async attachRubricToAssignment(courseId: string, assignmentId: string, rubricId: string, useForGrading?: boolean) {
+    const association: any = {
+      rubric_id: rubricId,
+      association_id: assignmentId,
+      association_type: 'Assignment',
+      purpose: 'grading',
+    };
+    // Same "1"/"0" encoding hazard as the rubric booleans.
+    if (useForGrading !== undefined) association.use_for_grading = useForGrading ? '1' : '0';
+    return this.post(`/api/v1/courses/${courseId}/rubric_associations`, { rubric_association: association });
   }
   // GET /courses/:id/rubrics/:id.
   //
