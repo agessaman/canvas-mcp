@@ -162,3 +162,24 @@ test('update-assignment can restore unlimited attempts, which Canvas stores as -
     assert.doesNotMatch(canvas.textOf(result), /attempts=-1/);
   });
 });
+
+// A setting you can write and not read is how you grant an accommodation that
+// does nothing — get-assignment did not surface allowed_attempts until it
+// became settable.
+test('get-assignment surfaces the attempt limit, and names unlimited rather than -1', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => assignment({ allowed_attempts: 2 }));
+    const limited = canvas.textOf(await canvas.callTool('get-assignment', {
+      courseId: '1', assignmentId: '371866',
+    }));
+    assert.match(limited, /"allowed_attempts":\s*2/);
+  });
+
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => assignment({ allowed_attempts: -1 }));
+    const unlimited = canvas.textOf(await canvas.callTool('get-assignment', {
+      courseId: '1', assignmentId: '371866',
+    }));
+    assert.match(unlimited, /"allowed_attempts":\s*"unlimited"/);
+  });
+});

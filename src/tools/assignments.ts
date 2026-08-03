@@ -140,6 +140,11 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
           workflow_state: a.workflow_state,
           assignment_group_id: a.assignment_group_id,
           has_rubric: !!(a.rubric_id || a.rubric),
+          // Settable through create/update-assignment and load-bearing for
+          // extend-assignment-attempts, so it has to be readable too — a
+          // setting you can write and not see is how you end up granting an
+          // accommodation that does nothing. Canvas encodes unlimited as -1.
+          allowed_attempts: Number(a.allowed_attempts ?? -1) > 0 ? a.allowed_attempts : 'unlimited',
           position: a.position,
         };
         return {
