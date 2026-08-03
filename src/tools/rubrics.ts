@@ -363,14 +363,35 @@ function verifyRubric(
     : '';
 }
 
+/**
+ * Whether Canvas serialized a rubric's score-total display setting.
+ *
+ * update-rubric can only preserve `hide_score_total` if the read hands it back —
+ * Canvas assigns it unconditionally from each update, so a value it does not
+ * return is a value the next update silently clears. Whether it comes back at
+ * all was read out of the serializer, and this branch's source readings have
+ * been wrong three times, so it is checked rather than assumed and the tools say
+ * which case they are in.
+ */
+function scoreTotalSetting(rubric: any): { known: boolean; hidden: boolean } {
+  const known = rubric !== null && typeof rubric === 'object' && typeof rubric.hide_score_total === 'boolean';
+  return { known, hidden: known && rubric.hide_score_total === true };
+}
+
 /** Render a rubric for a teacher, including the IDs grade-submission needs. */
 function formatRubric(rubric: any): string {
   const criteria = criteriaOf(rubric);
+  const scoreTotal = scoreTotalSetting(rubric);
   const header = [
     `Rubric: ${rubric?.title ?? '(untitled)'}`,
     `ID: ${rubric?.id}`,
     `Points possible: ${points(rubric?.points_possible)}`,
     `Free-form comments: ${rubric?.free_form_criterion_comments ? 'on (graders type their own comment per criterion)' : 'off (graders pick a rating)'}`,
+    // Only stated when Canvas actually returned it — saying "shown" for a field
+    // that was never in the response would be inventing an answer.
+    ...(scoreTotal.known
+      ? [`Score total: ${scoreTotal.hidden ? 'hidden from students' : 'shown to students'}`]
+      : []),
   ].join('\n');
 
   if (criteria.length === 0) {
@@ -977,6 +998,22 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
             + `new rubric where you want it with attach-rubric-to-assignment.`
           : '';
 
+        // Canvas assigns both display settings unconditionally from each update,
+        // so whatever this request does not carry is cleared. hide_points is
+        // never serialized, so it cannot be re-sent and is always lost.
+        // hide_score_total was believed to be serialized — but that came from
+        // the same source reading that got `style` wrong, so what the tool says
+        // depends on whether the pre-read actually produced it.
+        const scoreTotal = scoreTotalSetting(current);
+        const displaySettingsNote = scoreTotal.known
+          ? `\n\nNote: Canvas clears a rubric's "hide points" display setting on every update and does not return `
+            + `it through the API, so it cannot be preserved here — re-check it in the UI if you use it. The `
+            + `"hide score total" setting was returned and has been re-sent as `
+            + `${scoreTotal.hidden ? 'hidden' : 'shown'}.`
+          : `\n\nNote: Canvas clears a rubric's display settings ("hide points" and "hide score total") on every `
+            + `update, and returned neither of them on the read before this write, so neither could be re-sent. `
+            + `If you had either turned on for this rubric, it is off now — re-set it in the Canvas UI.`;
+
         const readId = String(returned?.id ?? args.rubricId);
         let stored: any = null;
         let readbackNote = '';
@@ -1027,8 +1064,7 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
               + clonedTo
               + readbackNote
               + (stored ? verifyRubric({ title, criteria, freeFormComments: freeForm }, stored) : '')
-              + `\n\nNote: Canvas clears a rubric's "hide points" display setting on every update and does not `
-              + `return it through the API, so it cannot be preserved here. Re-check it in the UI if you use it.`
+              + displaySettingsNote
           }]
         };
       } catch (error: any) {

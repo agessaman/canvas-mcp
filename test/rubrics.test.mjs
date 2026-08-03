@@ -733,6 +733,75 @@ test('get-rubric renders an outcome-aligned criterion as one update-rubric canno
   });
 });
 
+// criterion_use_range is compared against [true, "true"] — a DIFFERENT list from
+// the rubric-level booleans, which want "1". The two cannot share an encoding,
+// so this one goes over the wire as a bare boolean. Verified live on rubric
+// 40401: it stores, reads back, and survives a title-only update's resend.
+test('criterionUseRange is sent as a boolean, not the "1" the rubric booleans use', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(createAndRead());
+    await canvas.callTool('create-rubric', {
+      courseId: '1', title: 'DBQ Essay Rubric', freeFormComments: true,
+      criteria: [
+        { description: 'Ranged', criterionUseRange: true, ratings: [{ description: 'Strong', points: 6 }] },
+        { description: 'Plain', ratings: [{ description: 'Yes', points: 4 }] },
+      ],
+    });
+
+    const body = bodyOf(canvas, 'POST');
+    assert.equal(body.rubric.criteria['0'].criterion_use_range, true, 'must be a boolean, not "1"');
+    // The rubric-level boolean in the same request uses the other encoding.
+    assert.equal(body.rubric.free_form_criterion_comments, '1');
+    assert.equal('criterion_use_range' in body.rubric.criteria['1'], false);
+  });
+});
+
+test('a title-only update re-sends criterion_use_range rather than clearing it', async () => {
+  const ranged = storedRubric({
+    data: [{
+      id: '_1', description: 'Ranged', points: 6, criterion_use_range: true,
+      ratings: [{ id: '_1a', description: 'Strong', points: 6 }],
+    }],
+  });
+
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ method }) => (method === 'PUT' ? { rubric: ranged } : ranged));
+    await canvas.callTool('update-rubric', { courseId: '1', rubricId: '55', title: 'Renamed' });
+    assert.equal(bodyOf(canvas, 'PUT').rubric.criteria['0'].criterion_use_range, true);
+  });
+});
+
+// Canvas assigns both display settings unconditionally from each update, so a
+// value the read did not return is one the next update clears. hide_points is
+// never serialized. hide_score_total was BELIEVED to be — from the same source
+// reading that got `style` wrong — so the tool reports which case it is in
+// rather than asserting preservation it cannot verify.
+test('a rubric whose score-total setting Canvas returned is re-sent and reported', async () => {
+  const hidden = storedRubric({ hide_score_total: true });
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ method }) => (method === 'PUT' ? { rubric: hidden } : hidden));
+    const result = await canvas.callTool('update-rubric', { courseId: '1', rubricId: '55', title: 'Renamed' });
+
+    assert.equal(bodyOf(canvas, 'PUT').rubric.hide_score_total, '1');
+    const text = canvas.textOf(result);
+    assert.match(text, /Score total: hidden from students/);
+    assert.match(text, /re-sent as hidden/);
+  });
+});
+
+test('a rubric whose score-total setting Canvas withheld is reported as lost, not preserved', async () => {
+  await withMockCanvas(async canvas => {
+    // storedRubric carries no hide_score_total at all.
+    canvas.setResponse(({ method }) => (method === 'PUT' ? { rubric: storedRubric() } : storedRubric()));
+    const result = await canvas.callTool('update-rubric', { courseId: '1', rubricId: '55', title: 'Renamed' });
+
+    assert.equal('hide_score_total' in bodyOf(canvas, 'PUT').rubric, false);
+    const text = canvas.textOf(result);
+    assert.match(text, /returned neither of them/);
+    assert.doesNotMatch(text, /Score total:/, 'must not state a setting Canvas never sent');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
