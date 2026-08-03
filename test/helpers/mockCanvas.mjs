@@ -86,6 +86,10 @@ export async function withMockCanvas(run) {
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
 
   const api = {
+    // Canvas hands back absolute URLs in some payloads (a migration's
+    // progress_url, an upload_url), and the code follows them verbatim. Tests
+    // need the real origin to build those, or the request silently goes nowhere.
+    baseUrl: `http://127.0.0.1:${port}`,
     requests,
     setResponse(fn) {
       respondWith = fn;

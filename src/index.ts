@@ -27,6 +27,7 @@ import { registerFileTools } from './tools/files.js';
 import { registerOverrideTools } from './tools/overrides.js';
 import { registerQuizExtensionTools } from './tools/quizExtensions.js';
 import { registerCourseSettingsTools } from './tools/courseSettings.js';
+import { registerCourseCopyTools } from './tools/courseCopy.js';
 // Load environment variables
 dotenv.config();
 
@@ -91,6 +92,7 @@ registerFileTools(server, canvas);
 registerOverrideTools(server, canvas);
 registerQuizExtensionTools(server, canvas);
 registerCourseSettingsTools(server, canvas);
+registerCourseCopyTools(server, canvas);
 // Start the server
 async function startServer() {
   try {

@@ -222,6 +222,32 @@ export class CanvasClient {
   async updateCourse(courseId: string, data: any) {
     return this.put(`/api/v1/courses/${courseId}`, { course: data });
   }
+  // --- Content migrations (course copy) ---
+  // Asynchronous: the POST returns a migration whose workflow_state is still
+  // pre_processing, plus a progress_url to watch.
+  async createContentMigration(courseId: string, data: any) {
+    return this.post(`/api/v1/courses/${courseId}/content_migrations`, data);
+  }
+  async getContentMigration(courseId: string, migrationId: string) {
+    return this.get(`/api/v1/courses/${courseId}/content_migrations/${migrationId}`);
+  }
+  async listContentMigrations(courseId: string) {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/content_migrations`, { per_page: 100 });
+  }
+  // What Canvas could not bring across. A migration can complete and still have
+  // dropped content, and this is the only place that is recorded.
+  async listMigrationIssues(courseId: string, migrationId: string) {
+    return this.fetchAllPages<any>(
+      `/api/v1/courses/${courseId}/content_migrations/${migrationId}/migration_issues`,
+      { per_page: 100 }
+    );
+  }
+  // progress_url is absolute; axios bypasses baseURL for absolute URLs, so it
+  // can be requested verbatim rather than picked apart for an ID.
+  async getProgressByUrl(progressUrl: string) {
+    return this.get(progressUrl);
+  }
+
   async postAnnouncement(courseId: string, data: any) {
     return this.post(`/api/v1/courses/${courseId}/discussion_topics`, data);
   }

@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **98 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **101 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -746,6 +746,40 @@ Marks a page as the course's front page.
 - Optional parameters:
   - `makeLandingPage`: boolean (default: false) — also set the course to open on it
 - An unpublished page cannot be a front page; Canvas declines quietly, so the tool raises it as an error
+
+## Course Copy
+
+### copy-course-content
+Copies an entire course into another — last term's assignments, pages, modules, quizzes and files into this term's shell.
+- Required parameters:
+  - `sourceCourseId`: string — the course to copy FROM
+  - `destinationCourseId`: string — the course to copy INTO
+- Optional parameters:
+  - `allowExistingContent`: boolean (default: false) — proceed even though the destination is not empty
+  - `shiftDates`: boolean (default: false) — move dates onto the new term's calendar
+  - `oldStartDate`, `newStartDate`: string (ISO 8601) — **required** when `shiftDates` is on
+  - `oldEndDate`, `newEndDate`: string (ISO 8601) — supply these too and the term is scaled, not just offset
+  - `daySubstitutions`: object — remap weekdays, e.g. `{"1":"2"}` moves Monday's items to Tuesday (0=Sunday…6=Saturday)
+  - `removeDates`: boolean (default: false) — strip all dates instead of shifting them; mutually exclusive with `shiftDates`
+- **A copy adds to the destination rather than replacing it, and Canvas cannot undo one.** A non-empty destination is refused, naming what is already there, unless `allowExistingContent` is set.
+- Copying a course into itself is refused
+- `shiftDates` without both start dates is refused: Canvas would otherwise accept it and the copy would arrive carrying last term's due dates
+- Asynchronous. Returns a migration ID; the copy keeps running in the background for minutes on a full course.
+
+### get-content-migration
+Checks how a copy is going and what it did or did not bring across.
+- Required parameters:
+  - `courseId`: string — the course being copied INTO
+  - `migrationId`: string
+- While running, reports the completion percentage from the migration's linked progress record
+- **Once finished, reports Canvas's migration issues.** A migration can report `completed` and still have dropped content; that is recorded nowhere else.
+- A migration parked in `waiting_for_select` is called out — selective import is not supported here and must be finished in the Canvas UI
+
+### list-content-migrations
+Lists the copies and imports run into a course, newest first.
+- Required parameters:
+  - `courseId`: string
+- Useful for finding a migration ID, or checking whether a shell has already been copied into before copying again
 
 ## Files
 
