@@ -305,6 +305,44 @@ test('a non-numeric student ID is refused before anything is written', async () 
   });
 });
 
+// Observed live: an active, override-holding, Classic-extension-accepting
+// student is still unknown to the New Quizzes service, which 404s with a
+// message Canvas's docs attribute to a missing course or assignment.
+test('a user the New Quizzes service does not know is explained, not passed through raw', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ url }) => {
+      if (url.includes('/accommodations')) {
+        return { __status: 404, __body: { error: 'Users with IDs 6199 were not found' } };
+      }
+      return url.startsWith('/api/quiz/v1/') ? NEW_QUIZ : { __status: 404, __body: {} };
+    });
+    const result = await canvas.callTool('extend-quiz-time', {
+      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+    });
+    const text = JSON.stringify(result);
+    assert.match(text, /keeps its own record of users/);
+    assert.match(text, /never launched one/);
+    // The raw Canvas message has to survive too — it is the searchable part.
+    assert.match(text, /Users with IDs 6199 were not found/);
+  });
+});
+
+test('an unrelated accommodations failure is not dressed up as a missing user', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ url }) => {
+      if (url.includes('/accommodations')) {
+        return { __status: 400, __body: { errors: ['extra_time must be an integer'] } };
+      }
+      return url.startsWith('/api/quiz/v1/') ? NEW_QUIZ : { __status: 404, __body: {} };
+    });
+    const result = await canvas.callTool('extend-quiz-time', {
+      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+    });
+    assert.match(JSON.stringify(result), /extra_time must be an integer/);
+    assert.doesNotMatch(JSON.stringify(result), /keeps its own record of users/);
+  });
+});
+
 test('the course-wide accommodation posts to the course endpoint and says Classic is untouched', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'new' }));

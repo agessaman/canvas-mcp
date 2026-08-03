@@ -2,7 +2,7 @@
   "manifest_version": "0.1",
   "name": "canvas-mcp",
   "display_name": "Canvas LMS Integration",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Comprehensive Canvas LMS integration for course management, assignments, pages, students, and rubric analysis",
   "long_description": "This extension provides full Canvas LMS integration capabilities including course management, assignment creation and grading, page editing with styleguide support, student management with privacy controls, module organization, submission tracking, and comprehensive rubric statistics analysis. It also covers the instructor grading queue (what needs grading across every course), New Quizzes authoring and item analysis on the separate /api/quiz/v1 API, course-wide grades with missing-work and engagement reports for intervention planning, and read-only Canvas inbox triage. Perfect for educators who want to streamline their Canvas workflows directly from Claude Desktop.",
   "author": {
