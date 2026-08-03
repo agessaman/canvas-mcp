@@ -22,8 +22,14 @@ export async function withMockCanvas(run) {
     req.on('end', () => {
       const parsed = body ? JSON.parse(body) : null;
       requests.push({ method: req.method, url: req.url, body: parsed });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(respondWith({ url: req.url, body: parsed })));
+      // A responder can answer with a status other than 200 by returning
+      // { __status, __body }. Needed for anything that probes an endpoint and
+      // treats a 404 as an answer rather than an error — quiz engine detection
+      // asks both engines about an ID and reads the 404 as "not this one".
+      const answer = respondWith({ url: req.url, body: parsed, method: req.method });
+      const status = answer?.__status ?? 200;
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(answer?.__status ? (answer.__body ?? {}) : answer));
     });
   });
   await new Promise(resolve => httpServer.listen(0, '127.0.0.1', resolve));

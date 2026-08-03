@@ -47,13 +47,14 @@
 - **Grading queue** — `list-grading-todo` answers "what do I need to grade?" across every course
 - **Grades & intervention** — course-wide gradebook, missing-work report, and engagement analytics for planning outreach
 - **Overrides** — differentiated due dates and date accommodations, per student or per section, with `extend-due-date` for the everyday case
+- **Quiz time extensions** — extra *minutes* on a timed quiz, the clock accommodation that a due date can't express, for both quiz engines (`extend-quiz-time`), plus a course-wide standing accommodation for New Quizzes
 - **Files** — upload local files into a course's Files area (syllabi, handouts, images), publish or unpublish them, and browse what's already there
 - **Conversations** — read-only inbox triage (sending is intentionally not exposed)
 - **ePortfolios** — list and read student ePortfolios
 - **Prompts** — `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**90 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**93 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -282,6 +283,7 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | Grades & Intervention | 3 | `get-course-grades`, `list-missing-submissions`, `get-student-engagement` |
 | Conversations (read-only) | 3 | `list-conversations`, `get-conversation`, `get-unread-message-count` |
 | Overrides & Accommodations | 5 | `list-assignment-overrides`, `create-assignment-override`, `update-assignment-override`, `delete-assignment-override`, `extend-due-date` |
+| Quiz Time Extensions | 3 | `extend-quiz-time`, `list-quiz-extensions`, `set-course-quiz-accommodations` |
 | Files | 4 | `upload-course-file`, `set-file-availability`, `list-course-files`, `list-course-folders` |
 | ePortfolios | 3 | `list-eportfolios`, `get-eportfolio`, `get-eportfolio-pages` |
 
@@ -290,6 +292,8 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 ### Classic vs. New Quizzes
 
 Canvas runs two quiz engines on different APIs. `list-quizzes` and friends cover **Classic Quizzes** (`/api/v1/courses/:id/quizzes`); `list-new-quizzes` and friends cover **New Quizzes** (`/api/quiz/v1/courses/:id/quizzes`). If your institution has migrated, use the New Quizzes tools. A New Quiz's ID is also its assignment ID, so grading flows through the existing `list-assignment-submissions` and `grade-submission` tools.
+
+The two engines also express **extra time** completely differently — Classic posts a `quiz_extensions` array to `/api/v1`, New Quizzes posts accommodations to `/api/quiz/v1` — so `extend-quiz-time` works out which engine an ID belongs to and sends the right shape. Because the ID spaces are independent, an ID that names a real quiz under *both* engines is reported as ambiguous rather than guessed at; pass `engine` to resolve it. Only New Quizzes has a course-wide accommodation (`set-course-quiz-accommodations`), and only Classic lets you read existing extensions back (`list-quiz-extensions`).
 
 ### A note on messaging
 

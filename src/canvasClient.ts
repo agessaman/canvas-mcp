@@ -243,6 +243,72 @@ export class CanvasClient {
     return this.delete(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides/${overrideId}`);
   }
 
+  // --- Quiz time extensions / accommodations ---
+  //
+  // Extra *minutes* on a timed quiz is not a date override, and the two quiz
+  // engines express it through completely different endpoints and payloads:
+  // Classic posts a quiz_extensions array under /api/v1, New Quizzes posts a
+  // bare array of accommodations under /api/quiz/v1.
+  async setQuizExtensions(courseId: string, quizId: string, extensions: any[]) {
+    return this.post(`/api/v1/courses/${courseId}/quizzes/${quizId}/extensions`, { quiz_extensions: extensions });
+  }
+  // The body here is a bare JSON array, not an object with a wrapper key —
+  // unlike every other write on this server.
+  async setNewQuizAccommodations(courseId: string, assignmentId: string, accommodations: any[]) {
+    return this.post(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/accommodations`, accommodations);
+  }
+  async setCourseQuizAccommodations(courseId: string, accommodations: any[]) {
+    return this.post(`/api/quiz/v1/courses/${courseId}/accommodations`, accommodations);
+  }
+  // Classic quiz submissions carry the granted extra_time/extra_attempts, which
+  // is the only way to read back who already has an extension. New Quizzes has
+  // no equivalent — its accommodations API is write-only.
+  async listQuizSubmissions(courseId: string, quizId: string, params: any = {}) {
+    return this.get<any>(`/api/v1/courses/${courseId}/quizzes/${quizId}/submissions`, params);
+  }
+  async getClassicQuiz(courseId: string, quizId: string) {
+    return this.get(`/api/v1/courses/${courseId}/quizzes/${quizId}`);
+  }
+
+  /**
+   * Work out which quiz engine an ID belongs to, by probing both.
+   *
+   * Both are probed rather than one, because a Classic quiz ID and a New Quiz's
+   * assignment ID come from different tables and can collide: the same number
+   * can name a real quiz under each engine, and posting an extension to the
+   * wrong one would silently extend the wrong quiz. The caller decides what to
+   * do when both answer.
+   *
+   * Failures are swallowed so a 404 reads as "not this engine", but both
+   * failures are kept: when neither answers, the underlying error (a 401 on a
+   * bad token looks nothing like a missing quiz) is what the caller needs.
+   */
+  async probeQuizEngines(courseId: string, quizId: string): Promise<{
+    classic: any | null;
+    newQuiz: any | null;
+    errors: { classic?: string; newQuiz?: string };
+  }> {
+    const [classicResult, newResult] = await Promise.allSettled([
+      this.getClassicQuiz(courseId, quizId),
+      this.getNewQuiz(courseId, quizId),
+    ]);
+    const errors: { classic?: string; newQuiz?: string } = {};
+    if (classicResult.status === 'rejected') errors.classic = classicResult.reason?.message ?? String(classicResult.reason);
+    if (newResult.status === 'rejected') errors.newQuiz = newResult.reason?.message ?? String(newResult.reason);
+    return {
+      classic: classicResult.status === 'fulfilled' ? classicResult.value : null,
+      newQuiz: newResult.status === 'fulfilled' ? newResult.value : null,
+      errors,
+    };
+  }
+
+  // Student enrollments in one section. Extensions are per-student in both
+  // engines — Canvas has no section-level extension — so a section-wide
+  // accommodation has to be expanded to user IDs here.
+  async listSectionEnrollments(sectionId: string, params: any = {}) {
+    return this.fetchAllPages<any>(`/api/v1/sections/${sectionId}/enrollments`, params);
+  }
+
   async createAssignment(courseId: string, data: any) {
     return this.post(`/api/v1/courses/${courseId}/assignments`, data);
   }

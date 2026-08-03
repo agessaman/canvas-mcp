@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **81 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **93 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -693,3 +693,134 @@ Reads the full message thread of one conversation.
 ### get-unread-message-count
 Returns the number of unread inbox conversations.
 - No parameters
+
+## Files
+
+### upload-course-file
+Uploads a local file into a course's Files area via Canvas's three-step upload handshake.
+- Required parameters:
+  - `courseId`: string
+  - `filePath`: string — absolute path to the file on this machine
+- Optional parameters:
+  - `fileName`: string — name to store it under (defaults to the local file name)
+  - `folderPath`: string — destination folder path, e.g. `/Handouts` (defaults to the course root)
+  - `folderId`: string — destination folder by ID; takes precedence over `folderPath`
+  - `onDuplicate`: `rename` (default) | `overwrite` — `overwrite` cannot be undone
+  - `contentType`: string — MIME type override; guessed from the extension when omitted
+- Canvas renames rather than overwrites by default, so the tool reports the name the file actually landed under
+- Whether an upload arrives published or unpublished varies by instance — check with `list-course-files`
+
+### set-file-availability
+Publishes, unpublishes, or hides a course file behind a link.
+- Required parameters:
+  - `fileId`: string (from `list-course-files`)
+  - `state`: `published` | `unpublished` | `link-only`
+- Optional parameters:
+  - `availableFrom`: string (ISO 8601) — only meaningful with `published`
+  - `availableUntil`: string (ISO 8601) — only meaningful with `published`
+
+### list-course-files
+Lists files in a course, or in one folder.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `searchTerm`: string — Canvas requires at least 3 characters
+  - `folderId`: string — lists that folder only
+- `folderId` uses a different Canvas endpoint: `/courses/:id/files` silently ignores a folder filter and returns the whole course
+
+### list-course-folders
+Lists a course's file folders with their IDs and paths.
+- Required parameters:
+  - `courseId`: string
+
+## Overrides & Accommodations
+
+### list-assignment-overrides
+Shows the differentiated due dates on an assignment or New Quiz — who has different dates from the rest of the class.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string (a New Quiz's ID is its assignment ID)
+- Reports the base due date from `include[]=all_dates`, not the assignment's own `due_at`, which Canvas returns relative to the requesting user
+- Warns when "only visible to overrides" is on, since students outside every override then cannot see the assignment at all
+
+### create-assignment-override
+Gives specific students or a whole section different dates.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - Exactly one of `studentIds` (string array) or `sectionId` (string)
+  - At least one of `dueAt`, `unlockAt`, `lockAt` (ISO 8601)
+- Optional parameters:
+  - `title`: string — required by Canvas for student-targeted overrides; defaulted if omitted. Canvas overwrites the title of a section override with the section's own name.
+- Reads back what Canvas stored and warns about anything that did not land, including students Canvas dropped
+
+### update-assignment-override
+Changes the dates or membership of an existing override.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - `overrideId`: string
+- Optional parameters:
+  - `studentIds`: string array — replaces the whole list; students left out lose the override
+  - `title`, `dueAt`, `unlockAt`, `lockAt`
+
+### delete-assignment-override
+Removes an override, returning its students or section to the base dates.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - `overrideId`: string
+
+### extend-due-date
+Gives named students a later due date — the everyday accommodation.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - `studentIds`: string array
+  - `dueAt`: string (ISO 8601)
+- Optional parameters:
+  - `title`: string — label for a newly created override (default: "Extended deadline")
+- Reuses an override that already covers exactly those students instead of stacking a second one
+- Refuses when a matching override also covers students who were not named, rather than moving their deadline as a side effect
+- Moves the due date only; for extra minutes on a timed quiz see `extend-quiz-time`
+
+## Quiz Time Extensions
+
+### extend-quiz-time
+Gives students extra **minutes** on a timed quiz — the clock accommodation, as opposed to the later deadline `extend-due-date` grants. Works with both quiz engines.
+- Required parameters:
+  - `courseId`: string
+  - `quizId`: string — a Classic quiz ID, or a New Quiz's assignment ID
+  - Exactly one of `studentIds` (string array) or `sectionId` (string)
+  - `extraMinutes`: integer 0–10080 (Canvas's own ceiling, one week)
+- Optional parameters:
+  - `extraAttempts`: integer — extra attempts beyond the quiz's limit
+  - `reduceChoices`: boolean — **New Quizzes only**: removes one wrong answer from multiple-choice questions with 4+ options
+  - `manuallyUnlocked`: boolean — **Classic Quizzes only**: lets these students take the quiz while it is locked for everyone else
+  - `engine`: `classic` | `new` — only needed when the ID is ambiguous
+- `extraMinutes` is absolute, not a top-up: calling again replaces the previous grant. `0` removes an extension.
+- The engine is detected by probing both APIs. Their ID spaces are independent, so an ID that names a quiz under each is refused as ambiguous rather than guessed
+- An option belonging to the other engine is refused rather than sent, because Canvas ignores unsupported parameters silently
+- Warns when the quiz has no time limit, where extra minutes change nothing
+- A `sectionId` is expanded to its currently-enrolled students, since Canvas has no section-level extension. That is a snapshot: students added later do not inherit it.
+
+### list-quiz-extensions
+Shows who already has extra time or attempts on a quiz.
+- Required parameters:
+  - `courseId`: string
+  - `quizId`: string
+- Optional parameters:
+  - `engine`: `classic` | `new` — only needed when the ID is ambiguous
+- **Classic Quizzes only.** Canvas's New Quizzes accommodations API is write-only; for a New Quiz this says so rather than returning an empty list that would read as "nobody has an accommodation"
+- Classic extensions live on a student's quiz submission, so a student who has never opened the quiz and has no extension does not appear at all
+
+### set-course-quiz-accommodations
+Gives students extra time on **every** New Quiz in a course — the standing IEP/504 accommodation rather than a per-quiz grant.
+- Required parameters:
+  - `courseId`: string
+  - Exactly one of `studentIds` (string array) or `sectionId` (string)
+  - `extraMinutes`: integer 0–10080
+- Optional parameters:
+  - `reduceChoices`: boolean
+  - `applyToInProgressSessions`: boolean — also applies to attempts that are open right now
+- **New Quizzes only.** Classic Quizzes has no course-level equivalent; those need `extend-quiz-time` per quiz.

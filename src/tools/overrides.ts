@@ -100,7 +100,7 @@ export function registerOverrideTools(server: McpServer, canvas: CanvasClient) {
   // Tool: create-assignment-override
   server.tool(
     "create-assignment-override",
-    "Give a different due date (or unlock/lock date) to specific students or to a whole section — the mechanism behind date accommodations and differentiated assignments. Target EITHER studentIds OR sectionId, not both. For simply extending a deadline for some students, prefer extend-due-date, which reuses an existing override instead of stacking a second one on the same student. NOTE: this changes dates only. Extra TIME on a timed quiz is a different thing entirely and is not set here.",
+    "Give a different due date (or unlock/lock date) to specific students or to a whole section — the mechanism behind date accommodations and differentiated assignments. Target EITHER studentIds OR sectionId, not both. For simply extending a deadline for some students, prefer extend-due-date, which reuses an existing override instead of stacking a second one on the same student. NOTE: this changes dates only. Extra TIME on a timed quiz is a different thing entirely — use extend-quiz-time for that.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The assignment ID (a New Quiz's ID is its assignment ID)"),
@@ -227,7 +227,7 @@ export function registerOverrideTools(server: McpServer, canvas: CanvasClient) {
   // Tool: extend-due-date
   server.tool(
     "extend-due-date",
-    "Give specific students more time on an assignment or New Quiz — the everyday accommodation. Reuses an existing student override where one already covers exactly those students, instead of stacking a second override on the same student, and refuses to quietly change the date for students you did not name. NOTE: this moves the DUE DATE. It does not grant extra minutes on a timed quiz.",
+    "Give specific students more time on an assignment or New Quiz — the everyday accommodation. Reuses an existing student override where one already covers exactly those students, instead of stacking a second override on the same student, and refuses to quietly change the date for students you did not name. NOTE: this moves the DUE DATE. It does not grant extra minutes on a timed quiz — extend-quiz-time does that.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The assignment ID (a New Quiz's ID is its assignment ID)"),

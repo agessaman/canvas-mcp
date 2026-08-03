@@ -2,7 +2,7 @@
   "manifest_version": "0.1",
   "name": "canvas-mcp",
   "display_name": "Canvas LMS Integration",
-  "version": "1.6.2",
+  "version": "1.7.0",
   "description": "Comprehensive Canvas LMS integration for course management, assignments, pages, students, and rubric analysis",
   "long_description": "This extension provides full Canvas LMS integration capabilities including course management, assignment creation and grading, page editing with styleguide support, student management with privacy controls, module organization, submission tracking, and comprehensive rubric statistics analysis. It also covers the instructor grading queue (what needs grading across every course), New Quizzes authoring and item analysis on the separate /api/quiz/v1 API, course-wide grades with missing-work and engagement reports for intervention planning, and read-only Canvas inbox triage. Perfect for educators who want to streamline their Canvas workflows directly from Claude Desktop.",
   "author": {
@@ -127,7 +127,19 @@
     { "name": "get-student-engagement", "description": "Per-student page views, participations, and tardiness breakdown" },
     { "name": "list-conversations", "description": "List Canvas inbox messages (read-only)" },
     { "name": "get-conversation", "description": "Read the full message thread of one conversation (read-only)" },
-    { "name": "get-unread-message-count", "description": "Get the number of unread Canvas inbox messages" }
+    { "name": "get-unread-message-count", "description": "Get the number of unread Canvas inbox messages" },
+    { "name": "upload-course-file", "description": "Upload a file into a course's Files area" },
+    { "name": "set-file-availability", "description": "Publish, unpublish, or hide a course file behind a link" },
+    { "name": "list-course-files", "description": "List files in a course or in one folder" },
+    { "name": "list-course-folders", "description": "List a course's file folders" },
+    { "name": "list-assignment-overrides", "description": "Show differentiated due dates on an assignment or New Quiz" },
+    { "name": "create-assignment-override", "description": "Give specific students or a section different dates" },
+    { "name": "update-assignment-override", "description": "Change an existing override's dates or membership" },
+    { "name": "delete-assignment-override", "description": "Remove an override, returning students to the base dates" },
+    { "name": "extend-due-date", "description": "Give named students a later due date, reusing an existing override" },
+    { "name": "extend-quiz-time", "description": "Give students extra minutes on a timed quiz (Classic or New Quizzes)" },
+    { "name": "list-quiz-extensions", "description": "Show who already has extra time on a Classic quiz" },
+    { "name": "set-course-quiz-accommodations", "description": "Give students extra time on every New Quiz in a course" }
   ],
   "prompts": [
     {
