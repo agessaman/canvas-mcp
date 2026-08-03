@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **109 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **112 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -1013,3 +1013,46 @@ Gives students extra time on **every** New Quiz in a course — the standing IEP
 - **New Quizzes only.** Classic Quizzes has no course-level equivalent; those need `extend-quiz-time` per quiz.
 - This is also the **only** way to grant New Quizzes extra time before a student has opened the quiz — verified working where a per-quiz grant on the same student and course was refused, and confirmed in the Canvas UI: the granted minutes show on the Moderate page of a quiz the student had never opened
 - Canvas rejects the whole batch if any one user ID is unknown to the New Quizzes service, so nobody receives the accommodation rather than most people
+
+---
+
+### extend-assignment-attempts
+Gives students extra **attempts** at an assignment — another try, for a retake or a technical failure.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - Exactly one of `studentIds` (string array) or `sectionId` (string)
+  - `extraAttempts`: integer 0–100
+- Absolute, not a top-up: calling it again replaces the grant, and `0` removes it
+- **Only meaningful when the assignment limits attempts.** Canvas's default is unlimited (`allowed_attempts: -1`), where the grant is accepted, answers 200, and changes nothing — the tool reads the assignment and warns rather than reporting a granted accommodation
+- Verified per student by re-reading the submission, which is where Canvas records `extra_attempts` — the write's own response does not say
+- A `sectionId` is expanded to its currently-enrolled students, and that expansion is a snapshot: students added later get nothing
+- Not a deadline and not a clock — see `extend-due-date` and `extend-quiz-time`
+
+---
+
+### get-late-policy
+Reads the course's policy for missing and late work.
+- Required parameters:
+  - `courseId`: string
+- A course with no policy is reported as that state rather than as an error
+- Renders the missing-submission setting as the **grade the student receives**, matching the Canvas UI, not the deduction the API stores
+
+---
+
+### set-late-policy
+Sets the course's missing/late work policy, creating it if the course has none.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `missingSubmissionGrade`: number 0–100 — the grade missing work automatically receives, as a percentage of the assignment's points (`0` means a zero)
+  - `applyMissingPolicy`: boolean — only needed to turn the missing policy **off**
+  - `lateDeductionPercent`: number 0–100 — deducted per late interval
+  - `lateDeductionInterval`: `"day"` or `"hour"`
+  - `lateMinimumPercent`: number 0–100 — floor below which late deductions stop
+  - `applyLatePolicy`: boolean — only needed to turn the late policy **off**
+- **The API field is a deduction; this parameter is the resulting grade.** `missingSubmissionGrade: 0` is sent as `missing_submission_deduction: 100`. Passing the UI's number to the raw API would invert the policy silently
+- **A percentage without its `_enabled` flag is stored and ignored by Canvas**, so setting any percentage turns the matching policy on. A percentage combined with an explicit `false` switch is refused as a contradiction rather than resolved
+- `lateDeductionInterval` alone is refused — it only says how often a deduction that is not happening would accrue
+- **Changes grades across the entire course, including work already submitted.** Scores students have already seen can change
+- Verified by re-reading the policy, not from the write's response

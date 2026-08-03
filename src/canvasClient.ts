@@ -282,6 +282,37 @@ export class CanvasClient {
     return this.delete(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides/${overrideId}`);
   }
 
+  // --- Late policy ---
+  //
+  // One row per course, and the verb depends on whether it exists yet: POST to
+  // create, PATCH to update, and a course with no policy 404s on GET. Callers
+  // should not have to know which case they are in, so setLatePolicy is told.
+  async getLatePolicy(courseId: string) {
+    return this.get(`/api/v1/courses/${courseId}/late_policy`);
+  }
+  async setLatePolicy(courseId: string, data: any, exists: boolean) {
+    const url = `/api/v1/courses/${courseId}/late_policy`;
+    const result = exists ? await this.patch(url, data) : await this.post(url, data);
+    // The policy changes what grades COME OUT of the gradebook, so anything
+    // cached that carries a score is now suspect.
+    this.cache.invalidatePrefix(`/api/v1/courses/${courseId}/assignments`);
+    return result;
+  }
+
+  // --- Assignment extensions ---
+  //
+  // Extra ATTEMPTS on an assignment. Same wrapped-array shape as Classic quiz
+  // extensions, and a different endpoint from the quiz one — an assignment's
+  // attempt limit is not a quiz's.
+  async setAssignmentExtensions(courseId: string, assignmentId: string, extensions: any[]) {
+    const result = await this.post(
+      `/api/v1/courses/${courseId}/assignments/${assignmentId}/extensions`,
+      { assignment_extensions: extensions }
+    );
+    this.invalidateAssignments(courseId);
+    return result;
+  }
+
   // --- Quiz time extensions / accommodations ---
   //
   // Extra *minutes* on a timed quiz is not a date override, and the two quiz

@@ -29,6 +29,8 @@ import { registerQuizExtensionTools } from './tools/quizExtensions.js';
 import { registerCourseSettingsTools } from './tools/courseSettings.js';
 import { registerCourseCopyTools } from './tools/courseCopy.js';
 import { registerCalendarTools } from './tools/calendar.js';
+import { registerLatePolicyTools } from './tools/latePolicy.js';
+import { registerAssignmentExtensionTools } from './tools/assignmentExtensions.js';
 // Load environment variables
 dotenv.config();
 
@@ -95,6 +97,8 @@ registerQuizExtensionTools(server, canvas);
 registerCourseSettingsTools(server, canvas);
 registerCourseCopyTools(server, canvas);
 registerCalendarTools(server, canvas);
+registerLatePolicyTools(server, canvas);
+registerAssignmentExtensionTools(server, canvas);
 // Start the server
 async function startServer() {
   try {

@@ -2,7 +2,7 @@
   "manifest_version": "0.1",
   "name": "canvas-mcp",
   "display_name": "Canvas LMS Integration",
-  "version": "1.11.4",
+  "version": "1.12.0",
   "description": "Comprehensive Canvas LMS integration for course management, assignments, pages, students, and rubric analysis",
   "long_description": "This extension provides full Canvas LMS integration capabilities including course management, assignment creation and grading, page editing with styleguide support, student management with privacy controls, module organization, submission tracking, and comprehensive rubric statistics analysis. It also covers the instructor grading queue (what needs grading across every course), New Quizzes authoring and item analysis on the separate /api/quiz/v1 API, course-wide grades with missing-work and engagement reports for intervention planning, and read-only Canvas inbox triage. Perfect for educators who want to streamline their Canvas workflows directly from Claude Desktop.",
   "author": {
@@ -23,7 +23,9 @@
     "entry_point": "dist/index.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/dist/index.js"],
+      "args": [
+        "${__dirname}/dist/index.js"
+      ],
       "env": {
         "CANVAS_API_TOKEN": "${user_config.api_token}",
         "CANVAS_BASE_URL": "${user_config.base_url}"
@@ -39,7 +41,7 @@
       "required": true
     },
     "base_url": {
-      "type": "string", 
+      "type": "string",
       "title": "Canvas Base URL",
       "description": "Your Canvas instance URL (e.g., https://yourschool.instructure.com)",
       "default": "https://fhict.instructure.com",
@@ -47,122 +49,463 @@
     }
   },
   "tools": [
-    { "name": "get-server-version", "description": "Report which build of this server is loaded" },
-    { "name": "list-courses", "description": "List your courses, optionally including unpublished shells and past terms, with name/code search" },
-    { "name": "get-course", "description": "Fetch a single course by ID, including unpublished courses" },
-    { "name": "post-announcement", "description": "Post an announcement to a specific course" },
-    { "name": "list-students", "description": "Get course enrollment with privacy controls" },
-    { "name": "list-assignments", "description": "Get assignments with submission status for students" },
-    { "name": "get-assignment", "description": "Fetch metadata for a single assignment" },
-    { "name": "create-assignment", "description": "Create new assignments in a course" },
-    { "name": "update-assignment", "description": "Update existing assignments" },
-    { "name": "delete-assignment", "description": "Delete (archive) an assignment" },
-    { "name": "list-assignment-groups", "description": "List assignment groups (grade buckets) in a course" },
-    { "name": "create-assignment-group", "description": "Create a new assignment group" },
-    { "name": "bulk-update-assignment-dates", "description": "Bulk update due/unlock/lock dates for assignments" },
-    { "name": "list-assignment-submissions", "description": "Track student submission status and comments" },
-    { "name": "grade-submission", "description": "Grade student work with scores and feedback" },
-    { "name": "post-submission-comment", "description": "Post feedback as a comment on a submission" },
-    { "name": "get-submission-documents", "description": "Retrieve submission attachments and optional file content" },
-    { "name": "get-submission-file-info", "description": "Get metadata for a submission file" },
-    { "name": "download-submission-file", "description": "Download a submission file as text or base64" },
-    { "name": "list-sections", "description": "List course sections with optional enrollment counts" },
-    { "name": "list-section-submissions", "description": "Get submissions filtered by section" },
-    { "name": "list-rubrics", "description": "List all rubrics in a course" },
-    { "name": "get-rubric-statistics", "description": "Rubric analysis with score distributions" },
-    { "name": "list-rubric-assessments", "description": "List rubric assessments for an assignment" },
-    { "name": "attach-rubric-to-assignment", "description": "Attach a rubric to an assignment" },
-    { "name": "get-rubric", "description": "Read one rubric in full — criteria, ratings, points, and the criterion IDs grading needs" },
-    { "name": "create-rubric", "description": "Create a rubric from criteria and rating levels, course-level or attached to an assignment" },
-    { "name": "update-rubric", "description": "Change an existing rubric's title, criteria or comment style, re-sending what it is not changing" },
-    { "name": "list-modules", "description": "Course module management and organization" },
-    { "name": "list-module-items", "description": "List items in a module" },
-    { "name": "toggle-module-publish", "description": "Publish or unpublish a module" },
-    { "name": "create-module", "description": "Create a new module" },
-    { "name": "update-module", "description": "Update module properties" },
-    { "name": "delete-module", "description": "Delete a module and its items" },
-    { "name": "get-module-item", "description": "Get details for a module item" },
-    { "name": "create-module-item", "description": "Add an item to a module" },
-    { "name": "update-module-item", "description": "Update a module item" },
-    { "name": "delete-module-item", "description": "Remove an item from a module" },
-    { "name": "list-pages", "description": "List course pages by URL slug" },
-    { "name": "get-page-content", "description": "Get page HTML content" },
-    { "name": "update-page-content", "description": "Create or update course pages" },
-    { "name": "list-page-revisions", "description": "List page revision history" },
-    { "name": "revert-page-revision", "description": "Revert a page to a previous revision" },
-    { "name": "patch-page-content", "description": "Smart editing of pages using natural language" },
-    { "name": "apply-page-changes", "description": "Write revised HTML to a Canvas page" },
-    { "name": "generate-styleguide", "description": "Create Canvas page formatting standards" },
-    { "name": "get-styleguide", "description": "Fetch the course styleguide page" },
-    { "name": "list-quizzes", "description": "List all quizzes in a course" },
-    { "name": "get-quiz", "description": "Fetch metadata for a single quiz" },
-    { "name": "create-quiz", "description": "Create a new quiz" },
-    { "name": "update-quiz", "description": "Update an existing quiz" },
-    { "name": "delete-quiz", "description": "Delete a quiz" },
-    { "name": "list-quiz-questions", "description": "List questions in a quiz" },
-    { "name": "get-quiz-question", "description": "Fetch a single quiz question" },
-    { "name": "create-quiz-question", "description": "Create a quiz question" },
-    { "name": "update-quiz-question", "description": "Update a quiz question" },
-    { "name": "delete-quiz-question", "description": "Delete a quiz question" },
-    { "name": "list-quiz-question-groups", "description": "List question groups in a quiz" },
-    { "name": "get-quiz-question-group", "description": "Fetch a quiz question group" },
-    { "name": "create-quiz-question-group", "description": "Create a quiz question group" },
-    { "name": "update-quiz-question-group", "description": "Update a quiz question group" },
-    { "name": "delete-quiz-question-group", "description": "Delete a quiz question group" },
-    { "name": "list-eportfolios", "description": "List ePortfolios for a user" },
-    { "name": "get-eportfolio", "description": "Get ePortfolio details" },
-    { "name": "get-eportfolio-pages", "description": "List pages in an ePortfolio" },
-    { "name": "list-grading-todo", "description": "Get the instructor's grading queue across courses: what needs grading and how much" },
-    { "name": "get-todo-counts", "description": "Fast count of submissions needing grading" },
-    { "name": "list-new-quizzes", "description": "List New Quizzes in a course (separate API from Classic Quizzes)" },
-    { "name": "get-new-quiz", "description": "Fetch a single New Quiz including its settings" },
-    { "name": "create-new-quiz", "description": "Create a New Quiz in a course" },
-    { "name": "update-new-quiz", "description": "Update an existing New Quiz" },
-    { "name": "delete-new-quiz", "description": "Delete a New Quiz from a course" },
-    { "name": "list-new-quiz-items", "description": "List all questions in a New Quiz" },
-    { "name": "get-new-quiz-item", "description": "Fetch a single New Quiz question with its answer key" },
-    { "name": "create-new-quiz-item", "description": "Add a question to a New Quiz with generated answer IDs and scoring rules" },
-    { "name": "update-new-quiz-item", "description": "Update a New Quiz question" },
-    { "name": "delete-new-quiz-item", "description": "Delete a question from a New Quiz" },
-    { "name": "get-new-quiz-report", "description": "Generate and retrieve a New Quiz item analysis or student analysis report" },
-    { "name": "get-course-grades", "description": "Get current grades for every student in a course, lowest first" },
-    { "name": "list-missing-submissions", "description": "List missing and late work in a course, grouped by student" },
-    { "name": "get-student-engagement", "description": "Per-student page views, participations, and tardiness breakdown" },
-    { "name": "list-conversations", "description": "List Canvas inbox messages (read-only)" },
-    { "name": "get-conversation", "description": "Read the full message thread of one conversation (read-only)" },
-    { "name": "get-unread-message-count", "description": "Get the number of unread Canvas inbox messages" },
-    { "name": "upload-course-file", "description": "Upload a file into a course's Files area" },
-    { "name": "set-file-availability", "description": "Publish, unpublish, or hide a course file behind a link" },
-    { "name": "list-course-files", "description": "List files in a course or in one folder" },
-    { "name": "list-course-folders", "description": "List a course's file folders" },
-    { "name": "list-assignment-overrides", "description": "Show differentiated due dates on an assignment or New Quiz" },
-    { "name": "create-assignment-override", "description": "Give specific students or a section different dates" },
-    { "name": "update-assignment-override", "description": "Change an existing override's dates or membership" },
-    { "name": "delete-assignment-override", "description": "Remove an override, returning students to the base dates" },
-    { "name": "extend-due-date", "description": "Give named students a later due date, reusing an existing override" },
-    { "name": "extend-quiz-time", "description": "Give students extra minutes on a timed quiz (Classic or New Quizzes)" },
-    { "name": "list-quiz-extensions", "description": "Show who already has extra time on a Classic quiz" },
-    { "name": "set-course-quiz-accommodations", "description": "Give students extra time on every New Quiz in a course" },
-    { "name": "get-syllabus", "description": "Read a course's syllabus (a course attribute, not a page)" },
-    { "name": "update-syllabus", "description": "Write the course syllabus, backing the old one up to an unpublished page first" },
-    { "name": "update-course-settings", "description": "Change course name, landing page, dates, and visibility" },
-    { "name": "set-course-publish-state", "description": "Publish, unpublish, or conclude a course" },
-    { "name": "set-front-page", "description": "Mark a page as the course front page and optionally the landing page" },
-    { "name": "copy-course-content", "description": "Copy a whole course into another, optionally shifting every date onto the new term" },
-    { "name": "get-content-migration", "description": "Check a course copy's progress and what it failed to bring across" },
-    { "name": "list-content-migrations", "description": "List the copies and imports run into a course" },
-    { "name": "duplicate-assignment", "description": "Copy an assignment or New Quiz within a course, optionally renaming and dating it" },
-    { "name": "list-calendar-events", "description": "List a course's calendar events over a date range" },
-    { "name": "create-calendar-event", "description": "Add a meeting, exam date, or recurring office hours to a course calendar" },
-    { "name": "update-calendar-event", "description": "Move or edit a calendar event, one occurrence or a whole series" },
-    { "name": "delete-calendar-event", "description": "Remove a calendar event or a recurring series" }
+    {
+      "name": "get-server-version",
+      "description": "Report which build of this server is loaded"
+    },
+    {
+      "name": "list-courses",
+      "description": "List your courses, optionally including unpublished shells and past terms, with name/code search"
+    },
+    {
+      "name": "get-course",
+      "description": "Fetch a single course by ID, including unpublished courses"
+    },
+    {
+      "name": "post-announcement",
+      "description": "Post an announcement to a specific course"
+    },
+    {
+      "name": "list-students",
+      "description": "Get course enrollment with privacy controls"
+    },
+    {
+      "name": "list-assignments",
+      "description": "Get assignments with submission status for students"
+    },
+    {
+      "name": "get-assignment",
+      "description": "Fetch metadata for a single assignment"
+    },
+    {
+      "name": "create-assignment",
+      "description": "Create new assignments in a course"
+    },
+    {
+      "name": "update-assignment",
+      "description": "Update existing assignments"
+    },
+    {
+      "name": "delete-assignment",
+      "description": "Delete (archive) an assignment"
+    },
+    {
+      "name": "list-assignment-groups",
+      "description": "List assignment groups (grade buckets) in a course"
+    },
+    {
+      "name": "create-assignment-group",
+      "description": "Create a new assignment group"
+    },
+    {
+      "name": "bulk-update-assignment-dates",
+      "description": "Bulk update due/unlock/lock dates for assignments"
+    },
+    {
+      "name": "list-assignment-submissions",
+      "description": "Track student submission status and comments"
+    },
+    {
+      "name": "grade-submission",
+      "description": "Grade student work with scores and feedback"
+    },
+    {
+      "name": "post-submission-comment",
+      "description": "Post feedback as a comment on a submission"
+    },
+    {
+      "name": "get-submission-documents",
+      "description": "Retrieve submission attachments and optional file content"
+    },
+    {
+      "name": "get-submission-file-info",
+      "description": "Get metadata for a submission file"
+    },
+    {
+      "name": "download-submission-file",
+      "description": "Download a submission file as text or base64"
+    },
+    {
+      "name": "list-sections",
+      "description": "List course sections with optional enrollment counts"
+    },
+    {
+      "name": "list-section-submissions",
+      "description": "Get submissions filtered by section"
+    },
+    {
+      "name": "list-rubrics",
+      "description": "List all rubrics in a course"
+    },
+    {
+      "name": "get-rubric-statistics",
+      "description": "Rubric analysis with score distributions"
+    },
+    {
+      "name": "list-rubric-assessments",
+      "description": "List rubric assessments for an assignment"
+    },
+    {
+      "name": "attach-rubric-to-assignment",
+      "description": "Attach a rubric to an assignment"
+    },
+    {
+      "name": "get-rubric",
+      "description": "Read one rubric in full \u2014 criteria, ratings, points, and the criterion IDs grading needs"
+    },
+    {
+      "name": "create-rubric",
+      "description": "Create a rubric from criteria and rating levels, course-level or attached to an assignment"
+    },
+    {
+      "name": "update-rubric",
+      "description": "Change an existing rubric's title, criteria or comment style, re-sending what it is not changing"
+    },
+    {
+      "name": "list-modules",
+      "description": "Course module management and organization"
+    },
+    {
+      "name": "list-module-items",
+      "description": "List items in a module"
+    },
+    {
+      "name": "toggle-module-publish",
+      "description": "Publish or unpublish a module"
+    },
+    {
+      "name": "create-module",
+      "description": "Create a new module"
+    },
+    {
+      "name": "update-module",
+      "description": "Update module properties"
+    },
+    {
+      "name": "delete-module",
+      "description": "Delete a module and its items"
+    },
+    {
+      "name": "get-module-item",
+      "description": "Get details for a module item"
+    },
+    {
+      "name": "create-module-item",
+      "description": "Add an item to a module"
+    },
+    {
+      "name": "update-module-item",
+      "description": "Update a module item"
+    },
+    {
+      "name": "delete-module-item",
+      "description": "Remove an item from a module"
+    },
+    {
+      "name": "list-pages",
+      "description": "List course pages by URL slug"
+    },
+    {
+      "name": "get-page-content",
+      "description": "Get page HTML content"
+    },
+    {
+      "name": "update-page-content",
+      "description": "Create or update course pages"
+    },
+    {
+      "name": "list-page-revisions",
+      "description": "List page revision history"
+    },
+    {
+      "name": "revert-page-revision",
+      "description": "Revert a page to a previous revision"
+    },
+    {
+      "name": "patch-page-content",
+      "description": "Smart editing of pages using natural language"
+    },
+    {
+      "name": "apply-page-changes",
+      "description": "Write revised HTML to a Canvas page"
+    },
+    {
+      "name": "generate-styleguide",
+      "description": "Create Canvas page formatting standards"
+    },
+    {
+      "name": "get-styleguide",
+      "description": "Fetch the course styleguide page"
+    },
+    {
+      "name": "list-quizzes",
+      "description": "List all quizzes in a course"
+    },
+    {
+      "name": "get-quiz",
+      "description": "Fetch metadata for a single quiz"
+    },
+    {
+      "name": "create-quiz",
+      "description": "Create a new quiz"
+    },
+    {
+      "name": "update-quiz",
+      "description": "Update an existing quiz"
+    },
+    {
+      "name": "delete-quiz",
+      "description": "Delete a quiz"
+    },
+    {
+      "name": "list-quiz-questions",
+      "description": "List questions in a quiz"
+    },
+    {
+      "name": "get-quiz-question",
+      "description": "Fetch a single quiz question"
+    },
+    {
+      "name": "create-quiz-question",
+      "description": "Create a quiz question"
+    },
+    {
+      "name": "update-quiz-question",
+      "description": "Update a quiz question"
+    },
+    {
+      "name": "delete-quiz-question",
+      "description": "Delete a quiz question"
+    },
+    {
+      "name": "list-quiz-question-groups",
+      "description": "List question groups in a quiz"
+    },
+    {
+      "name": "get-quiz-question-group",
+      "description": "Fetch a quiz question group"
+    },
+    {
+      "name": "create-quiz-question-group",
+      "description": "Create a quiz question group"
+    },
+    {
+      "name": "update-quiz-question-group",
+      "description": "Update a quiz question group"
+    },
+    {
+      "name": "delete-quiz-question-group",
+      "description": "Delete a quiz question group"
+    },
+    {
+      "name": "list-eportfolios",
+      "description": "List ePortfolios for a user"
+    },
+    {
+      "name": "get-eportfolio",
+      "description": "Get ePortfolio details"
+    },
+    {
+      "name": "get-eportfolio-pages",
+      "description": "List pages in an ePortfolio"
+    },
+    {
+      "name": "list-grading-todo",
+      "description": "Get the instructor's grading queue across courses: what needs grading and how much"
+    },
+    {
+      "name": "get-todo-counts",
+      "description": "Fast count of submissions needing grading"
+    },
+    {
+      "name": "list-new-quizzes",
+      "description": "List New Quizzes in a course (separate API from Classic Quizzes)"
+    },
+    {
+      "name": "get-new-quiz",
+      "description": "Fetch a single New Quiz including its settings"
+    },
+    {
+      "name": "create-new-quiz",
+      "description": "Create a New Quiz in a course"
+    },
+    {
+      "name": "update-new-quiz",
+      "description": "Update an existing New Quiz"
+    },
+    {
+      "name": "delete-new-quiz",
+      "description": "Delete a New Quiz from a course"
+    },
+    {
+      "name": "list-new-quiz-items",
+      "description": "List all questions in a New Quiz"
+    },
+    {
+      "name": "get-new-quiz-item",
+      "description": "Fetch a single New Quiz question with its answer key"
+    },
+    {
+      "name": "create-new-quiz-item",
+      "description": "Add a question to a New Quiz with generated answer IDs and scoring rules"
+    },
+    {
+      "name": "update-new-quiz-item",
+      "description": "Update a New Quiz question"
+    },
+    {
+      "name": "delete-new-quiz-item",
+      "description": "Delete a question from a New Quiz"
+    },
+    {
+      "name": "get-new-quiz-report",
+      "description": "Generate and retrieve a New Quiz item analysis or student analysis report"
+    },
+    {
+      "name": "get-course-grades",
+      "description": "Get current grades for every student in a course, lowest first"
+    },
+    {
+      "name": "list-missing-submissions",
+      "description": "List missing and late work in a course, grouped by student"
+    },
+    {
+      "name": "get-student-engagement",
+      "description": "Per-student page views, participations, and tardiness breakdown"
+    },
+    {
+      "name": "list-conversations",
+      "description": "List Canvas inbox messages (read-only)"
+    },
+    {
+      "name": "get-conversation",
+      "description": "Read the full message thread of one conversation (read-only)"
+    },
+    {
+      "name": "get-unread-message-count",
+      "description": "Get the number of unread Canvas inbox messages"
+    },
+    {
+      "name": "upload-course-file",
+      "description": "Upload a file into a course's Files area"
+    },
+    {
+      "name": "set-file-availability",
+      "description": "Publish, unpublish, or hide a course file behind a link"
+    },
+    {
+      "name": "list-course-files",
+      "description": "List files in a course or in one folder"
+    },
+    {
+      "name": "list-course-folders",
+      "description": "List a course's file folders"
+    },
+    {
+      "name": "list-assignment-overrides",
+      "description": "Show differentiated due dates on an assignment or New Quiz"
+    },
+    {
+      "name": "create-assignment-override",
+      "description": "Give specific students or a section different dates"
+    },
+    {
+      "name": "update-assignment-override",
+      "description": "Change an existing override's dates or membership"
+    },
+    {
+      "name": "delete-assignment-override",
+      "description": "Remove an override, returning students to the base dates"
+    },
+    {
+      "name": "extend-due-date",
+      "description": "Give named students a later due date, reusing an existing override"
+    },
+    {
+      "name": "extend-quiz-time",
+      "description": "Give students extra minutes on a timed quiz (Classic or New Quizzes)"
+    },
+    {
+      "name": "list-quiz-extensions",
+      "description": "Show who already has extra time on a Classic quiz"
+    },
+    {
+      "name": "set-course-quiz-accommodations",
+      "description": "Give students extra time on every New Quiz in a course"
+    },
+    {
+      "name": "get-syllabus",
+      "description": "Read a course's syllabus (a course attribute, not a page)"
+    },
+    {
+      "name": "update-syllabus",
+      "description": "Write the course syllabus, backing the old one up to an unpublished page first"
+    },
+    {
+      "name": "update-course-settings",
+      "description": "Change course name, landing page, dates, and visibility"
+    },
+    {
+      "name": "set-course-publish-state",
+      "description": "Publish, unpublish, or conclude a course"
+    },
+    {
+      "name": "set-front-page",
+      "description": "Mark a page as the course front page and optionally the landing page"
+    },
+    {
+      "name": "copy-course-content",
+      "description": "Copy a whole course into another, optionally shifting every date onto the new term"
+    },
+    {
+      "name": "get-content-migration",
+      "description": "Check a course copy's progress and what it failed to bring across"
+    },
+    {
+      "name": "list-content-migrations",
+      "description": "List the copies and imports run into a course"
+    },
+    {
+      "name": "duplicate-assignment",
+      "description": "Copy an assignment or New Quiz within a course, optionally renaming and dating it"
+    },
+    {
+      "name": "list-calendar-events",
+      "description": "List a course's calendar events over a date range"
+    },
+    {
+      "name": "create-calendar-event",
+      "description": "Add a meeting, exam date, or recurring office hours to a course calendar"
+    },
+    {
+      "name": "update-calendar-event",
+      "description": "Move or edit a calendar event, one occurrence or a whole series"
+    },
+    {
+      "name": "delete-calendar-event",
+      "description": "Remove a calendar event or a recurring series"
+    },
+    {
+      "name": "extend-assignment-attempts",
+      "description": "Give students extra attempts at an assignment, for a retake or a technical failure."
+    },
+    {
+      "name": "get-late-policy",
+      "description": "Read the course's policy for missing and late work."
+    },
+    {
+      "name": "set-late-policy",
+      "description": "Set the course's missing/late work policy. Changes how grades are computed course-wide."
+    }
   ],
   "prompts": [
     {
       "name": "analyze-rubric-statistics",
       "description": "Comprehensive rubric analysis with visualizations for formative assessments",
-      "arguments": ["courseName"],
+      "arguments": [
+        "courseName"
+      ],
       "text": "Please analyze the rubric statistics for the course \"{courseName}\". Follow these steps:\n\n1. First, use the list-courses tool to find the course ID for \"{courseName}\".\n\n2. Then, use the list-assignments tool to get all assignments for this course.\n\n3. For each formative assignment that has a due date before today:\n   - Use the get-rubric-statistics tool to get detailed statistics\n   - Include the point distribution to create visualizations\n   - Skip assignments with future due dates\n\n4. Create and analyze two comprehensive visualizations that show all assignments together:\n   a) Grouped Stacked Bar Chart:\n      - X-axis: Criteria names\n      - Y-axis: Percentage of students\n      - Groups: One group of stacked bars per assignment\n      - Bars: Stacked to show score distribution (0-4 points)\n      - Colors: Consistent colors across assignments for each point value\n      - Legend: Include both assignment names and point values\n      \n   b) Grouped Bar Chart:\n      - X-axis: Criteria names\n      - Y-axis: Average score\n      - Groups: One bar per assignment for each criterion\n      - Colors: Different color for each assignment\n      - Include error bars showing standard deviation if available\n\n5. Provide a summary of key insights based on:\n   - Score distributions across criteria and assignments\n   - Progression or patterns between assignments\n   - Common areas of strength or difficulty across assignments\n   - Notable trends or changes between assignments\n   - Specific criteria that show consistent or varying performance\n\nPlease ensure all visualizations are clearly labeled with:\n- Descriptive title (including analysis date)\n- Axis labels\n- Legend showing assignments and score levels\n- Clear distinction between assignments\n- Percentage or count indicators where appropriate"
     }
   ]
-} 
+}

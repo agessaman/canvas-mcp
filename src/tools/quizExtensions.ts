@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
+import { resolveTargets, numericIds } from "../extensionTargets.js";
 
 // Extra TIME on a timed quiz — the accommodation extend-due-date deliberately
 // does not cover. A due date says when work is handed in; extra time says how
@@ -30,66 +31,6 @@ const EXTRA_MINUTES = z.number().int().min(0).max(MAX_EXTRA_MINUTES)
     + "0 removes it. It does NOT replace a student's course-wide New Quizzes accommodation — "
     + "those two add together."
   );
-
-interface Target { ids: string[]; note: string; }
-
-/**
- * Turn the caller's target into the list of user IDs Canvas actually wants.
- *
- * Neither engine has a section-level extension, so a section has to be expanded
- * to its students here. That expansion is a snapshot, which matters enough to
- * say out loud: a student added to an "Extra Time" section next week does not
- * inherit anything granted today.
- */
-async function resolveTargets(
-  canvas: CanvasClient,
-  args: { studentIds?: string[]; sectionId?: string }
-): Promise<Target> {
-  const hasStudents = (args.studentIds?.length ?? 0) > 0;
-  if (hasStudents === !!args.sectionId) {
-    throw new Error('Target exactly one of studentIds or sectionId.');
-  }
-
-  if (hasStudents) {
-    return { ids: args.studentIds!.map(String), note: '' };
-  }
-
-  const enrollments = await canvas.listSectionEnrollments(args.sectionId!, {
-    type: ['StudentEnrollment'],
-    state: ['active', 'invited'],
-    per_page: 100,
-  });
-  const ids = [...new Set(enrollments.map((e: any) => String(e.user_id)))];
-  if (ids.length === 0) {
-    throw new Error(
-      `Section ${args.sectionId} has no currently-enrolled students, so nothing would be granted. `
-      + `Check the section ID with list-sections.`
-    );
-  }
-  return {
-    ids,
-    note: `\n\nTargeted section ${args.sectionId} by expanding it to its ${ids.length} currently-enrolled `
-      + `student(s) — Canvas has no section-level quiz extension. This is a snapshot: students added to that `
-      + `section later will NOT get this extension, and it must be granted to them separately.`,
-  };
-}
-
-/**
- * Canvas wants integer user IDs, and the New Quizzes service takes raw JSON
- * rather than form-encoded params, so a string ID is not reliably coerced.
- * Refuse anything non-numeric rather than send a payload Canvas may accept and
- * quietly ignore.
- */
-function numericIds(ids: string[]): number[] {
-  const bad = ids.filter(id => !/^\d+$/.test(id));
-  if (bad.length > 0) {
-    throw new Error(
-      `Student IDs must be numeric Canvas user IDs; got ${bad.join(', ')}. `
-      + `Resolve names or SIS IDs to Canvas user IDs with list-students first.`
-    );
-  }
-  return ids.map(Number);
-}
 
 type Engine = { kind: 'classic' | 'new'; quiz: any };
 
