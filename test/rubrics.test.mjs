@@ -136,6 +136,74 @@ test('criteria already in Canvas indexed-hash form are accepted and preserved in
   });
 });
 
+// A rating carries its own long description — the sentence a grader actually
+// reads when deciding between two levels. It goes over the wire as
+// long_description inside the rating hash, one level deeper than the criterion's.
+test('a rating\'s long description reaches Canvas inside the rating, not the criterion', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(createAndRead());
+    await canvas.callTool('create-rubric', {
+      courseId: '1', title: 'DBQ Essay Rubric',
+      criteria: [{
+        description: 'Thesis',
+        longDescription: 'The criterion-level one.',
+        ratings: [
+          { description: 'Strong', points: 6, longDescription: 'States a defensible claim and sustains it.' },
+          { description: 'Weak', points: 2 },
+        ],
+      }],
+    });
+
+    const sent = bodyOf(canvas, 'POST').rubric.criteria['0'];
+    assert.equal(sent.long_description, 'The criterion-level one.');
+    assert.equal(sent.ratings['0'].long_description, 'States a defensible claim and sustains it.');
+    // A rating without one must not acquire an empty key.
+    assert.equal('long_description' in sent.ratings['1'], false);
+  });
+});
+
+// The wipe risk. update-rubric re-sends the stored criteria for anything it is
+// not changing, so if a rating's long description did not survive that round
+// trip, a title-only rename would quietly strip every one of them — the same
+// shape as the hide_points problem. Verified live on rubric 40400: they survive.
+test('a title-only update preserves the long descriptions on ratings', async () => {
+  const withLongDescriptions = storedRubric({
+    data: [{
+      id: '_1', description: 'Thesis', long_description: 'Criterion level.', points: 6,
+      ratings: [
+        { id: '_1a', description: 'Strong', points: 6, long_description: 'Rating level A.' },
+        { id: '_1b', description: 'Weak', points: 2, long_description: 'Rating level B.' },
+      ],
+    }],
+  });
+
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ method }) => (method === 'PUT'
+      ? { rubric: withLongDescriptions }
+      : withLongDescriptions));
+
+    await canvas.callTool('update-rubric', { courseId: '1', rubricId: '55', title: 'Renamed' });
+
+    const sent = bodyOf(canvas, 'PUT').rubric.criteria['0'];
+    assert.equal(sent.long_description, 'Criterion level.');
+    assert.equal(sent.ratings['0'].long_description, 'Rating level A.');
+    assert.equal(sent.ratings['1'].long_description, 'Rating level B.');
+  });
+});
+
+test('get-rubric shows a rating\'s long description next to its rating', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => storedRubric({
+      data: [{
+        id: '_1', description: 'Thesis', points: 6,
+        ratings: [{ id: '_1a', description: 'Strong', points: 6, long_description: 'Sustains a defensible claim.' }],
+      }],
+    }));
+    const result = await canvas.callTool('get-rubric', { courseId: '1', rubricId: '55' });
+    assert.match(canvas.textOf(result), /6 pts — Strong: Sustains a defensible claim\./);
+  });
+});
+
 test('a criterion is sent with the points Canvas derives from its highest rating', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(createAndRead());
