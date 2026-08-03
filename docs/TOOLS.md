@@ -825,5 +825,5 @@ Gives students extra time on **every** New Quiz in a course — the standing IEP
   - `reduceChoices`: boolean
   - `applyToInProgressSessions`: boolean — also applies to attempts that are open right now
 - **New Quizzes only.** Classic Quizzes has no course-level equivalent; those need `extend-quiz-time` per quiz.
-- This is also the **only** way to grant New Quizzes extra time before a student has opened the quiz — verified working where a per-quiz grant on the same student and course was refused
+- This is also the **only** way to grant New Quizzes extra time before a student has opened the quiz — verified working where a per-quiz grant on the same student and course was refused, and confirmed in the Canvas UI: the granted minutes show on the Moderate page of a quiz the student had never opened
 - Canvas rejects the whole batch if any one user ID is unknown to the New Quizzes service, so nobody receives the accommodation rather than most people
