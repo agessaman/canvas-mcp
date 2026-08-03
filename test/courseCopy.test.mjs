@@ -116,6 +116,22 @@ test('date shifting reaches Canvas in the nested shape it expects', async () => 
   });
 });
 
+// Canvas rounds the shift to whole weeks so each item keeps its weekday —
+// verified live, where a 358-day request was applied as 357 and a Friday
+// stayed a Friday. The dates given are therefore not a literal instruction.
+test('a date shift says that Canvas preserves the weekday rather than the exact offset', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith());
+    const result = await canvas.callTool('copy-course-content', {
+      sourceCourseId: '16477', destinationCourseId: '18473',
+      shiftDates: true, oldStartDate: '2026-01-06', newStartDate: '2026-08-24',
+    });
+    const text = canvas.textOf(result);
+    assert.match(text, /DAY OF THE WEEK/);
+    assert.match(text, /whole weeks/);
+  });
+});
+
 // Without the dates there is nothing to shift between, and the copy would
 // silently arrive carrying last term's due dates.
 test('shiftDates without the start dates is refused rather than sent', async () => {
@@ -177,6 +193,33 @@ test('a copy with no date handling says the old due dates are coming with it', a
       sourceCourseId: '16477', destinationCourseId: '18473',
     });
     assert.match(canvas.textOf(result), /still carry last term's due dates/);
+  });
+});
+
+// A migration record is polled, not read. The cache serves any entry without a
+// network call for its first 60 seconds, which is exactly a status-checking
+// cadence — live, two consecutive checks returned an identical state while the
+// copy was progressing.
+test('a migration status is never served from cache', async () => {
+  await withMockCanvas(async canvas => {
+    let state = 'running';
+    canvas.setResponse(({ url }) => {
+      if (url.includes('/migration_issues')) return [];
+      if (url.includes('/progress/')) return { completion: 40 };
+      if (/\/content_migrations\/\d+/.test(url)) return { ...MIGRATION, workflow_state: state };
+      return {};
+    });
+
+    await canvas.callTool('get-content-migration', { courseId: '18473', migrationId: '771' });
+    state = 'completed';
+    const result = await canvas.callTool('get-content-migration', { courseId: '18473', migrationId: '771' });
+
+    // Two network reads, and the second must see the new state.
+    const statusReads = canvas.requests.filter(r =>
+      /\/content_migrations\/771/.test(r.url) && !r.url.includes('migration_issues')
+    );
+    assert.equal(statusReads.length, 2, 'the second check must reach Canvas rather than the cache');
+    assert.match(canvas.textOf(result), /finished/);
   });
 });
 

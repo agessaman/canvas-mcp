@@ -25,7 +25,10 @@ const FINISHED = new Set(['completed', 'failed']);
 
 function describeState(state: string): string {
   switch (state) {
-    case 'pre_processing': return 'queued, not started yet';
+    // Canvas keeps a migration in pre_processing while it is demonstrably
+    // working — observed holding this state from 10% through 20% — so calling
+    // it "not started" contradicts the percentage printed beside it.
+    case 'pre_processing': return 'preparing';
     case 'pre_processed': return 'prepared, about to run';
     case 'running': return 'running now';
     case 'waiting_for_select': return 'waiting for a selection (selective import — not supported by this server)';
@@ -129,6 +132,12 @@ export function registerCourseCopyTools(server: McpServer, canvas: CanvasClient)
                   .join(' and ')}`
               : '')
             + '.'
+            // Verified live: a 358-day request was applied as 357 (51 whole
+            // weeks), so a Friday stayed a Friday. Worth stating, because the
+            // line above reads as an exact instruction and is not one.
+            + `\nNote that Canvas keeps each item on its original DAY OF THE WEEK, rounding the shift to whole `
+            + `weeks — so content can land a few days either side of a literal date offset. That is usually what a `
+            + `class schedule wants; check the first and last weeks if exact dates matter.`
           : args.removeDates
             ? `\nAll dates are being stripped; the copied content will arrive undated.`
             : `\nDates are being copied unchanged — everything will still carry last term's due dates.`;

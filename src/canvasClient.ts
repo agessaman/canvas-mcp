@@ -4,7 +4,14 @@ import { SimpleCache } from './cache.js';
 
 // URL fragments whose responses must never be cached (live grade, roster-state,
 // inbox, and grading-queue data — all of which change under the instructor's feet)
-const UNCACHED_PATTERNS = ['/submissions', '/enrollments', '/conversations', '/todo', '/progress'];
+//
+// /content_migrations is here because a migration record is polled, not read:
+// the cache serves any entry without a network call for its first 60 seconds,
+// which is exactly the cadence someone watching a course copy uses. Observed
+// live — two consecutive status checks returned an identical workflow_state
+// while the copy was demonstrably progressing. A status that can be a minute
+// stale is a status you cannot act on.
+const UNCACHED_PATTERNS = ['/submissions', '/enrollments', '/conversations', '/todo', '/progress', '/content_migrations'];
 
 // Safety bound on Link-header following, so a malformed or self-referential
 // `next` link can't loop indefinitely. At per_page=100 this is 50k records.

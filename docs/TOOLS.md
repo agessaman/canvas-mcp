@@ -824,6 +824,8 @@ Copies an entire course into another — last term's assignments, pages, modules
 - **A copy adds to the destination rather than replacing it, and Canvas cannot undo one.** A non-empty destination is refused, naming what is already there, unless `allowExistingContent` is set.
 - Copying a course into itself is refused
 - `shiftDates` without both start dates is refused: Canvas would otherwise accept it and the copy would arrive carrying last term's due dates
+- **Canvas keeps every item on its original day of the week**, rounding the shift to whole weeks rather than applying the literal offset between your two dates. Verified live: a 358-day request was applied as 357 (51 weeks), so a Friday assignment stayed on a Friday. Usually what a class schedule wants, but content can land a few days either side of the dates you name.
+- Undated content stays undated; times of day are preserved exactly
 - Asynchronous. Returns a migration ID; the copy keeps running in the background for minutes on a full course.
 
 ### get-content-migration
