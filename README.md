@@ -48,7 +48,7 @@
 - **Grades & intervention** — course-wide gradebook, missing-work report, and engagement analytics for planning outreach
 - **Overrides** — differentiated due dates and date accommodations, per student or per section, with `extend-due-date` for the everyday case
 - **Quiz time extensions** — extra *minutes* on a timed quiz, the clock accommodation that a due date can't express, for both quiz engines (`extend-quiz-time`), plus a course-wide standing accommodation for New Quizzes
-- **Course settings & syllabus** — edit the syllabus (a course attribute the page tools cannot reach), publish or conclude a course, set the landing page and front page
+- **Course settings & syllabus** — edit the syllabus (a course attribute the page tools cannot reach, backed up to an unpublished page before each replace), publish or conclude a course, set the landing page and front page
 - **Files** — upload local files into a course's Files area (syllabi, handouts, images), publish or unpublish them, and browse what's already there
 - **Conversations** — read-only inbox triage (sending is intentionally not exposed)
 - **ePortfolios** — list and read student ePortfolios

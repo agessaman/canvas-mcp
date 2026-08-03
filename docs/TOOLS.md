@@ -707,10 +707,12 @@ Writes the course syllabus. Takes HTML.
   - `courseId`: string
   - `body`: string — HTML, rendered as-is by Canvas
 - Optional parameters:
-  - `replace`: boolean (default: false) — overwrite instead of appending
-  - `prepend`: boolean (default: false) — when appending, place the new content above the existing
-- **Appends by default, and for a reason: the syllabus has no revision history.** Wiki pages can be reverted with `revert-page-revision`; the syllabus cannot. A replace is permanent.
-- When replacing, the destroyed content is reproduced in the tool's output — that is the only remaining copy
+  - `mode`: `replace` (default) | `append` | `prepend`
+  - `backup`: boolean (default: true) — copy the outgoing syllabus to an unpublished page before replacing it
+- **The syllabus has no revision history of its own.** Wiki pages do, so a replace first copies the outgoing text to an unpublished page called **"Syllabus - Backup"** (`syllabus-backup`), which borrows that history: every backup is another revision of the same page, reachable with `list-page-revisions` and `revert-page-revision`.
+- The backup is written *before* the overwrite, and a failed backup aborts the replacement — a backup that silently failed is worse than none, since the caller would believe the old text is recoverable
+- If Canvas returns the backup page as published, the replacement is aborted rather than leave students looking at an outdated syllabus
+- `append`/`prepend` destroy nothing, so they skip the backup
 - Confirms the write from Canvas's own response rather than assuming a 200 means saved
 
 ### update-course-settings

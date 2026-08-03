@@ -17,7 +17,18 @@ const COURSE = {
 function canvasWith({ course = COURSE, distort = (x) => x, page } = {}) {
   return ({ url, body, method }) => {
     if (url.includes('/pages/')) {
-      return page ?? { title: 'Welcome', url: 'welcome', front_page: true };
+      if (page) return page;
+      // Echo the page back the way Canvas does, so assertions about what was
+      // written mean something — a fixed fixture would pass regardless.
+      const wiki = body?.wiki_page ?? {};
+      return {
+        page_id: 42,
+        title: wiki.title ?? 'Welcome',
+        url: decodeURIComponent(url.split('/pages/')[1] ?? 'welcome').split('?')[0],
+        published: wiki.published ?? true,
+        front_page: wiki.front_page ?? false,
+        body: wiki.body,
+      };
     }
     if (method === 'PUT' && body?.course) {
       const merged = { ...course, ...body.course };
@@ -31,17 +42,100 @@ function canvasWith({ course = COURSE, distort = (x) => x, page } = {}) {
   };
 }
 
-test('a syllabus is appended to rather than overwritten by default', async () => {
+// The syllabus has no version history of its own, so the outgoing text is
+// copied to a page — which does have one — before it is overwritten.
+test('replacing a syllabus backs the old one up to an unpublished page first', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith());
+    const result = await canvas.callTool('update-syllabus', {
+      courseId: '18473', body: '<p>Entirely new</p>',
+    });
+
+    const backup = canvas.requests.find(r => r.url.includes('/pages/'));
+    assert.ok(backup, 'the old syllabus must be written somewhere before it is destroyed');
+    assert.match(backup.url, /syllabus-backup/);
+    assert.equal(backup.body.wiki_page.title, 'Syllabus - Backup');
+    assert.equal(backup.body.wiki_page.published, false, 'students must not see the old syllabus');
+    assert.match(backup.body.wiki_page.body, /Week 1: Introduction/);
+
+    const write = canvas.requests.find(r => r.body?.course);
+    assert.equal(write.body.course.syllabus_body, '<p>Entirely new</p>');
+    assert.match(canvas.textOf(result), /Syllabus - Backup/);
+    assert.match(canvas.textOf(result), /list-page-revisions/);
+  });
+});
+
+// Ordering is the whole guarantee. A backup written after the overwrite would
+// be a backup of the new text.
+test('the backup is written before the syllabus is overwritten', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith());
+    await canvas.callTool('update-syllabus', { courseId: '18473', body: '<p>New</p>' });
+
+    const backupIndex = canvas.requests.findIndex(r => r.url.includes('/pages/'));
+    const writeIndex = canvas.requests.findIndex(r => r.body?.course);
+    assert.ok(backupIndex !== -1 && writeIndex !== -1);
+    assert.ok(backupIndex < writeIndex, 'backup must precede the destructive write');
+  });
+});
+
+// A backup that silently failed is worse than none, because the caller believes
+// the old text is recoverable when it is not.
+test('a failed backup stops the syllabus from being replaced', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ url }) => {
+      if (url.includes('/pages/')) return { __status: 403, __body: { errors: ['forbidden'] } };
+      return COURSE;
+    });
+    const result = await canvas.callTool('update-syllabus', {
+      courseId: '18473', body: '<p>Entirely new</p>',
+    });
+
+    assert.match(JSON.stringify(result), /Failed to update syllabus/);
+    assert.ok(
+      !canvas.requests.some(r => r.body?.course),
+      'the syllabus must be left alone when its backup could not be written'
+    );
+  });
+});
+
+// An unpublished backup is the point; a published one would show students an
+// outdated syllabus.
+test('a backup page Canvas published anyway aborts the replacement', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith({
+      page: { title: 'Syllabus - Backup', url: 'syllabus-backup', page_id: 9, published: true },
+    }));
+    const result = await canvas.callTool('update-syllabus', {
+      courseId: '18473', body: '<p>Entirely new</p>',
+    });
+    assert.match(JSON.stringify(result), /came back PUBLISHED/);
+    assert.ok(!canvas.requests.some(r => r.body?.course), 'the syllabus must not be changed');
+  });
+});
+
+test('backup: false skips the page and says the old syllabus is gone', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith());
+    const result = await canvas.callTool('update-syllabus', {
+      courseId: '18473', body: '<p>Entirely new</p>', backup: false,
+    });
+    assert.ok(!canvas.requests.some(r => r.url.includes('/pages/')), 'no backup page should be written');
+    assert.match(canvas.textOf(result), /previous syllabus is gone/);
+  });
+});
+
+test('append adds to the syllabus and needs no backup, since nothing is destroyed', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     await canvas.callTool('update-syllabus', {
-      courseId: '18473', body: '<p>Week 2: Methods</p>',
+      courseId: '18473', body: '<p>Week 2: Methods</p>', mode: 'append',
     });
 
-    const write = canvas.requests.find(r => r.method === 'PUT');
-    // The original text must still be there — this is the whole point.
+    const write = canvas.requests.find(r => r.body?.course);
     assert.match(write.body.course.syllabus_body, /Week 1: Introduction/);
     assert.match(write.body.course.syllabus_body, /Week 2: Methods/);
+    assert.ok(!canvas.requests.some(r => r.url.includes('/pages/')));
   });
 });
 
@@ -49,9 +143,9 @@ test('prepend puts the new content above what was already there', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     await canvas.callTool('update-syllabus', {
-      courseId: '18473', body: '<p>Read this first</p>', prepend: true,
+      courseId: '18473', body: '<p>Read this first</p>', mode: 'prepend',
     });
-    const stored = canvas.requests.find(r => r.method === 'PUT').body.course.syllabus_body;
+    const stored = canvas.requests.find(r => r.body?.course).body.course.syllabus_body;
     assert.ok(
       stored.indexOf('Read this first') < stored.indexOf('Week 1'),
       'prepended content should come first'
@@ -59,32 +153,14 @@ test('prepend puts the new content above what was already there', async () => {
   });
 });
 
-// Replacing is allowed, but the old text is the only copy in existence once
-// Canvas has taken the write, so it comes back in the response.
-test('replacing a syllabus hands back the content it destroyed', async () => {
-  await withMockCanvas(async canvas => {
-    canvas.setResponse(canvasWith());
-    const result = await canvas.callTool('update-syllabus', {
-      courseId: '18473', body: '<p>Entirely new</p>', replace: true,
-    });
-
-    const write = canvas.requests.find(r => r.method === 'PUT');
-    assert.equal(write.body.course.syllabus_body, '<p>Entirely new</p>');
-
-    const text = canvas.textOf(result);
-    assert.match(text, /Week 1: Introduction/, 'the destroyed content must be reproduced');
-    assert.match(text, /only copy/);
-    assert.match(text, /Canvas keeps no copy/);
-  });
-});
-
-test('a first syllabus is written as-is, with no replace ceremony', async () => {
+test('a first syllabus is written as-is, with nothing to back up', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ course: { ...COURSE, syllabus_body: null } }));
     const result = await canvas.callTool('update-syllabus', {
       courseId: '18473', body: '<p>Week 1</p>',
     });
-    assert.equal(canvas.requests.find(r => r.method === 'PUT').body.course.syllabus_body, '<p>Week 1</p>');
+    assert.equal(canvas.requests.find(r => r.body?.course).body.course.syllabus_body, '<p>Week 1</p>');
+    assert.ok(!canvas.requests.some(r => r.url.includes('/pages/')), 'an empty syllabus needs no backup');
     assert.match(canvas.textOf(result), /Set the syllabus/);
   });
 });

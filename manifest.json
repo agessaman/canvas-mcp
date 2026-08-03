@@ -2,7 +2,7 @@
   "manifest_version": "0.1",
   "name": "canvas-mcp",
   "display_name": "Canvas LMS Integration",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "Comprehensive Canvas LMS integration for course management, assignments, pages, students, and rubric analysis",
   "long_description": "This extension provides full Canvas LMS integration capabilities including course management, assignment creation and grading, page editing with styleguide support, student management with privacy controls, module organization, submission tracking, and comprehensive rubric statistics analysis. It also covers the instructor grading queue (what needs grading across every course), New Quizzes authoring and item analysis on the separate /api/quiz/v1 API, course-wide grades with missing-work and engagement reports for intervention planning, and read-only Canvas inbox triage. Perfect for educators who want to streamline their Canvas workflows directly from Claude Desktop.",
   "author": {
@@ -141,7 +141,7 @@
     { "name": "list-quiz-extensions", "description": "Show who already has extra time on a Classic quiz" },
     { "name": "set-course-quiz-accommodations", "description": "Give students extra time on every New Quiz in a course" },
     { "name": "get-syllabus", "description": "Read a course's syllabus (a course attribute, not a page)" },
-    { "name": "update-syllabus", "description": "Write the course syllabus, appending by default since it has no revision history" },
+    { "name": "update-syllabus", "description": "Write the course syllabus, backing the old one up to an unpublished page first" },
     { "name": "update-course-settings", "description": "Change course name, landing page, dates, and visibility" },
     { "name": "set-course-publish-state", "description": "Publish, unpublish, or conclude a course" },
     { "name": "set-front-page", "description": "Mark a page as the course front page and optionally the landing page" }

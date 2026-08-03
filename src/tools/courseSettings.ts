@@ -12,9 +12,11 @@ import { CanvasClient } from "../canvasClient.js";
 //
 //   1. The syllabus has NO revision history. Wiki pages do — this server can
 //      list and revert their revisions — but course[syllabus_body] is a plain
-//      column. An overwrite is gone, so update-syllabus reads before it writes
-//      and hands the old content back rather than trusting the caller to have
-//      kept a copy.
+//      column, so an overwrite is simply gone. update-syllabus therefore copies
+//      the outgoing text to an unpublished page before replacing it, which
+//      borrows the revision history the syllabus lacks: every backup is another
+//      revision of that one page, listable and revertable with the existing
+//      page tools.
 //   2. course[event] can delete the entire course, enrollments and all. That
 //      value is deliberately not exposed; see the note on set-course-publish-state.
 
@@ -25,6 +27,46 @@ function summarizeHtml(html: string | null | undefined): string {
   if (!text) return 'markup only, no text';
   const preview = text.length > 120 ? `${text.slice(0, 120)}…` : text;
   return `${text.length} characters, starting "${preview}"`;
+}
+
+// One page, written to every time, so the backups accumulate as revisions of it
+// rather than as a litter of dated pages. That is the point: a wiki page has the
+// version history the syllabus does not, so list-page-revisions on this slug is
+// the syllabus's history, and revert-page-revision reaches any older copy.
+const BACKUP_SLUG = 'syllabus-backup';
+const BACKUP_TITLE = 'Syllabus - Backup';
+
+/**
+ * Copy the current syllabus onto an unpublished page before it is overwritten.
+ *
+ * Returns the page, or throws. The caller must not proceed with the replacement
+ * if this throws: a backup that silently failed is worse than no backup at all,
+ * because the whole point is that the outgoing text is otherwise unrecoverable.
+ */
+async function backupSyllabus(canvas: CanvasClient, courseId: string, existing: string): Promise<any> {
+  const stamp = new Date().toISOString();
+  const page: any = await canvas.updateOrCreatePage(courseId, BACKUP_SLUG, {
+    wiki_page: {
+      title: BACKUP_TITLE,
+      // Unpublished, so students never see it. Canvas keeps it out of the
+      // course navigation and the pages list students can reach.
+      published: false,
+      body: `<p><em>Syllabus backup taken ${stamp} by canvas-mcp, before the syllabus was replaced.</em></p>\n${existing}`,
+    }
+  });
+
+  if (!page?.page_id && !page?.url) {
+    throw new Error(`Canvas returned no page for the backup: ${JSON.stringify(page).slice(0, 200)}`);
+  }
+  if (page.published) {
+    // Worth saying loudly rather than leaving a student-visible copy of an old
+    // syllabus sitting in the course.
+    throw new Error(
+      `The backup page "${page.url}" came back PUBLISHED, which would show students an outdated syllabus. `
+      + `The syllabus was NOT changed. Unpublish that page, then try again.`
+    );
+  }
+  return page;
 }
 
 export function registerCourseSettingsTools(server: McpServer, canvas: CanvasClient) {
@@ -65,32 +107,38 @@ export function registerCourseSettingsTools(server: McpServer, canvas: CanvasCli
   // Tool: update-syllabus
   server.tool(
     "update-syllabus",
-    "Write a course's syllabus (the Syllabus page in Canvas). Takes HTML. Appends by default; replacing existing content requires replace: true, because the syllabus has no revision history and an overwrite cannot be undone.",
+    "Write a course's syllabus (the Syllabus page in Canvas). Takes HTML. Replaces the existing syllabus, but copies the outgoing text to an unpublished \"Syllabus - Backup\" page first, so the version Canvas would otherwise discard is recoverable. Use mode 'append' or 'prepend' to add to the syllabus instead of replacing it.",
     {
       courseId: z.string().describe("The ID of the course"),
       body: z.string().describe("HTML for the syllabus. Canvas renders this as-is."),
-      replace: z.boolean().default(false).describe("Overwrite the existing syllabus instead of appending to it. Irreversible — Canvas keeps no previous version."),
-      prepend: z.boolean().default(false).describe("When appending, put the new content at the top instead of the bottom")
+      mode: z.enum(['replace', 'append', 'prepend']).default('replace')
+        .describe("'replace' swaps the whole syllabus (backing up the old one), 'append' adds to the end, 'prepend' adds to the top"),
+      backup: z.boolean().default(true)
+        .describe("Copy the outgoing syllabus to an unpublished \"Syllabus - Backup\" page before replacing it. Leave this on unless the current syllabus is genuinely worthless — Canvas keeps no version of its own.")
     },
     { destructiveHint: false },
-    async ({ courseId, body, replace = false, prepend = false }: { courseId: string; body: string; replace?: boolean; prepend?: boolean }) => {
+    async ({ courseId, body, mode = 'replace', backup = true }: { courseId: string; body: string; mode?: 'replace' | 'append' | 'prepend'; backup?: boolean }) => {
       try {
         const course: any = await canvas.getCourse(courseId, { 'include[]': 'syllabus_body' });
         const existing: string = course?.syllabus_body ?? '';
 
-        // Refuse rather than destroy — and hand back the current content in the
-        // refusal, so the one copy that exists is not lost by asking.
-        if (existing && !replace && !prepend && body === existing) {
+        if (existing && mode === 'replace' && body === existing) {
           return { content: [{ type: "text", text: "The syllabus already contains exactly this content; nothing was changed." }] };
         }
 
+        // Back up BEFORE the destructive write, and let a failure stop it. A
+        // backup attempted afterwards would be a backup of the new text, and a
+        // backup that quietly failed leaves nothing to recover.
+        let backedUpTo: any = null;
+        if (existing && mode === 'replace' && backup) {
+          backedUpTo = await backupSyllabus(canvas, courseId, existing);
+        }
+
         let next: string;
-        if (!existing) {
-          next = body;
-        } else if (replace) {
+        if (!existing || mode === 'replace') {
           next = body;
         } else {
-          next = prepend ? `${body}\n${existing}` : `${existing}\n${body}`;
+          next = mode === 'prepend' ? `${body}\n${existing}` : `${existing}\n${body}`;
         }
 
         const updated: any = await canvas.updateCourse(courseId, { syllabus_body: next });
@@ -105,15 +153,24 @@ export function registerCourseSettingsTools(server: McpServer, canvas: CanvasCli
 
         const action = !existing
           ? 'Set the syllabus'
-          : replace
-            ? `Replaced the syllabus (the previous version was ${summarizeHtml(existing)}, and Canvas keeps no copy of it)`
-            : `${prepend ? 'Prepended to' : 'Appended to'} the syllabus`;
+          : mode === 'replace'
+            ? `Replaced the syllabus (the previous version was ${summarizeHtml(existing)})`
+            : `${mode === 'prepend' ? 'Prepended to' : 'Appended to'} the syllabus`;
+
+        const backupNote = backedUpTo
+          ? `\n\nThe previous syllabus was saved to the unpublished page "${backedUpTo.title ?? BACKUP_TITLE}" `
+            + `(${backedUpTo.url ?? BACKUP_SLUG}) — students cannot see it. Read it with get-page-content, and note `
+            + `that earlier backups are still there as revisions of that page: list-page-revisions and `
+            + `revert-page-revision reach them, which is the version history the syllabus itself does not have.`
+          : (existing && mode === 'replace'
+            ? `\n\nNo backup was taken (backup: false), so the previous syllabus is gone — Canvas keeps no copy.`
+            : '');
 
         return {
           content: [{
             type: "text",
             text: `${action} for "${course?.name ?? courseId}". It is now ${summarizeHtml(stored)}.`
-              + (replace && existing ? `\n\nThe replaced content is reproduced below in case it is still wanted — this is the only copy:\n\n${existing}` : '')
+              + backupNote
               + verdict
           }]
         };
