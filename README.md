@@ -295,6 +295,8 @@ Canvas runs two quiz engines on different APIs. `list-quizzes` and friends cover
 
 The two engines also express **extra time** completely differently — Classic posts a `quiz_extensions` array to `/api/v1`, New Quizzes posts accommodations to `/api/quiz/v1` — so `extend-quiz-time` works out which engine an ID belongs to and sends the right shape. Because the ID spaces are independent, an ID that names a real quiz under *both* engines is reported as ambiguous rather than guessed at; pass `engine` to resolve it. Only New Quizzes has a course-wide accommodation (`set-course-quiz-accommodations`), and only Classic lets you read existing extensions back (`list-quiz-extensions`).
 
+One Canvas behaviour is worth knowing before exam day: **New Quizzes refuses a per-quiz accommodation for a student who has not yet opened that quiz** — which is exactly the situation when you are setting extra time up in advance. `set-course-quiz-accommodations` has no such restriction and is the way to grant it beforehand. Classic Quizzes lets you extend at any time.
+
 ### A note on messaging
 
 This server reads the Canvas inbox but will not send messages. Canvas exposes `POST /api/v1/conversations`, and it is deliberately not wired up: the intended workflow is to triage messages and draft action items, then write the reply to a student yourself.

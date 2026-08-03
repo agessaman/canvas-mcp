@@ -803,6 +803,7 @@ Gives students extra **minutes** on a timed quiz — the clock accommodation, as
 - An option belonging to the other engine is refused rather than sent, because Canvas ignores unsupported parameters silently
 - Warns when the quiz has no time limit, where extra minutes change nothing
 - A `sectionId` is expanded to its currently-enrolled students, since Canvas has no section-level extension. That is a snapshot: students added later do not inherit it.
+- **New Quizzes only accepts a per-quiz accommodation for students who have already opened that quiz.** To grant extra time *before* an exam, use `set-course-quiz-accommodations`, which has no such restriction. Classic Quizzes does not restrict this. Canvas reports the refusal as a 404 it documents as a missing course or assignment; the tool translates it.
 
 ### list-quiz-extensions
 Shows who already has extra time or attempts on a quiz.
@@ -824,3 +825,5 @@ Gives students extra time on **every** New Quiz in a course — the standing IEP
   - `reduceChoices`: boolean
   - `applyToInProgressSessions`: boolean — also applies to attempts that are open right now
 - **New Quizzes only.** Classic Quizzes has no course-level equivalent; those need `extend-quiz-time` per quiz.
+- This is also the **only** way to grant New Quizzes extra time before a student has opened the quiz — verified working where a per-quiz grant on the same student and course was refused
+- Canvas rejects the whole batch if any one user ID is unknown to the New Quizzes service, so nobody receives the accommodation rather than most people

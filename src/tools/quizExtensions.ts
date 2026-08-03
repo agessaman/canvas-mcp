@@ -236,38 +236,60 @@ function verifyNewQuiz(requested: any[], response: any): string {
 }
 
 /**
- * The New Quizzes service keeps its own user records, and rejects a student
- * Canvas itself knows perfectly well.
+ * The New Quizzes service keeps its own user records and rejects students
+ * Canvas itself knows perfectly well. It has two distinct 404s, and the
+ * difference between them is the whole diagnosis — Canvas documents both as
+ * "the course or assignment was not found", which they are not.
  *
- * Observed live in course 18473: user 6199 is an active student enrollment, has
- * an assignment override, and takes a Classic quiz extension without complaint —
- * but both accommodations endpoints answer
- * `404 {"error":"Users with IDs 6199 were not found"}`. The course-level call
- * fails identically, so it is the user that cannot be resolved, not the quiz.
- * Canvas's own docs say a 404 here means the course or assignment was not
- * found, which sends you looking in exactly the wrong place.
+ * Established live in course 18473, against a student who was already an active
+ * enrollment with an assignment override and a working Classic extension:
  *
- * Publishing the course was tried and changed nothing, so that is not it. The
- * remaining explanation is that the service only learns about a student when
- * they launch a New Quiz, and this one never has (`last_activity_at: null`).
- * Unconfirmed, so the message says what was observed rather than asserting the
- * mechanism.
+ *   "Users with IDs N were not found"
+ *     The service has never heard of the student. Publishing the course does
+ *     not help (tried). It learns about them when they first launch a New Quiz:
+ *     the same call succeeded minutes after the student opened one.
+ *
+ *   "Users with IDs N are not participants in this assignment"
+ *     The service knows the student, but they have not opened *this* quiz. Seen
+ *     on quiz 371566 at the same moment 371565 — the one they had opened —
+ *     accepted the identical call.
+ *
+ * The second is the one that bites a real teacher, because granting extra time
+ * before an exam is the entire point and nobody has opened the quiz yet. The
+ * course-level endpoint is not restricted this way and is the way through.
  */
-function explainNewQuizUserError(error: any, ids: number[]): never {
+function explainNewQuizUserError(error: any, ids: number[], scope: 'quiz' | 'course'): never {
   const message = String(error?.message ?? '');
-  if (!/were not found/i.test(message)) throw error;
 
-  throw new Error(
-    `${message}\n\n`
-    + `Canvas's New Quizzes service keeps its own record of users, separate from the course roster, and it does `
-    + `not know these students: ${ids.join(', ')}. An active enrollment is not enough — this same ID can be `
-    + `enrolled, hold an assignment override, and accept a Classic quiz extension while the New Quizzes service `
-    + `still reports it as missing. (Canvas documents this 404 as a missing course or assignment, which it is not.)\n\n`
-    + `The service appears to learn about a student only once they have opened a New Quiz, so this usually means `
-    + `the student has never launched one. Publishing the course does NOT fix it — that was tried. Have the `
-    + `student open a New Quiz once, then grant the accommodation. Date accommodations (extend-due-date) and `
-    + `Classic quiz extensions are unaffected and work now.`
-  );
+  if (/are not participants in this assignment/i.test(message)) {
+    throw new Error(
+      `${message}\n\n`
+      + `Canvas will only accept a per-quiz accommodation for students who have already opened that quiz — which `
+      + `is backwards for an exam accommodation, since you normally grant it beforehand. Nothing is wrong with `
+      + `the IDs: ${ids.join(', ')}.\n\n`
+      + `To grant extra time ahead of the quiz, use set-course-quiz-accommodations, which applies to every New `
+      + `Quiz in the course and does not require the student to have opened anything. Verified working where this `
+      + `per-quiz call failed. (Canvas documents this 404 as a missing course or assignment, which it is not.)`
+    );
+  }
+
+  if (/were not found/i.test(message)) {
+    throw new Error(
+      `${message}\n\n`
+      + `Canvas's New Quizzes service keeps its own record of users, separate from the course roster, and has `
+      + `never heard of these students: ${ids.join(', ')}. An active enrollment is not enough — the same ID can `
+      + `be enrolled, hold an assignment override, and accept a Classic quiz extension while this service still `
+      + `reports it as missing. Publishing the course does NOT fix it. (Canvas documents this 404 as a missing `
+      + `course or assignment, which it is not.)\n\n`
+      + `The service learns about a student the first time they launch a New Quiz, so this means these students `
+      + `have never opened one in this course${scope === 'quiz' ? '' : ' — including via any other quiz'}. Have `
+      + `them open a New Quiz once, then grant the accommodation. If one ID in a batch is unknown, Canvas rejects `
+      + `the whole call and nobody gets it, so check for a typo'd ID too. Date accommodations (extend-due-date) `
+      + `and Classic quiz extensions are unaffected and work now.`
+    );
+  }
+
+  throw error;
 }
 
 export function registerQuizExtensionTools(server: McpServer, canvas: CanvasClient) {
@@ -277,7 +299,10 @@ export function registerQuizExtensionTools(server: McpServer, canvas: CanvasClie
     "Give students extra MINUTES on a timed quiz — the clock accommodation (e.g. time-and-a-half on a 60-minute "
     + "quiz). This is not a due date: use extend-due-date for a later deadline, and this tool for a longer clock. "
     + "Works with both Classic Quizzes and New Quizzes; the engine is detected from the ID. Target either "
-    + "studentIds or a sectionId (which is expanded to its students, since Canvas has no section-level extension).",
+    + "studentIds or a sectionId (which is expanded to its students, since Canvas has no section-level extension). "
+    + "NOTE for New Quizzes: Canvas only accepts a per-quiz accommodation for students who have already opened "
+    + "that quiz, so to grant extra time BEFORE an exam use set-course-quiz-accommodations instead. Classic "
+    + "Quizzes has no such restriction.",
     {
       courseId: z.string().describe("The ID of the course"),
       quizId: z.string().describe("A Classic quiz ID, or a New Quiz's assignment ID. Both engines are checked."),
@@ -337,7 +362,7 @@ export function registerQuizExtensionTools(server: McpServer, canvas: CanvasClie
         });
         const response: any = await canvas
           .setNewQuizAccommodations(args.courseId, args.quizId, accommodations)
-          .catch((error: any) => explainNewQuizUserError(error, ids));
+          .catch((error: any) => explainNewQuizUserError(error, ids, 'quiz'));
         return {
           content: [{
             type: "text",
@@ -427,8 +452,9 @@ export function registerQuizExtensionTools(server: McpServer, canvas: CanvasClie
   server.tool(
     "set-course-quiz-accommodations",
     "Give students extra time on EVERY New Quiz in a course at once — the standing IEP/504 accommodation, rather "
-    + "than a per-quiz grant. New Quizzes only: Classic Quizzes has no course-level equivalent, so a student's "
-    + "Classic quizzes must still be handled one at a time with extend-quiz-time.",
+    + "than a per-quiz grant. Also the only way to grant New Quizzes extra time BEFORE a student has opened the "
+    + "quiz, which the per-quiz tool cannot do. New Quizzes only: Classic Quizzes has no course-level "
+    + "equivalent, so a student's Classic quizzes must still be handled one at a time with extend-quiz-time.",
     {
       courseId: z.string().describe("The ID of the course"),
       studentIds: z.array(z.string()).optional().describe("Canvas user IDs. Mutually exclusive with sectionId."),
@@ -454,7 +480,7 @@ export function registerQuizExtensionTools(server: McpServer, canvas: CanvasClie
 
         const response: any = await canvas
           .setCourseQuizAccommodations(args.courseId, accommodations)
-          .catch((error: any) => explainNewQuizUserError(error, ids));
+          .catch((error: any) => explainNewQuizUserError(error, ids, 'course'));
         const label = args.extraMinutes === 0
           ? `Removed the course-wide extra time for ${ids.length} student(s)`
           : `Gave ${ids.length} student(s) ${args.extraMinutes} extra minute(s) on every New Quiz`;

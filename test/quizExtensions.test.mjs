@@ -321,9 +321,34 @@ test('a user the New Quizzes service does not know is explained, not passed thro
     });
     const text = JSON.stringify(result);
     assert.match(text, /keeps its own record of users/);
-    assert.match(text, /never launched one/);
+    assert.match(text, /have never opened one in this course/);
+    // The other 404 has a different fix, so the two must not blur together.
+    assert.doesNotMatch(text, /set-course-quiz-accommodations/);
     // The raw Canvas message has to survive too — it is the searchable part.
     assert.match(text, /Users with IDs 6199 were not found/);
+  });
+});
+
+// The 404 a real teacher hits: they grant extra time before the exam, and
+// Canvas refuses because nobody has opened the quiz yet. The way through is the
+// course-level endpoint, so the error has to name it.
+test('a per-quiz grant refused for non-participants points at the course-level tool', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ url }) => {
+      if (url.includes('/accommodations')) {
+        return { __status: 404, __body: { error: 'Users with IDs 6199 are not participants in this assignment' } };
+      }
+      return url.startsWith('/api/quiz/v1/') ? NEW_QUIZ : { __status: 404, __body: {} };
+    });
+    const result = await canvas.callTool('extend-quiz-time', {
+      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+    });
+    const text = JSON.stringify(result);
+    assert.match(text, /set-course-quiz-accommodations/);
+    assert.match(text, /already opened that quiz/);
+    // Must not be confused with the never-heard-of-them case, which has a
+    // completely different fix.
+    assert.doesNotMatch(text, /never heard of/);
   });
 });
 
