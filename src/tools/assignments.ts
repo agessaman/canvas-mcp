@@ -2,6 +2,19 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 
+/**
+ * Say what the attempt limit ended up as.
+ *
+ * Canvas stores "unlimited" as -1, which reads as a bug if it is printed raw
+ * and is invisible if it is omitted — and it is the setting that decides
+ * whether extend-assignment-attempts does anything at all.
+ */
+function attemptsNote(a: any): string {
+  const allowed = Number(a?.allowed_attempts ?? -1);
+  if (!Number.isFinite(allowed) || allowed <= 0) return ', attempts=unlimited';
+  return `, attempts=${allowed}`;
+}
+
 export function registerAssignmentTools(server: McpServer, canvas: CanvasClient) {
   // Tool: list-assignments
   server.tool(
@@ -155,6 +168,11 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
       published: z.boolean().optional(),
       grading_type: z.string().optional(),
       assignment_group_id: z.number().optional(),
+      allowed_attempts: z.number().int().optional().describe(
+        "How many times a student may submit. Canvas's default is unlimited, which it stores as -1; pass -1 to "
+        + "restore that. Setting a limit here is what makes extend-assignment-attempts meaningful — extra attempts "
+        + "on an unlimited assignment change nothing."
+      ),
     },
     { destructiveHint: false },
     async (args: any) => {
@@ -162,7 +180,7 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
       try {
         const a = await canvas.createAssignment(courseId, { assignment: fields }) as any;
         return {
-          content: [{ type: "text", text: `Assignment created: id=${a.id}, name="${a.name}", points=${a.points_possible}, published=${a.published}` }]
+          content: [{ type: "text", text: `Assignment created: id=${a.id}, name="${a.name}", points=${a.points_possible}, published=${a.published}${attemptsNote(a)}` }]
         };
       } catch (error: any) {
         if (error instanceof Error) {
@@ -188,6 +206,11 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
       published: z.boolean().optional(),
       grading_type: z.string().optional(),
       assignment_group_id: z.number().optional(),
+      allowed_attempts: z.number().int().optional().describe(
+        "How many times a student may submit. Canvas's default is unlimited, which it stores as -1; pass -1 to "
+        + "restore that. Setting a limit here is what makes extend-assignment-attempts meaningful — extra attempts "
+        + "on an unlimited assignment change nothing."
+      ),
     },
     { idempotentHint: true },
     async (args: any) => {
@@ -195,7 +218,7 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
       try {
         const a = await canvas.updateAssignment(courseId, assignmentId, { assignment: fields }) as any;
         return {
-          content: [{ type: "text", text: `Assignment updated: id=${a.id}, name="${a.name}", points=${a.points_possible}, published=${a.published}` }]
+          content: [{ type: "text", text: `Assignment updated: id=${a.id}, name="${a.name}", points=${a.points_possible}, published=${a.published}${attemptsNote(a)}` }]
         };
       } catch (error: any) {
         if (error instanceof Error) {

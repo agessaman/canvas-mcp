@@ -129,3 +129,36 @@ test('the assignment extension tool is registered', async () => {
     assert.ok(names.includes('extend-assignment-attempts'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// The attempt limit itself
+// ---------------------------------------------------------------------------
+
+// extend-assignment-attempts is only meaningful on an assignment that limits
+// attempts, and until this was added neither create- nor update-assignment
+// could set one — so the tool's only useful precondition was unreachable
+// without the Canvas UI. Found live: allowed_attempts came back -1 and there
+// was no way to change it.
+test('create-assignment can set an attempt limit, and reports it', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => assignment({ allowed_attempts: 2 }));
+    const result = await canvas.callTool('create-assignment', {
+      courseId: '1', name: 'DBQ Essay', allowed_attempts: 2,
+    });
+    assert.equal(canvas.requests.find(r => r.method === 'POST').body.assignment.allowed_attempts, 2);
+    assert.match(canvas.textOf(result), /attempts=2/);
+  });
+});
+
+test('update-assignment can restore unlimited attempts, which Canvas stores as -1', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => assignment({ allowed_attempts: -1 }));
+    const result = await canvas.callTool('update-assignment', {
+      courseId: '1', assignmentId: '371866', allowed_attempts: -1,
+    });
+    assert.equal(canvas.requests.find(r => r.method === 'PUT').body.assignment.allowed_attempts, -1);
+    // -1 is Canvas's encoding, not something to show a teacher.
+    assert.match(canvas.textOf(result), /attempts=unlimited/);
+    assert.doesNotMatch(canvas.textOf(result), /attempts=-1/);
+  });
+});
