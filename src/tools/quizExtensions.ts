@@ -25,9 +25,10 @@ const MAX_EXTRA_MINUTES = 10080;
 const EXTRA_MINUTES = z.number().int().min(0).max(MAX_EXTRA_MINUTES)
   .describe(
     "Extra minutes on the clock, added to the quiz's time limit for these students "
-    + "(e.g. 30 turns a 60-minute quiz into 90 for them). This is an absolute value, not "
-    + "a top-up: calling it again replaces the previous grant rather than adding to it. "
-    + "0 removes an extension."
+    + "(e.g. 30 turns a 60-minute quiz into 90 for them). Within one quiz this is an absolute "
+    + "value, not a top-up: calling it again replaces that grant rather than adding to it, and "
+    + "0 removes it. It does NOT replace a student's course-wide New Quizzes accommodation — "
+    + "those two add together."
   );
 
 interface Target { ids: string[]; note: string; }
@@ -292,6 +293,27 @@ function explainNewQuizUserError(error: any, ids: number[], scope: 'quiz' | 'cou
   throw error;
 }
 
+/**
+ * New Quizzes adds a per-quiz accommodation to the student's course-wide one
+ * rather than overriding it. Verified in the Canvas UI: a course-wide 45 plus a
+ * per-quiz 30 showed as "Time: +1 hr 15 min" on the Moderate page.
+ *
+ * This is worth saying on every grant, because neither value can be read back —
+ * the accommodations API is write-only — so a teacher topping up one quiz has no
+ * way to see the standing accommodation they are adding to, and the tool has no
+ * way to detect it and warn precisely.
+ */
+function stackingNote(scope: 'quiz' | 'course', extraMinutes: number): string {
+  if (extraMinutes === 0) return '';
+  return scope === 'quiz'
+    ? `\n\nNote: New Quizzes ADDS this to any course-wide accommodation the student already has, rather than `
+      + `replacing it — a standing 45 minutes plus 30 here becomes 75. Canvas cannot read course-wide `
+      + `accommodations back, so if this student may have one, check the quiz's Moderate page for the real total.`
+    : `\n\nNote: New Quizzes ADDS this to any per-quiz accommodation a student already has on an individual quiz, `
+      + `rather than replacing it. Neither value can be read back through the API, so check a quiz's Moderate `
+      + `page if you need the total a particular student ends up with.`;
+}
+
 export function registerQuizExtensionTools(server: McpServer, canvas: CanvasClient) {
   // Tool: extend-quiz-time
   server.tool(
@@ -369,6 +391,7 @@ export function registerQuizExtensionTools(server: McpServer, canvas: CanvasClie
             text: `${label} on New Quiz "${engine.quiz?.title}" (${args.quizId}): ${ids.join(', ')}.`
               + timeLimitNote(engine, args.extraMinutes)
               + target.note
+              + stackingNote('quiz', args.extraMinutes)
               + verifyNewQuiz(accommodations, response)
           }]
         };
@@ -492,6 +515,7 @@ export function registerQuizExtensionTools(server: McpServer, canvas: CanvasClie
               + `\n\nThis covers New Quizzes only. Any Classic quizzes in this course are unaffected and need `
               + `extend-quiz-time per quiz.`
               + target.note
+              + stackingNote('course', args.extraMinutes)
               + verifyNewQuiz(accommodations, response)
           }]
         };

@@ -297,6 +297,8 @@ The two engines also express **extra time** completely differently — Classic p
 
 One Canvas behaviour is worth knowing before exam day: **New Quizzes refuses a per-quiz accommodation for a student who has not yet opened that quiz** — which is exactly the situation when you are setting extra time up in advance. `set-course-quiz-accommodations` has no such restriction and is the way to grant it beforehand. Classic Quizzes lets you extend at any time.
 
+The two New Quizzes accommodations also **add together** rather than one overriding the other: a student with a standing course-wide 45 minutes who is then given 30 on a particular quiz ends up with 75. Canvas offers no way to read either value back, so both tools say this on every grant.
+
 ### A note on messaging
 
 This server reads the Canvas inbox but will not send messages. Canvas exposes `POST /api/v1/conversations`, and it is deliberately not wired up: the intended workflow is to triage messages and draft action items, then write the reply to a student yourself.

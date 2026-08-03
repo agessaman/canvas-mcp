@@ -249,6 +249,29 @@ test('a student in neither the successful nor the failed list is reported as hav
   });
 });
 
+// Verified in the Canvas UI: a course-wide 45 plus a per-quiz 30 reads as
+// "+1 hr 15 min". Neither value can be read back, so the tool cannot detect the
+// overlap — it can only say that it happens.
+test('a New Quiz grant says it adds to a course-wide accommodation rather than replacing it', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith({ engine: 'new' }));
+    const result = await canvas.callTool('extend-quiz-time', {
+      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+    });
+    assert.match(canvas.textOf(result), /ADDS this to any course-wide accommodation/);
+  });
+});
+
+test('clearing a grant does not carry the stacking note, which would only confuse', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith({ engine: 'new' }));
+    const result = await canvas.callTool('extend-quiz-time', {
+      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 0,
+    });
+    assert.doesNotMatch(canvas.textOf(result), /ADDS this/);
+  });
+});
+
 test('the absence of a New Quizzes readback endpoint is stated, not implied', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'new' }));

@@ -798,7 +798,8 @@ Gives students extra **minutes** on a timed quiz — the clock accommodation, as
   - `reduceChoices`: boolean — **New Quizzes only**: removes one wrong answer from multiple-choice questions with 4+ options
   - `manuallyUnlocked`: boolean — **Classic Quizzes only**: lets these students take the quiz while it is locked for everyone else
   - `engine`: `classic` | `new` — only needed when the ID is ambiguous
-- `extraMinutes` is absolute, not a top-up: calling again replaces the previous grant. `0` removes an extension.
+- `extraMinutes` is absolute *for this quiz*: calling again replaces that grant rather than adding to it, and `0` removes it (verified on both engines)
+- **On New Quizzes it does not replace a student's course-wide accommodation — the two add together.** Verified in the UI: a course-wide 45 plus a per-quiz 30 reads as `+1 hr 15 min`. Neither value is readable through the API, so the tool states this on every grant rather than detecting it.
 - The engine is detected by probing both APIs. Their ID spaces are independent, so an ID that names a quiz under each is refused as ambiguous rather than guessed
 - An option belonging to the other engine is refused rather than sent, because Canvas ignores unsupported parameters silently
 - Warns when the quiz has no time limit, where extra minutes change nothing
