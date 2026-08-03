@@ -216,6 +216,12 @@ export class CanvasClient {
   async getCourse(courseId: string, params: any = {}) {
     return this.get(`/api/v1/courses/${courseId}`, params);
   }
+  // Course attributes: syllabus, settings, and publish state all live here.
+  // The syllabus is a course attribute, NOT a wiki page, so the page tools
+  // cannot reach it — and unlike a page it has no revision history.
+  async updateCourse(courseId: string, data: any) {
+    return this.put(`/api/v1/courses/${courseId}`, { course: data });
+  }
   async postAnnouncement(courseId: string, data: any) {
     return this.post(`/api/v1/courses/${courseId}/discussion_topics`, data);
   }

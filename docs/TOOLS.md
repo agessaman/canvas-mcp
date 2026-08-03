@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **93 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **98 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -693,6 +693,57 @@ Reads the full message thread of one conversation.
 ### get-unread-message-count
 Returns the number of unread inbox conversations.
 - No parameters
+
+## Course Settings & Syllabus
+
+### get-syllabus
+Reads a course's syllabus. The syllabus is a course attribute (`course[syllabus_body]`), not a wiki page, so it never appears in `list-pages` and `get-page-content` cannot reach it.
+- Required parameters:
+  - `courseId`: string
+
+### update-syllabus
+Writes the course syllabus. Takes HTML.
+- Required parameters:
+  - `courseId`: string
+  - `body`: string — HTML, rendered as-is by Canvas
+- Optional parameters:
+  - `replace`: boolean (default: false) — overwrite instead of appending
+  - `prepend`: boolean (default: false) — when appending, place the new content above the existing
+- **Appends by default, and for a reason: the syllabus has no revision history.** Wiki pages can be reverted with `revert-page-revision`; the syllabus cannot. A replace is permanent.
+- When replacing, the destroyed content is reproduced in the tool's output — that is the only remaining copy
+- Confirms the write from Canvas's own response rather than assuming a 200 means saved
+
+### update-course-settings
+Changes a course's name, landing page, dates, and visibility.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `name`, `courseCode`: string
+  - `defaultView`: `feed` | `wiki` | `modules` | `assignments` | `syllabus` — the page students land on
+  - `isPublic`: boolean — visible to the public, including logged-out visitors
+  - `publicSyllabus`: boolean — expose only the syllabus
+  - `startAt`, `endAt`: string (ISO 8601)
+  - `timeZone`: string — IANA zone, e.g. `America/Los_Angeles`
+- Reports each field against what Canvas echoed back, and warns when a setting did not take — Canvas ignores settings it will not accept without erroring
+- `defaultView: 'wiki'` shows the front page; with no front page set, students land on an error. Set one with `set-front-page`.
+
+### set-course-publish-state
+Publishes, unpublishes, or concludes a course.
+- Required parameters:
+  - `courseId`: string
+  - `state`: `published` | `unpublished` | `concluded`
+- Maps to `course[event]`: `offer`, `claim`, `conclude`
+- **Cannot delete a course.** `course[event]` also accepts `delete`, which removes the course and every enrollment in it; it is deliberately not exposed, and a test asserts no tool reaches it.
+- Canvas refuses to unpublish a course once students have submitted work, and signals that by leaving the state unchanged rather than by erroring — the tool checks `workflow_state` and warns
+
+### set-front-page
+Marks a page as the course's front page.
+- Required parameters:
+  - `courseId`: string
+  - `pageUrl`: string — the page's URL slug, from `list-pages`
+- Optional parameters:
+  - `makeLandingPage`: boolean (default: false) — also set the course to open on it
+- An unpublished page cannot be a front page; Canvas declines quietly, so the tool raises it as an error
 
 ## Files
 

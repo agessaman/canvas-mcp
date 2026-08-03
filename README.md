@@ -48,13 +48,14 @@
 - **Grades & intervention** — course-wide gradebook, missing-work report, and engagement analytics for planning outreach
 - **Overrides** — differentiated due dates and date accommodations, per student or per section, with `extend-due-date` for the everyday case
 - **Quiz time extensions** — extra *minutes* on a timed quiz, the clock accommodation that a due date can't express, for both quiz engines (`extend-quiz-time`), plus a course-wide standing accommodation for New Quizzes
+- **Course settings & syllabus** — edit the syllabus (a course attribute the page tools cannot reach), publish or conclude a course, set the landing page and front page
 - **Files** — upload local files into a course's Files area (syllabi, handouts, images), publish or unpublish them, and browse what's already there
 - **Conversations** — read-only inbox triage (sending is intentionally not exposed)
 - **ePortfolios** — list and read student ePortfolios
 - **Prompts** — `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**93 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**98 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -283,6 +284,7 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | Grades & Intervention | 3 | `get-course-grades`, `list-missing-submissions`, `get-student-engagement` |
 | Conversations (read-only) | 3 | `list-conversations`, `get-conversation`, `get-unread-message-count` |
 | Overrides & Accommodations | 5 | `list-assignment-overrides`, `create-assignment-override`, `update-assignment-override`, `delete-assignment-override`, `extend-due-date` |
+| Course Settings & Syllabus | 5 | `get-syllabus`, `update-syllabus`, `update-course-settings`, `set-course-publish-state`, `set-front-page` |
 | Quiz Time Extensions | 3 | `extend-quiz-time`, `list-quiz-extensions`, `set-course-quiz-accommodations` |
 | Files | 4 | `upload-course-file`, `set-file-availability`, `list-course-files`, `list-course-folders` |
 | ePortfolios | 3 | `list-eportfolios`, `get-eportfolio`, `get-eportfolio-pages` |
