@@ -240,6 +240,33 @@ function storedAsInput(rubric: any): CriterionInput[] {
 }
 
 /**
+ * Explain a failed readback without overclaiming.
+ *
+ * A rubric is found through its *bookmarked association with the course*, not
+ * through the rubric row, so a 404 here really can mean the rubric exists but is
+ * linked to nothing and has vanished from the Canvas UI. That is worth shouting
+ * about — but only on a 404. This used to make the same claim for any error at
+ * all, and live testing caught it doing exactly that: a `style` parameter that
+ * Canvas 400s on produced "the association did not take" for two rubrics whose
+ * associations were demonstrably fine (`has_rubric: true` on the assignment, and
+ * both listed by list-rubrics). A warning that fires when nothing is wrong is
+ * worse than no warning, because it teaches the reader to skip the ones that
+ * mean something.
+ */
+function readbackFailureNote(rubricId: string | number, courseId: string, error: any, context: string): string {
+  const message = String(error?.message ?? 'unknown error');
+  const looksMissing = /\b404\b/.test(message);
+  const consequence = looksMissing
+    ? `Canvas finds a rubric through its association with the course, so this probably means the association did `
+      + `not take: the rubric may not appear on the course's Rubrics page or on the assignment. Check it there `
+      + `before relying on it.`
+    : `This is a failure to READ the rubric, not evidence that the write failed — the rubric may well be stored `
+      + `correctly. Check the course's Rubrics page to see.`;
+  return `\n\nWARNING — ${context} (ID ${rubricId}) but it could not be read back from course ${courseId}, so what `
+    + `Canvas stored is unconfirmed. ${consequence} Canvas said: ${message}`;
+}
+
+/**
  * The write endpoints answer `{ error: true, messages: [...] }` with HTTP 200
  * when the rubric fails validation, so the status line proves nothing.
  */
@@ -740,14 +767,7 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
         try {
           stored = await canvas.getRubric(args.courseId, String(rubricId));
         } catch (error: any) {
-          // This is the invisible-rubric case, and it is worth shouting about:
-          // Canvas only finds a rubric here through a bookmarked association,
-          // so a rubric that cannot be read back is one that will not show up
-          // in the course's rubric list either.
-          readbackNote = `\n\nWARNING — the rubric was created (ID ${rubricId}) but could not be read back from `
-            + `course ${args.courseId}. Canvas resolves a rubric through its course association, so this usually `
-            + `means the association did not take and the rubric may not appear in the Canvas UI. Check the `
-            + `course's Rubrics page before relying on it. Canvas said: ${error?.message ?? 'unknown error'}`;
+          readbackNote = readbackFailureNote(rubricId, args.courseId, error, 'the rubric was created');
         }
 
         const where = args.assignmentId
@@ -908,19 +928,11 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
         try {
           stored = await canvas.getRubric(args.courseId, readId);
         } catch (error: any) {
-          // This readback is doing double duty. Canvas resolves this endpoint
-          // through the rubric's *bookmarked association with the course*, not
-          // through the rubric row, so reading the rubric back is also the only
-          // available proof that the association survived the update — and the
-          // update sends no association of its own, since the one Canvas wants
-          // (rubric_association_id) is not something the read exposes. A rubric
-          // that cannot be read back here is one that will not appear in the
-          // course's Rubrics page either.
-          readbackNote = `\n\nWARNING — the update returned 200 but rubric ${readId} could not be read back from `
-            + `course ${args.courseId}, so what Canvas stored is unconfirmed. Canvas finds a rubric through its `
-            + `association with the course, so this may also mean the rubric is no longer linked to the course and `
-            + `has disappeared from the Canvas UI. Check the course's Rubrics page. Canvas said: `
-            + `${error?.message ?? 'unknown error'}`;
+          // This readback is doing double duty. The update sends no association
+          // of its own — the id Canvas wants (rubric_association_id) is not
+          // something the read exposes — so on a 404 this is also the only
+          // available sign that the association did not survive the update.
+          readbackNote = readbackFailureNote(readId, args.courseId, error, 'the update returned 200');
         }
 
         const preserved: string[] = [];

@@ -461,14 +461,24 @@ export class CanvasClient {
   async attachRubricToAssignment(courseId: string, assignmentId: string, rubricId: string) {
     return this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}`, {}, { rubric_id: rubricId });
   }
-  // GET /courses/:id/rubrics/:id. `style` is documented as applying only to
-  // returned assessments, but Canvas's serializer also uses it to decide whether
-  // to emit the `criteria` key at all, so it is always sent — without it a
-  // caller asking for a rubric can get one with no criteria in sight. (The same
-  // content is also present as `data`, which is always serialized; the reader
-  // takes either.) Unverified against live Canvas.
+  // GET /courses/:id/rubrics/:id.
+  //
+  // Do NOT send `style` here. Reading the serializer suggested it gates whether
+  // the `criteria` key is emitted at all, so this used to send style=full
+  // unconditionally — and live Canvas rejects that outright:
+  //
+  //   400 {"style":[{"message":"invalid parameters. Style parameter passed
+  //        without requesting assessments"}]}
+  //
+  // The validation runs before the serializer, so the parameter is only legal
+  // alongside include[]=assessments. Sending it made this endpoint 400 on every
+  // rubric in the course — which also broke the readback that create-rubric and
+  // update-rubric depend on. Verified live on gfalls.instructure.com 2026-08-03:
+  // without it the rubric comes back with its criteria under `data`, which is
+  // always serialized. If assessments are ever added here, `style` becomes legal
+  // again, but only in that company.
   async getRubric(courseId: string, rubricId: string, params: any = {}) {
-    return this.get(`/api/v1/courses/${courseId}/rubrics/${rubricId}`, { style: 'full', ...params });
+    return this.get(`/api/v1/courses/${courseId}/rubrics/${rubricId}`, params);
   }
   // POST /courses/:id/rubrics. Note this route is served by the non-API rubrics
   // controller, which answers with { rubric, rubric_association } rather than a

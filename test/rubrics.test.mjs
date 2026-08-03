@@ -222,7 +222,26 @@ test('a rubric that cannot be read back afterwards is reported as possibly invis
     });
     const text = canvas.textOf(result);
     assert.match(text, /WARNING/);
-    assert.match(text, /may not appear in the Canvas UI/);
+    assert.match(text, /association did not take/);
+  });
+});
+
+// Live testing caught this warning crying wolf: a 400 on the read produced
+// "the association did not take" for a rubric whose association was fine. Only
+// a 404 means the rubric cannot be resolved through the course.
+test('a readback that fails for a reason other than 404 does not blame the association', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ method }) => (method === 'POST'
+      ? { rubric: storedRubric(), rubric_association: { id: 9 } }
+      : { __status: 400, __body: { message: 'Bad request' } }));
+
+    const result = await canvas.callTool('create-rubric', {
+      courseId: '1', title: 'DBQ Essay Rubric', criteria,
+    });
+    const text = canvas.textOf(result);
+    assert.match(text, /could not be read back/);
+    assert.match(text, /failure to READ/);
+    assert.doesNotMatch(text, /association did not take/);
   });
 });
 
@@ -325,12 +344,11 @@ test('a faithfully stored rubric is not warned about', async () => {
 // get-rubric
 // ---------------------------------------------------------------------------
 
-test('get-rubric asks for style=full and renders criteria, ratings and IDs', async () => {
+test('get-rubric renders criteria, ratings and IDs', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => storedRubric());
     const result = await canvas.callTool('get-rubric', { courseId: '1', rubricId: '55' });
 
-    assert.match(canvas.lastRequest().url, /style=full/);
     const text = canvas.textOf(result);
     assert.match(text, /Thesis/);
     assert.match(text, /6 pts — Strong/);
@@ -339,8 +357,21 @@ test('get-rubric asks for style=full and renders criteria, ratings and IDs', asy
   });
 });
 
-// The serializer emits `criteria` only under style=full but always emits `data`;
-// the reader has to take either.
+// Reading the serializer suggested `style` gates the `criteria` key, so this
+// endpoint used to send style=full unconditionally. Live Canvas 400s on it —
+// "Style parameter passed without requesting assessments" — which broke
+// get-rubric for every rubric, and with it the readback that create-rubric and
+// update-rubric rely on. It is only legal alongside include[]=assessments.
+test('get-rubric does not send the style parameter, which Canvas 400s on', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => storedRubric());
+    await canvas.callTool('get-rubric', { courseId: '1', rubricId: '55' });
+    assert.doesNotMatch(canvas.lastRequest().url, /style/);
+  });
+});
+
+// Canvas serializes the criteria under `data`; some responses also carry
+// `criteria`. The reader has to take either.
 test('get-rubric reads criteria from the `criteria` key when Canvas sends it', async () => {
   await withMockCanvas(async canvas => {
     const { data, ...rest } = storedRubric();
