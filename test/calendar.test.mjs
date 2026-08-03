@@ -61,7 +61,7 @@ test('a recurring series sends the duplicate block and says how many events it m
     const sent = canvas.requests.find(r => r.method === 'POST').body.calendar_event;
     assert.deepEqual(sent.duplicate, { count: 9, frequency: 'weekly', interval: 1 });
     // 9 additional copies plus the original.
-    assert.match(canvas.textOf(result), /series of 10 events/);
+    assert.match(canvas.textOf(result), /created 10 events/);
   });
 });
 
@@ -151,7 +151,7 @@ test('updating one occurrence does not send a series-wide which', async () => {
 
 test('updating a whole series passes which=all and says so', async () => {
   await withMockCanvas(async canvas => {
-    canvas.setResponse(canvasWith());
+    canvas.setResponse(canvasWith({ event: { ...EVENT, series_uuid: 'abc-123' } }));
     const result = await canvas.callTool('update-calendar-event', {
       eventId: '5501', locationName: 'Room 300', which: 'all',
     });
@@ -169,12 +169,54 @@ test('a deletion defaults to the single occurrence', async () => {
   });
 });
 
-test('deleting a series is explicit and reported as such', async () => {
+// A real series carries a series_uuid, and only then does which=all mean
+// anything.
+test('deleting a real series is explicit and reported as such', async () => {
   await withMockCanvas(async canvas => {
-    canvas.setResponse(canvasWith());
+    canvas.setResponse(canvasWith({ event: { ...EVENT, series_uuid: 'abc-123' } }));
     const result = await canvas.callTool('delete-calendar-event', { eventId: '5501', which: 'all' });
     assert.match(canvas.requests.find(r => r.method === 'DELETE').url, /which=all/);
     assert.match(canvas.textOf(result), /entire series was deleted/);
+  });
+});
+
+// Found live: repeatCount events are independent, Canvas ignores `which` on
+// them and still answers 200. Deleting the first of four with which=all removed
+// exactly one and left three orphans, while the tool announced a series-wide
+// delete that never happened.
+test('which=all on an event with no series says so instead of claiming a series delete', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith()); // EVENT has no series_uuid
+    const result = await canvas.callTool('delete-calendar-event', { eventId: '5501', which: 'all' });
+    const text = canvas.textOf(result);
+    assert.doesNotMatch(text, /entire series was deleted/, 'must not claim a deletion that did not happen');
+    assert.match(text, /had no effect/);
+    assert.match(text, /delete the rest individually/);
+  });
+});
+
+test('which=all on an unseried event does not claim a series-wide edit either', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith());
+    const result = await canvas.callTool('update-calendar-event', {
+      eventId: '5501', locationName: 'Room 300', which: 'all',
+    });
+    const text = canvas.textOf(result);
+    assert.doesNotMatch(text, /Every event in its series was changed/);
+    assert.match(text, /had no effect/);
+  });
+});
+
+test('creating repeating events warns that they are independent, not a series', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith());
+    const result = await canvas.callTool('create-calendar-event', {
+      courseId: '18473', title: 'Office hours', startAt: '2026-09-01T16:00:00Z',
+      repeatCount: 3, repeatFrequency: 'weekly',
+    });
+    const text = canvas.textOf(result);
+    assert.match(text, /INDEPENDENT events/);
+    assert.match(text, /deleting each in turn|deleting each/);
   });
 });
 

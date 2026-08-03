@@ -141,18 +141,30 @@ export function registerCourseSettingsTools(server: McpServer, canvas: CanvasCli
           next = mode === 'prepend' ? `${body}\n${existing}` : `${existing}\n${body}`;
         }
 
-        const updated: any = await canvas.updateCourse(courseId, { syllabus_body: next });
+        await canvas.updateCourse(courseId, { syllabus_body: next });
 
-        // Canvas answers 200 to writes it has not applied, and the syllabus has
-        // no other record to check against, so confirm from the response.
-        const stored: string = updated?.syllabus_body ?? '';
-        const landed = stored.includes(body.trim().slice(0, 40));
-        const verdict = stored
-          ? (landed ? '' : `\n\nWARNING: Canvas returned a syllabus that does not contain the text just sent. Re-read it with get-syllabus before assuming this worked.`)
-          : `\n\nWARNING: Canvas returned an empty syllabus after this write. Nothing may have been saved — check with get-syllabus.`;
+        // Verify by re-reading, NOT from the update's own response: PUT
+        // /courses/:id does not echo syllabus_body back unless it is asked for,
+        // so checking the response reported "Canvas returned an empty syllabus"
+        // after every successful write. A warning that cries wolf on every call
+        // is worse than none — it teaches the reader to skip the warnings that
+        // do mean something. Caught live on course 18473.
+        const readback: any = await canvas.getCourse(courseId, { 'include[]': 'syllabus_body' });
+        const stored: string = readback?.syllabus_body ?? '';
+
+        // An empty body is a deliberate way to clear the syllabus, so "nothing
+        // stored" is only suspicious when something was meant to be there.
+        const wanted = body.trim();
+        const verdict = !wanted
+          ? ''
+          : stored
+            ? (stored.includes(wanted.slice(0, 40))
+              ? ''
+              : `\n\nWARNING: the syllabus Canvas now reports does not contain the text just sent. Re-read it with get-syllabus before assuming this worked.`)
+            : `\n\nWARNING: the syllabus is empty after this write. Nothing was saved — check with get-syllabus.`;
 
         const action = !existing
-          ? 'Set the syllabus'
+          ? (body.trim() ? 'Set the syllabus' : 'Left the syllabus empty')
           : mode === 'replace'
             ? `Replaced the syllabus (the previous version was ${summarizeHtml(existing)})`
             : `${mode === 'prepend' ? 'Prepended to' : 'Appended to'} the syllabus`;

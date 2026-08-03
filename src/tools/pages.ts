@@ -398,12 +398,17 @@ export function registerPageTools(server: McpServer, canvas: CanvasClient) {
     async ({ courseId, pageUrl }: { courseId: string; pageUrl: string }) => {
       try {
         const revisions = (await canvas.listPageRevisions(courseId, pageUrl) as any[]);
+        // Canvas calls this revision_id, not id. Reading the wrong field printed
+        // "Revision ID: undefined" for every revision, which made
+        // revert-page-revision unusable — there was no way to learn an ID to
+        // pass it. Caught live against a real page's history.
         const formatted = revisions.map((rev: any) => [
-          `Revision ID: ${rev.id}`,
+          `Revision ID: ${rev.revision_id ?? rev.id}`,
           `Updated At: ${rev.updated_at}`,
           `Edited By: ${rev.edited_by?.display_name || rev.edited_by_id || 'Unknown'}`,
+          rev.latest ? 'Latest: yes (the page\'s current content)' : null,
           '---'
-        ].join('\n')).join('\n');
+        ].filter(Boolean).join('\n')).join('\n');
         return {
           content: [
             {

@@ -165,15 +165,62 @@ test('a first syllabus is written as-is, with nothing to back up', async () => {
   });
 });
 
-test('a syllabus Canvas did not store is reported, not called a success', async () => {
+// Verification has to come from a re-read, not from the update's response:
+// PUT /courses/:id does not echo syllabus_body back. Reading it there warned
+// "Canvas returned an empty syllabus" after every successful write — a warning
+// that cries wolf teaches the reader to ignore the ones that matter.
+test('a successful write is verified by re-reading, and does not warn', async () => {
   await withMockCanvas(async canvas => {
-    canvas.setResponse(canvasWith({
-      distort: course => ({ ...course, syllabus_body: '' }),
-    }));
+    // Stateful, so the read before the write and the read after it differ —
+    // otherwise the tool short-circuits on "already contains this content".
+    let written = false;
+    canvas.setResponse(({ url, body, method }) => {
+      if (url.includes('/pages/')) return { page_id: 42, url: 'syllabus-backup', published: false };
+      if (method === 'PUT' && body?.course) {
+        written = true;
+        // The PUT response omits syllabus_body entirely, the way Canvas does.
+        return { id: 18473, name: "Sandbox '23" };
+      }
+      return { ...COURSE, syllabus_body: written ? '<p>Week 2</p>' : COURSE.syllabus_body };
+    });
     const result = await canvas.callTool('update-syllabus', {
       courseId: '18473', body: '<p>Week 2</p>',
     });
-    assert.match(canvas.textOf(result), /WARNING[\s\S]*empty syllabus/);
+
+    assert.ok(
+      canvas.requests.filter(r => /syllabus_body/.test(r.url)).length >= 2,
+      'must re-read the syllabus after writing rather than trust the PUT response'
+    );
+    assert.doesNotMatch(canvas.textOf(result), /WARNING/);
+  });
+});
+
+test('a syllabus Canvas did not store is still reported', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ url, method, body }) => {
+      if (url.includes('/pages/')) return { page_id: 42, url: 'syllabus-backup', published: false };
+      if (method === 'PUT') return { id: 18473 };
+      // Re-read shows the write did not land.
+      return { ...COURSE, syllabus_body: '' };
+    });
+    const result = await canvas.callTool('update-syllabus', {
+      courseId: '18473', body: '<p>Week 2</p>',
+    });
+    assert.match(canvas.textOf(result), /WARNING[\s\S]*empty after this write/);
+  });
+});
+
+// Clearing the syllabus is a legitimate thing to want, and must not be
+// reported as a failed write.
+test('deliberately clearing the syllabus does not warn', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(({ url, method }) => {
+      if (url.includes('/pages/')) return { page_id: 42, url: 'syllabus-backup', published: false };
+      if (method === 'PUT') return { id: 18473 };
+      return { ...COURSE, syllabus_body: '' };
+    });
+    const result = await canvas.callTool('update-syllabus', { courseId: '18473', body: '' });
+    assert.doesNotMatch(canvas.textOf(result), /WARNING/);
   });
 });
 

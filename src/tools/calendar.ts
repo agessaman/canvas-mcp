@@ -12,6 +12,14 @@ import { CanvasClient } from "../canvasClient.js";
 //   2. One create call can produce up to 200 events. Recurring office hours are
 //      the reason the parameter exists, and a mistyped count is a mess to clean
 //      up one event at a time — so the tool says how many it is about to make.
+//   3. Events made with duplicate[count] are INDEPENDENT events, not a linked
+//      series. Verified live: creating 4 weekly events and deleting the first
+//      with which=all removed exactly one, leaving three orphans behind while
+//      Canvas answered 200. `which` only means anything for a true series —
+//      one built from an rrule, as the Canvas UI does — and those carry a
+//      series_uuid. So the series-wide claims are made only when that field is
+//      actually present, and the absence of it is reported rather than assumed
+//      away.
 
 /** Canvas's own ceiling on duplicates from a single create call. */
 const MAX_REPEATS = 200;
@@ -98,7 +106,7 @@ export function registerCalendarTools(server: McpServer, canvas: CanvasClient) {
   // Tool: create-calendar-event
   server.tool(
     "create-calendar-event",
-    "Put an event on a course calendar — a review session, an exam date, a field trip, or recurring office hours. Students in a published course see it immediately; calendar events have no draft state. Set repeatCount and repeatFrequency to create a recurring series in one call.",
+    "Put an event on a course calendar — a review session, an exam date, a field trip, or recurring office hours. Students in a published course see it immediately; calendar events have no draft state. Set repeatCount and repeatFrequency to create repeating events in one call — note Canvas creates those as INDEPENDENT events rather than a linked series, so removing them later means deleting each one.",
     {
       courseId: z.string().describe("The ID of the course whose calendar this goes on"),
       title: z.string().describe("What students will see, e.g. \"Midterm review session\""),
@@ -147,10 +155,13 @@ export function registerCalendarTools(server: McpServer, canvas: CanvasClient) {
         // the count is worth stating rather than implying.
         const total = (args.repeatCount ?? 0) + 1;
         const seriesNote = args.repeatCount
-          ? `\n\nThis created a series of ${total} events, repeating ${args.repeatFrequency}`
+          ? `\n\nThis created ${total} events, repeating ${args.repeatFrequency}`
             + (args.repeatInterval && args.repeatInterval !== 1 ? ` every ${args.repeatInterval} intervals` : '')
-            + `. Canvas returns only the first; list-calendar-events shows the rest. Editing or deleting one of them `
-            + `takes a 'which' of one, all, or following.`
+            + `. Canvas returns only the first; list-calendar-events shows the rest.`
+            + `\n\nIMPORTANT: Canvas creates these as INDEPENDENT events, not a linked series — deleting one does `
+            + `not touch the others, and 'which: all' will not gather them up. Removing them means deleting each in `
+            + `turn. (Verified live: deleting the first of four with which=all removed exactly one and left three `
+            + `behind.) Only series built in the Canvas UI behave as a group.`
           : '';
 
         // A start date Canvas did not store means the event exists on a
@@ -222,16 +233,26 @@ export function registerCalendarTools(server: McpServer, canvas: CanvasClient) {
           })
           .map(([key, wanted]) => `${key}: asked for ${JSON.stringify(wanted)}, Canvas stored ${JSON.stringify(updated?.[key] ?? null)}`);
 
-        const scope = args.which === 'all'
-          ? ' Every event in its series was changed.'
-          : args.which === 'following'
-            ? ' This event and every later one in its series were changed.'
-            : '';
+        // Same caution as the delete path: `which` is silently ignored unless
+        // the event really belongs to a series.
+        const inSeries = !!updated?.series_uuid;
+        const scope = args.which === 'one' || !inSeries
+          ? ''
+          : args.which === 'all'
+            ? ' Every event in its series was changed.'
+            : ' This event and every later one in its series were changed.';
+
+        const notASeries = args.which && args.which !== 'one' && !inSeries
+          ? `\n\nNOTE: which="${args.which}" had no effect — this event is not part of a linked series, so only it `
+            + `was changed. Repeating events created through create-calendar-event are independent; edit the others `
+            + `individually.`
+          : '';
 
         return {
           content: [{
             type: "text",
             text: `Updated event ${args.eventId}.${scope}\n${JSON.stringify(summarize(updated), null, 2)}`
+              + notASeries
               + (problems.length > 0
                 ? `\n\nWARNING — Canvas did not store this as requested:\n- ${problems.join('\n- ')}`
                 : '')
@@ -246,7 +267,7 @@ export function registerCalendarTools(server: McpServer, canvas: CanvasClient) {
   // Tool: delete-calendar-event
   server.tool(
     "delete-calendar-event",
-    "Remove an event from a course calendar. Defaults to deleting only the one occurrence: for a recurring series, deleting 'all' removes every event in it, which cannot be undone from here.",
+    "Remove an event from a course calendar. Defaults to deleting only the one occurrence. 'which' applies only to a true series (one built in the Canvas UI): repeating events made by create-calendar-event are independent and must be deleted one at a time, and the tool says so rather than reporting a series-wide delete that did not happen.",
     {
       eventId: z.string().describe("The event's ID, from list-calendar-events"),
       which: z.enum(['one', 'all', 'following']).default('one')
@@ -262,17 +283,29 @@ export function registerCalendarTools(server: McpServer, canvas: CanvasClient) {
 
         const deleted: any = await canvas.deleteCalendarEvent(eventId, params);
 
-        const scope = which === 'all'
-          ? ' The entire series was deleted.'
-          : which === 'following'
-            ? ' That occurrence and every later one in the series were deleted.'
-            : '';
+        // Canvas ignores `which` on an event that is not part of a true series,
+        // and still answers 200 — so claiming a series-wide delete on the
+        // strength of the request alone reports a deletion that did not happen.
+        // The deleted event's own series_uuid is the evidence.
+        const inSeries = !!deleted?.series_uuid;
+        const scope = which === 'one' || !inSeries
+          ? ''
+          : which === 'all'
+            ? ' The entire series was deleted.'
+            : ' That occurrence and every later one in the series were deleted.';
+
+        const notASeries = which !== 'one' && !inSeries
+          ? `\n\nNOTE: which="${which}" had no effect — this event is not part of a linked series, so only it was `
+            + `deleted. Repeating events created through create-calendar-event are independent of one another; `
+            + `delete the rest individually, and use list-calendar-events to find them.`
+          : '';
 
         return {
           content: [{
             type: "text",
             text: `Deleted "${deleted?.title ?? eventId}" from the calendar.${scope}`
               + (deleted?.start_at ? ` It had been set for ${deleted.start_at}.` : '')
+              + notASeries
           }]
         };
       } catch (error: any) {
