@@ -2,7 +2,7 @@
   "manifest_version": "0.1",
   "name": "canvas-mcp",
   "display_name": "Canvas LMS Integration",
-  "version": "1.10.2",
+  "version": "1.11.0",
   "description": "Comprehensive Canvas LMS integration for course management, assignments, pages, students, and rubric analysis",
   "long_description": "This extension provides full Canvas LMS integration capabilities including course management, assignment creation and grading, page editing with styleguide support, student management with privacy controls, module organization, submission tracking, and comprehensive rubric statistics analysis. It also covers the instructor grading queue (what needs grading across every course), New Quizzes authoring and item analysis on the separate /api/quiz/v1 API, course-wide grades with missing-work and engagement reports for intervention planning, and read-only Canvas inbox triage. Perfect for educators who want to streamline their Canvas workflows directly from Claude Desktop.",
   "author": {
@@ -72,6 +72,9 @@
     { "name": "get-rubric-statistics", "description": "Rubric analysis with score distributions" },
     { "name": "list-rubric-assessments", "description": "List rubric assessments for an assignment" },
     { "name": "attach-rubric-to-assignment", "description": "Attach a rubric to an assignment" },
+    { "name": "get-rubric", "description": "Read one rubric in full — criteria, ratings, points, and the criterion IDs grading needs" },
+    { "name": "create-rubric", "description": "Create a rubric from criteria and rating levels, course-level or attached to an assignment" },
+    { "name": "update-rubric", "description": "Change an existing rubric's title, criteria or comment style, re-sending what it is not changing" },
     { "name": "list-modules", "description": "Course module management and organization" },
     { "name": "list-module-items", "description": "List items in a module" },
     { "name": "toggle-module-publish", "description": "Publish or unpublish a module" },

@@ -37,7 +37,7 @@
 - **Courses** — list courses (including unpublished shells and past terms, with name/code search), look up a course by ID, post announcements
 - **Assignments** — create, update, delete assignments and assignment groups; bulk date updates
 - **Submissions** — grade work, post feedback, download submission files
-- **Rubrics** — view rubrics, analyze statistics, attach rubrics to assignments
+- **Rubrics** — read a rubric's full criteria and ratings, draft and edit rubrics, analyze statistics, attach rubrics to assignments
 - **Students** — enrollment lists with privacy-first anonymization
 - **Sections** — list sections and section-filtered submissions
 - **Modules** — full module and module-item CRUD
@@ -57,7 +57,7 @@
 - **Prompts** — `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**106 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**109 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -277,7 +277,7 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | Assignment Groups | 3 | `list-assignment-groups`, `create-assignment-group`, `bulk-update-assignment-dates` |
 | Submissions | 6 | `list-assignment-submissions`, `grade-submission`, `post-submission-comment`, `get-submission-documents`, `get-submission-file-info`, `download-submission-file` |
 | Sections | 2 | `list-sections`, `list-section-submissions` |
-| Rubrics | 4 | `list-rubrics`, `get-rubric-statistics`, `list-rubric-assessments`, `attach-rubric-to-assignment` |
+| Rubrics | 7 | `list-rubrics`, `get-rubric`, `create-rubric`, `update-rubric`, `get-rubric-statistics`, `list-rubric-assessments`, `attach-rubric-to-assignment` |
 | Modules | 10 | `list-modules`, `list-module-items`, `toggle-module-publish`, `create-module`, `update-module`, `delete-module`, `get-module-item`, `create-module-item`, `update-module-item`, `delete-module-item` |
 | Pages | 9 | `list-pages`, `get-page-content`, `update-page-content`, `list-page-revisions`, `revert-page-revision`, `patch-page-content`, `apply-page-changes`, `generate-styleguide`, `get-styleguide` |
 | Quizzes | 15 | `list-quizzes`, `get-quiz`, `create-quiz`, `update-quiz`, `delete-quiz`, `list-quiz-questions`, `get-quiz-question`, `create-quiz-question`, `update-quiz-question`, `delete-quiz-question`, `list-quiz-question-groups`, `get-quiz-question-group`, `create-quiz-question-group`, `update-quiz-question-group`, `delete-quiz-question-group` |

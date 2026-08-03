@@ -461,6 +461,27 @@ export class CanvasClient {
   async attachRubricToAssignment(courseId: string, assignmentId: string, rubricId: string) {
     return this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}`, {}, { rubric_id: rubricId });
   }
+  // GET /courses/:id/rubrics/:id. `style` is documented as applying only to
+  // returned assessments, but Canvas's serializer also uses it to decide whether
+  // to emit the `criteria` key at all, so it is always sent — without it a
+  // caller asking for a rubric can get one with no criteria in sight. (The same
+  // content is also present as `data`, which is always serialized; the reader
+  // takes either.) Unverified against live Canvas.
+  async getRubric(courseId: string, rubricId: string, params: any = {}) {
+    return this.get(`/api/v1/courses/${courseId}/rubrics/${rubricId}`, { style: 'full', ...params });
+  }
+  // POST /courses/:id/rubrics. Note this route is served by the non-API rubrics
+  // controller, which answers with { rubric, rubric_association } rather than a
+  // bare Rubric — and which renders { error: true, messages: [...] } under a 200
+  // when validation fails. Callers must inspect the body, not the status.
+  async createRubric(courseId: string, data: any) {
+    return this.post(`/api/v1/courses/${courseId}/rubrics`, data);
+  }
+  // PUT /courses/:id/rubrics/:id — same controller action as create, with the
+  // same non-standard response shape and the same 200-on-failure behaviour.
+  async updateRubric(courseId: string, rubricId: string, data: any) {
+    return this.put(`/api/v1/courses/${courseId}/rubrics/${rubricId}`, data);
+  }
 
   // --- Students ---
   async listStudents(courseId: string, params: any = {}, options: { anonymous?: boolean } = {}) {

@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **106 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **109 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -197,6 +197,42 @@ Lists all rubrics for a specific course.
 - Required parameters:
   - `courseId`: string
 - Returns rubric titles, IDs, and descriptions
+- Does **not** return criteria — use `get-rubric` for those
+
+### get-rubric
+Reads one rubric in full: every criterion, its ratings, and the points on each. Use this before grading against a rubric — it returns the criterion IDs that `grade-submission`'s `rubric_assessment` must be keyed by.
+- Required parameters:
+  - `courseId`: string
+  - `rubricId`: string
+- Returns title, points possible, free-form comment setting, and each criterion with its ratings, points, and IDs
+- Canvas resolves this endpoint through the rubric's association with the course, so a rubric belonging to another course or to the account is reported as unreadable here rather than as missing
+
+### create-rubric
+Creates a rubric, either as a reusable course-level rubric or attached to a single assignment for grading.
+- Required parameters:
+  - `courseId`: string
+  - `title`: string
+  - `criteria`: list of `{ description, ratings: [{ description, points }] }`, each criterion also accepting `longDescription`, `criterionUseRange` and `id`. Canvas's own indexed-hash spelling (`{"0": {...}}`) and a JSON string containing either shape are both accepted.
+- Optional parameters:
+  - `assignmentId`: string — attach to this assignment for grading; omit for a course-level rubric
+  - `useForGrading`: boolean — let rubric scores drive the grade (requires `assignmentId`)
+  - `keepAssignmentPoints`: boolean — stop Canvas rewriting the assignment's `points_possible` to the rubric total (only meaningful with `useForGrading`)
+  - `freeFormComments`: boolean — let graders type their own comment per criterion
+- Canvas derives each criterion's points from its highest rating and the rubric total from the criteria; a `points` value that disagrees is refused rather than silently replaced
+- Re-reads the rubric after writing and warns if what Canvas stored differs from what was sent, or if the new rubric cannot be read back at all
+
+### update-rubric
+Changes an existing rubric's title, criteria or comment style.
+- Required parameters:
+  - `courseId`: string
+  - `rubricId`: string
+- Optional parameters:
+  - `title`: string — omit to keep the current one
+  - `criteria`: same shape as `create-rubric` — **replaces** every existing criterion; omit to leave them alone
+  - `freeFormComments`: boolean
+- Canvas's rubric update is a full replace, not a patch: an omitted title renames the rubric and omitted criteria delete every one. This tool reads the rubric first and re-sends whatever it is not changing, and refuses to write at all if that read fails
+- Keep each criterion's existing `id` (from `get-rubric`) on rows you are keeping, or grading already done against them stops lining up
+- Warns if Canvas clones the rubric instead of editing it, which it does when the rubric is in use in more than one place
 
 ### get-rubric-statistics
 Gets statistics for rubric assessments on an assignment.
