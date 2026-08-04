@@ -2,7 +2,7 @@
   "manifest_version": "0.1",
   "name": "canvas-mcp",
   "display_name": "Canvas LMS Integration",
-  "version": "1.16.1",
+  "version": "1.17.0",
   "description": "Comprehensive Canvas LMS integration for course management, assignments, pages, students, and rubric analysis",
   "long_description": "This extension provides full Canvas LMS integration capabilities including course management, assignment creation and grading, page editing with styleguide support, student management with privacy controls, module organization, submission tracking, and comprehensive rubric statistics analysis. It also covers the instructor grading queue (what needs grading across every course), New Quizzes authoring and item analysis on the separate /api/quiz/v1 API, course-wide grades with missing-work and engagement reports for intervention planning, and read-only Canvas inbox triage. Perfect for educators who want to streamline their Canvas workflows directly from Claude Desktop.",
   "author": {
@@ -155,7 +155,7 @@
     },
     {
       "name": "get-rubric",
-      "description": "Read one rubric in full — criteria, ratings, points, and the criterion IDs grading needs"
+      "description": "Read one rubric in full \u2014 criteria, ratings, points, and the criterion IDs grading needs"
     },
     {
       "name": "create-rubric",
@@ -406,6 +406,10 @@
       "description": "List a course's file folders"
     },
     {
+      "name": "get-course-file",
+      "description": "Fetch a course file to look at, with its pixel dimensions \u2014 the read-only counterpart to upload-course-file"
+    },
+    {
       "name": "list-assignment-overrides",
       "description": "Show differentiated due dates on an assignment or New Quiz"
     },
@@ -491,7 +495,7 @@
     },
     {
       "name": "extend-assignment-attempts",
-      "description": "Give students extra attempts at an assignment, for a retake or a technical failure. Not for quizzes — use extend-quiz-time's extraAttempts."
+      "description": "Give students extra attempts at an assignment, for a retake or a technical failure. Not for quizzes \u2014 use extend-quiz-time's extraAttempts."
     },
     {
       "name": "get-late-policy",

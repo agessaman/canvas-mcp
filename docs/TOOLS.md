@@ -949,6 +949,19 @@ Lists files in a course, or in one folder.
   - `folderId`: string — lists that folder only
 - `folderId` uses a different Canvas endpoint: `/courses/:id/files` silently ignores a folder filter and returns the whole course
 
+### get-course-file
+Fetches a file from a course's Files area so it can be looked at — the read-only counterpart to `upload-course-file`.
+- Required parameters:
+  - `fileId`: string (from `list-course-files`)
+- Optional parameters:
+  - `saveToPath`: string — absolute path to write the file to. Returns a summary instead of the file; use for large images
+- **Reports an image's pixel dimensions**, read straight from the file header (PNG, JPEG and GIF). This is what hot-spot authoring needs: pass them to `create-new-quiz-item` as `imagePixelWidth` / `imagePixelHeight` and give the hotspot in pixels
+- Returns the image itself, so a hotspot can be placed against the actual picture rather than a description of it. Placing one on an unseen image is how a well-formed hotspot ends up over the wrong part of the picture
+- A file whose header cannot be read says so, rather than reporting a plausible guess
+- Non-image files are summarised rather than dumped as base64; use `saveToPath` to get the bytes
+
+---
+
 ### list-course-folders
 Lists a course's file folders with their IDs and paths.
 - Required parameters:

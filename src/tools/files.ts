@@ -1,8 +1,9 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { readImageSize } from "../imageMeta.js";
 
 // Course files — the Files area of a course, where syllabi, handouts and
 // images live. Uploading is a three-step handshake; see uploadCourseFile in
@@ -246,6 +247,76 @@ export function registerFileTools(server: McpServer, canvas: CanvasClient) {
         return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };
       } catch (error: any) {
         throw new Error(`Failed to list course folders: ${error.message ?? 'Unknown error'}`);
+      }
+    }
+  );
+
+  // Tool: get-course-file
+  //
+  // Read-only counterpart to upload-course-file. Added because placing a
+  // hot-spot on an image already in Canvas meant placing it blind: nothing in
+  // this server could see the picture, and list-course-files does not even
+  // return a URL. Guessing coordinates for an unseen image is how the first
+  // round of hotspots came out well-formed and pointing at the wrong place.
+  server.tool(
+    "get-course-file",
+    "Fetch a file from a course's Files area so it can be looked at — the read-only counterpart to upload-course-file. "
+    + "For an image this returns the picture itself along with its PIXEL DIMENSIONS, which is what hot-spot coordinates "
+    + "need: pass them to create-new-quiz-item as imagePixelWidth/imagePixelHeight and give the hotspot in pixels. "
+    + "Use saveToPath to write the file to disk instead of returning it inline, which is much cheaper for a large image. "
+    + "Find file IDs with list-course-files.",
+    {
+      fileId: z.string().describe("The file's ID (from list-course-files)"),
+      saveToPath: z.string().optional().describe(
+        "Absolute path to write the file to. When given, the file is saved and only a summary is returned — "
+        + "use this for large images rather than pulling the whole thing inline."
+      ),
+    },
+    { readOnlyHint: true },
+    async ({ fileId, saveToPath }: { fileId: string; saveToPath?: string }) => {
+      try {
+        const file = await canvas.downloadFile(fileId);
+        const buffer = Buffer.from(file.data);
+        const size = readImageSize(buffer);
+
+        // The dimensions are the point of this tool for quiz authoring, so
+        // they lead. An image whose header this cannot read says so rather
+        // than reporting a plausible-looking guess.
+        const lines = [
+          `File ${fileId}: ${file.filename}`,
+          `Type: ${file.contentType}, ${buffer.length} bytes`,
+          size
+            ? `Dimensions: ${size.width} x ${size.height} px`
+            : 'Dimensions: could not be read from the file header'
+            + (file.contentType.startsWith('image/')
+              ? ' — hot-spot coordinates would have to be given as fractions.'
+              : ' (not a recognised image format).'),
+        ];
+
+        if (saveToPath) {
+          if (!path.isAbsolute(saveToPath)) {
+            throw new Error(`saveToPath must be an absolute path (got "${saveToPath}")`);
+          }
+          await writeFile(saveToPath, buffer);
+          lines.push(`Saved to: ${saveToPath}`);
+          return { content: [{ type: "text", text: lines.join('\n') }] };
+        }
+
+        // Hand back the actual picture when it is one, so it can be looked at
+        // rather than described. A file that is not an image is summarised
+        // instead of being dumped as base64 nobody can read.
+        if (size) {
+          return {
+            content: [
+              { type: "text", text: lines.join('\n') },
+              { type: "image", data: buffer.toString('base64'), mimeType: `image/${size.format}` },
+            ],
+          };
+        }
+        lines.push('Not returned inline. Use saveToPath to write it to disk.');
+        return { content: [{ type: "text", text: lines.join('\n') }] };
+      } catch (error: any) {
+        throw new Error(`Failed to get course file: ${error.message ?? 'Unknown error'}`);
       }
     }
   );
