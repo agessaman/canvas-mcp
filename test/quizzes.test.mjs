@@ -92,3 +92,53 @@ test('no time-limit warning is emitted when none was requested', async () => {
     assert.doesNotMatch(canvas.textOf(result), /WARNING/);
   });
 });
+
+test('a non-Item entryType is refused before Canvas sees it', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => ({ id: '9300', entry_type: 'Item' }));
+    const result = await canvas.callTool('create-new-quiz-item', {
+      courseId: '18473', assignmentId: '371566', entryType: 'Stimulus',
+      interactionType: 'essay', body: 'A short passage.',
+    });
+
+    assert.ok(result.isError);
+    assert.match(canvas.textOf(result), /accepts only "Item"/);
+    assert.match(canvas.textOf(result), /Insert Content > Stimulus/);
+    // A request that cannot succeed should never be sent.
+    assert.equal(canvas.requests.filter(r => r.method === 'POST').length, 0);
+  });
+});
+
+// stimulus_quiz_entry_id is read-only in Canvas: a write is accepted with a 200
+// and stored as "". Proven live 2026-08-03 four ways — create and update, JSON
+// and form-encoded, with both of a stimulus's two IDs. A tool that forwarded it
+// would report a question as attached while it stands alone on the page.
+test('attaching a question to a stimulus is refused on create, not attempted', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => ({ id: '9320', entry_type: 'Item', stimulus_quiz_entry_id: '' }));
+    const result = await canvas.callTool('create-new-quiz-item', {
+      courseId: '18473', assignmentId: '371872',
+      interactionType: 'essay', body: 'A question about the passage.',
+      stimulusQuizEntryId: '9307',
+    });
+
+    assert.ok(result.isError);
+    assert.match(canvas.textOf(result), /read-only/);
+    assert.match(canvas.textOf(result), /Canvas UI/);
+    assert.equal(canvas.requests.filter(r => r.method === 'POST').length, 0);
+  });
+});
+
+test('the same attach is refused on update, naming the item to move', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => ({ id: '9310', stimulus_quiz_entry_id: '' }));
+    const result = await canvas.callTool('update-new-quiz-item', {
+      courseId: '18473', assignmentId: '371872', itemId: '9310',
+      stimulusQuizEntryId: '9307',
+    });
+
+    assert.ok(result.isError);
+    assert.match(canvas.textOf(result), /item 9310/);
+    assert.equal(canvas.requests.filter(r => r.method === 'PATCH').length, 0);
+  });
+});

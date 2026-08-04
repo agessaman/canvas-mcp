@@ -54,27 +54,38 @@ test('a malformed JSON string is rejected with a readable message, not forwarded
   });
 });
 
-// Canvas accepts stimulus_quiz_entry_id, returns 200, and does not store it.
-test('a dropped stimulus attachment is reported, not passed off as success', async () => {
+// Canvas accepts stimulus_quiz_entry_id, returns 200, and does not store it —
+// proven live four ways (create/update x JSON/form-encoded, both of a
+// stimulus's two IDs). Until 1.14.0 this server sent it anyway and warned
+// afterwards; it now refuses up front, because the only honest outcome of that
+// write is a question the teacher believes is attached and is not. The
+// assertion that matters is that NOTHING reaches Canvas.
+test('a stimulus attachment is refused rather than attempted', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: '9', points_possible: 1, stimulus_quiz_entry_id: '' }));
+    const before = canvas.requests.length;
     const result = await canvas.callTool('create-new-quiz-item', {
       courseId: '1', assignmentId: '2', interactionType: 'essay',
       body: 'Discuss.', stimulusQuizEntryId: '9085',
     });
-    assert.match(canvas.textOf(result), /WARNING/);
-    assert.match(canvas.textOf(result), /9085/);
+    assert.ok(result.isError);
+    assert.match(canvas.textOf(result), /read-only/);
+    assert.equal(canvas.requests.length, before, 'nothing should be sent to Canvas');
   });
 });
 
-test('an honored stimulus attachment is not warned about', async () => {
+// The association is readable even though it is not writable, and that half
+// must keep working — it is how a teacher confirms a UI-made attach.
+test('a stimulus attachment is still reported when reading an item', async () => {
   await withMockCanvas(async canvas => {
-    canvas.setResponse(() => ({ id: '9', points_possible: 1, stimulus_quiz_entry_id: '9085' }));
-    const result = await canvas.callTool('create-new-quiz-item', {
-      courseId: '1', assignmentId: '2', interactionType: 'essay',
-      body: 'Discuss.', stimulusQuizEntryId: '9085',
+    canvas.setResponse(() => ({
+      id: '9310', entry_type: 'Item', stimulus_quiz_entry_id: '9307',
+      entry: { item_body: '<p>Attached.</p>', interaction_type_slug: 'true-false' },
+    }));
+    const result = await canvas.callTool('get-new-quiz-item', {
+      courseId: '1', assignmentId: '2', itemId: '9310',
     });
-    assert.doesNotMatch(canvas.textOf(result), /WARNING/);
+    assert.match(canvas.textOf(result), /9307/);
   });
 });
 
