@@ -142,3 +142,99 @@ test('the same attach is refused on update, naming the item to move', async () =
     assert.equal(canvas.requests.filter(r => r.method === 'PATCH').length, 0);
   });
 });
+
+// The rest of the Classic quiz settings (1.15.0). Same parity rule as the New
+// Quizzes settings in 1.13.0: create and update share one schema, because a
+// setting you can only choose at creation is one you must delete a quiz to fix.
+test('create and update accept exactly the same quiz settings', async () => {
+  await withMockCanvas(async canvas => {
+    const tools = await canvas.listTools();
+    const props = name => Object.keys(
+      tools.find(t => t.name === name).inputSchema.properties
+    ).filter(k => !['courseId', 'quizId'].includes(k));
+
+    assert.deepEqual(props('create-quiz').sort(), props('update-quiz').sort());
+    for (const setting of ['time_limit', 'allowed_attempts', 'access_code',
+                           'one_question_at_a_time', 'cant_go_back',
+                           'one_time_results', 'shuffle_answers']) {
+      assert.ok(props('create-quiz').includes(setting), `create-quiz missing ${setting}`);
+    }
+  });
+});
+
+test("an empty access code clears it by sending null, as time_limit does", async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(echoQuiz({ access_code: null }));
+    await canvas.callTool('update-quiz', {
+      courseId: '18473', quizId: '111372', access_code: '',
+    });
+
+    const write = canvas.requests.find(r => r.method === 'PUT');
+    assert.equal(write.body.quiz.access_code, null);
+  });
+});
+
+test("an access code is sent as given, and an omitted one is not sent", async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(echoQuiz());
+    await canvas.callTool('update-quiz', {
+      courseId: '18473', quizId: '111372', access_code: 'letmein',
+    });
+    let write = canvas.requests.find(r => r.method === 'PUT');
+    assert.equal(write.body.quiz.access_code, 'letmein');
+
+    canvas.requests.length = 0;
+    await canvas.callTool('update-quiz', { courseId: '18473', quizId: '111372', title: 'x' });
+    write = canvas.requests.find(r => r.method === 'PUT');
+    // Sending null on a rename would strip a quiz's password.
+    assert.ok(!('access_code' in write.body.quiz));
+  });
+});
+
+// Canvas stores cant_go_back regardless and silently ignores it unless
+// one_question_at_a_time is on — a teacher believing backtracking is blocked
+// on an exam where it is not.
+test('cant_go_back without one-question-at-a-time is refused, not sent', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(echoQuiz());
+    const result = await canvas.callTool('create-quiz', {
+      courseId: '18473', title: 'Exam', cant_go_back: true,
+    });
+
+    assert.ok(result.isError);
+    assert.match(canvas.textOf(result), /one_question_at_a_time/);
+    assert.equal(canvas.requests.filter(r => r.method === 'POST').length, 0);
+  });
+});
+
+test('cant_go_back is allowed when the same call turns one-at-a-time on', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(echoQuiz());
+    const result = await canvas.callTool('create-quiz', {
+      courseId: '18473', title: 'Exam',
+      cant_go_back: true, one_question_at_a_time: true,
+    });
+
+    assert.ok(!result.isError);
+    const write = canvas.requests.find(r => r.method === 'POST');
+    assert.equal(write.body.quiz.cant_go_back, true);
+    assert.equal(write.body.quiz.one_question_at_a_time, true);
+  });
+});
+
+test('cant_go_back is allowed when the quiz already has one-at-a-time on', async () => {
+  await withMockCanvas(async canvas => {
+    // The setting may already be on from an earlier call, so the check reads
+    // the quiz rather than judging on this call's arguments alone.
+    canvas.setResponse(({ method }) =>
+      method === 'GET'
+        ? { id: 111372, one_question_at_a_time: true }
+        : echoQuiz()({ body: { quiz: { cant_go_back: true } } }));
+    const result = await canvas.callTool('update-quiz', {
+      courseId: '18473', quizId: '111372', cant_go_back: true,
+    });
+
+    assert.ok(!result.isError, canvas.textOf(result));
+    assert.equal(canvas.requests.find(r => r.method === 'PUT').body.quiz.cant_go_back, true);
+  });
+});

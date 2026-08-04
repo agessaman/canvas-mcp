@@ -446,7 +446,14 @@ Creates a new quiz in a course.
   - `points_possible`: number
   - `published`: boolean
   - `time_limit`: number — minutes a student gets once they start, or `0` for no time limit. This is the clock, not the due date. Extra time from `extend-quiz-time` is added on top of it and does nothing without it.
+  - `allowed_attempts`: number — how many times a student may take the quiz; `1` is Canvas's default, `-1` is unlimited
+  - `access_code`: string — password required to start the quiz; `''` removes it
+  - `one_question_at_a_time`: boolean — one question per page
+  - `cant_go_back`: boolean — prevent returning to an answered question. **Requires `one_question_at_a_time`**; Canvas stores it either way and silently ignores it otherwise, so it is refused rather than sent when the pairing is missing
+  - `one_time_results`: boolean — students see their results only once, right after submitting
+  - `shuffle_answers`: boolean — randomize answer order per student
 - Returns the newly created quiz object
+- `create-quiz` and `update-quiz` take **exactly the same** settings, asserted by a test — a setting you can only choose at creation is one you would have to delete a quiz to fix
 
 ### update-quiz
 Updates an existing quiz.
@@ -455,6 +462,8 @@ Updates an existing quiz.
   - `quizId`: string
 - Optional parameters: same as `create-quiz`
 - Returns the updated quiz object
+- `cant_go_back: true` is accepted when the quiz **already** has `one_question_at_a_time` on — the tool reads the quiz to check, rather than judging on the call's arguments alone
+- An omitted setting is never sent, so a rename cannot strip a quiz's clock or password
 
 ### delete-quiz
 Deletes a quiz.

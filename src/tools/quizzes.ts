@@ -48,6 +48,69 @@ const TIME_LIMIT_DESC =
   + "(use due_at for that). Extra time granted with extend-quiz-time is added on top of this, and only "
   + "does anything when a limit is set here.";
 
+/**
+ * The rest of the Classic quiz settings a teacher actually sets, spelled as
+ * `quizzes.json` in the instance's own API spec spells them. Shared by create
+ * and update so the two cannot drift apart — the same parity rule 1.13.0
+ * applied to New Quizzes settings, and for the same reason: a setting you can
+ * set at creation and never change again is a setting you have to delete a
+ * quiz to fix.
+ *
+ * `access_code` takes '' to clear, matching `timeLimitMinutes: 0` and
+ * `accessCode: ''` on the New Quizzes side.
+ */
+const CLASSIC_QUIZ_SETTINGS = {
+  time_limit: z.number().int().min(0).optional().describe(TIME_LIMIT_DESC),
+  allowed_attempts: z.number().int().min(-1).optional().describe(
+    "How many times a student may take the quiz. 1 is the Canvas default; -1 is unlimited. "
+    + "extend-assignment-attempts can grant an individual student more on top of this."
+  ),
+  access_code: z.string().optional().describe(
+    "Password a student must type to start the quiz. Pass '' to remove it. "
+    + "Anyone with the code can start, so it controls timing, not identity."
+  ),
+  one_question_at_a_time: z.boolean().optional().describe(
+    "Show one question per page instead of the whole quiz at once"
+  ),
+  cant_go_back: z.boolean().optional().describe(
+    "Stop students returning to a question once answered. Requires one_question_at_a_time"
+  ),
+  one_time_results: z.boolean().optional().describe(
+    "Let students see their results only once, immediately after submitting"
+  ),
+  shuffle_answers: z.boolean().optional().describe("Randomize answer order per student"),
+} as const;
+
+/**
+ * Canvas stores a value and its enabling flag separately and accepts either
+ * alone — the silent-failure shape documented at length for New Quizzes. Here
+ * `cant_go_back` is inert unless `one_question_at_a_time` is on, and Canvas
+ * says nothing: the teacher believes backtracking is blocked on an exam where
+ * it is not. Refuse the contradiction rather than resolving it, since either
+ * guess would be a decision about someone's exam.
+ */
+function validateClassicQuizSettings(fields: any, existing?: any): void {
+  if (fields.cant_go_back === true) {
+    const oneAtATime = fields.one_question_at_a_time ?? existing?.one_question_at_a_time;
+    if (oneAtATime !== true) {
+      throw new Error(
+        'cant_go_back only works when one_question_at_a_time is on — Canvas stores it either way and '
+        + 'silently ignores it, so students would still be able to go back. Pass '
+        + 'one_question_at_a_time: true in the same call, or turn cant_go_back off.'
+      );
+    }
+  }
+  if (fields.one_question_at_a_time === false && fields.cant_go_back === true) {
+    throw new Error('one_question_at_a_time: false contradicts cant_go_back: true.');
+  }
+}
+
+/** '' clears an access code; Canvas wants null for that, as with time_limit. */
+function accessCodeField(code: string | undefined): { access_code: string | null } | {} {
+  if (code === undefined) return {};
+  return { access_code: code === '' ? null : code };
+}
+
 export function registerQuizTools(server: McpServer, canvas: CanvasClient) {
   // Tool: list-quizzes
   server.tool(
@@ -112,6 +175,14 @@ export function registerQuizTools(server: McpServer, canvas: CanvasClient) {
           published: q.published,
           time_limit: q.time_limit,
           allowed_attempts: q.allowed_attempts,
+          // Settable since 1.15.0, and readable here for the same reason
+          // allowed_attempts became readable in 1.12.3: a setting you can write
+          // and not read is how an exam ends up unlocked without anyone seeing.
+          access_code: q.access_code ?? null,
+          one_question_at_a_time: q.one_question_at_a_time,
+          cant_go_back: q.cant_go_back,
+          one_time_results: q.one_time_results,
+          shuffle_answers: q.shuffle_answers,
           question_count: q.question_count,
           workflow_state: q.workflow_state,
         };
@@ -139,14 +210,15 @@ export function registerQuizTools(server: McpServer, canvas: CanvasClient) {
       due_at: z.string().optional().describe("The due date for the quiz"),
       points_possible: z.number().optional().describe("The point value of the quiz"),
       published: z.boolean().optional().describe("Whether the quiz is published"),
-      time_limit: z.number().int().min(0).optional().describe(TIME_LIMIT_DESC),
+      ...CLASSIC_QUIZ_SETTINGS,
     },
     { destructiveHint: false },
     async (args: any) => {
-      const { courseId, time_limit, ...fields } = args;
+      const { courseId, time_limit, access_code, ...fields } = args;
       try {
+        validateClassicQuizSettings(args);
         const q = await canvas.post(`/api/v1/courses/${courseId}/quizzes`, {
-          quiz: { ...fields, ...timeLimitField(time_limit) },
+          quiz: { ...fields, ...timeLimitField(time_limit), ...accessCodeField(access_code) },
         }) as any;
         return {
           content: [{ type: "text", text: `Quiz created: id=${q.id}, title="${q.title}", published=${q.published}${describeTimeLimit(time_limit, q)}` }]
@@ -173,14 +245,22 @@ export function registerQuizTools(server: McpServer, canvas: CanvasClient) {
       due_at: z.string().optional().describe("The due date for the quiz"),
       points_possible: z.number().optional().describe("The point value of the quiz"),
       published: z.boolean().optional().describe("Whether the quiz is published"),
-      time_limit: z.number().int().min(0).optional().describe(TIME_LIMIT_DESC),
+      ...CLASSIC_QUIZ_SETTINGS,
     },
     { idempotentHint: true },
     async (args: any) => {
-      const { courseId, quizId, time_limit, ...fields } = args;
+      const { courseId, quizId, time_limit, access_code, ...fields } = args;
       try {
+        // cant_go_back may rely on one_question_at_a_time already being on, so
+        // the check needs the quiz's current state, not just this call's args.
+        if (args.cant_go_back === true && args.one_question_at_a_time === undefined) {
+          const current = await canvas.get(`/api/v1/courses/${courseId}/quizzes/${quizId}`) as any;
+          validateClassicQuizSettings(args, current);
+        } else {
+          validateClassicQuizSettings(args);
+        }
         const q = await canvas.put(`/api/v1/courses/${courseId}/quizzes/${quizId}`, {
-          quiz: { ...fields, ...timeLimitField(time_limit) },
+          quiz: { ...fields, ...timeLimitField(time_limit), ...accessCodeField(access_code) },
         }) as any;
         return {
           content: [{ type: "text", text: `Quiz updated: id=${q.id}, title="${q.title}", published=${q.published}${describeTimeLimit(time_limit, q)}` }]
