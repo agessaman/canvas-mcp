@@ -445,6 +445,7 @@ Creates a new quiz in a course.
   - `due_at`: string (ISO 8601 format)
   - `points_possible`: number
   - `published`: boolean
+  - `time_limit`: number — minutes a student gets once they start, or `0` for no time limit. This is the clock, not the due date. Extra time from `extend-quiz-time` is added on top of it and does nothing without it.
 - Returns the newly created quiz object
 
 ### update-quiz

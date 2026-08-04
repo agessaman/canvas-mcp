@@ -2,6 +2,52 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 
+/**
+ * Classic quizzes want `quiz[time_limit]` in MINUTES, with null meaning "no
+ * time limit" — see quizzes.json in this instance's own API spec. New Quizzes
+ * spell the same setting as a has_time_limit flag plus a seconds value, and
+ * newQuizSettings clears it on 0. Both engines take 0 here so a teacher never
+ * has to know which one backs their quiz, matching how extend-quiz-time
+ * detects the engine rather than asking for it.
+ */
+function timeLimitField(minutes: number | undefined): { time_limit: number | null } | {} {
+  if (minutes === undefined) return {};
+  return { time_limit: minutes === 0 ? null : minutes };
+}
+
+/**
+ * Reports what Canvas actually stored for the time limit.
+ *
+ * Gotcha 11: Canvas silently ignores parameters it does not support, so a 200
+ * is not evidence the limit was set. The Quiz object comes back on both create
+ * and update, so the echo can be checked here without a second call.
+ *
+ * Says nothing when the caller did not ask for a time limit, and nothing when
+ * Canvas omits the key entirely — the update-syllabus lesson (gotcha 16) is
+ * that a warning firing on every call trains the reader to skip the ones that
+ * matter.
+ */
+function describeTimeLimit(requested: number | undefined, stored: any): string {
+  if (requested === undefined) return '';
+  if (stored?.time_limit === undefined) return '';
+
+  const expected = requested === 0 ? null : requested;
+  const actual = stored.time_limit ?? null;
+  if (actual === expected) {
+    return expected === null
+      ? ', time limit removed (students get unlimited time)'
+      : `, time limit ${expected} min`;
+  }
+  return `. WARNING: asked for ${expected === null ? 'no time limit' : expected + ' min'} but Canvas stored `
+    + `${actual === null ? 'no time limit' : actual + ' min'}. The quiz clock is not what you set — check it in Canvas `
+    + `before relying on it, and before granting extra time with extend-quiz-time.`;
+}
+
+const TIME_LIMIT_DESC =
+  "Minutes a student gets once they start, or 0 for no time limit. This is the clock, not the due date "
+  + "(use due_at for that). Extra time granted with extend-quiz-time is added on top of this, and only "
+  + "does anything when a limit is set here.";
+
 export function registerQuizTools(server: McpServer, canvas: CanvasClient) {
   // Tool: list-quizzes
   server.tool(
@@ -93,14 +139,17 @@ export function registerQuizTools(server: McpServer, canvas: CanvasClient) {
       due_at: z.string().optional().describe("The due date for the quiz"),
       points_possible: z.number().optional().describe("The point value of the quiz"),
       published: z.boolean().optional().describe("Whether the quiz is published"),
+      time_limit: z.number().int().min(0).optional().describe(TIME_LIMIT_DESC),
     },
     { destructiveHint: false },
     async (args: any) => {
-      const { courseId, ...fields } = args;
+      const { courseId, time_limit, ...fields } = args;
       try {
-        const q = await canvas.post(`/api/v1/courses/${courseId}/quizzes`, { quiz: fields }) as any;
+        const q = await canvas.post(`/api/v1/courses/${courseId}/quizzes`, {
+          quiz: { ...fields, ...timeLimitField(time_limit) },
+        }) as any;
         return {
-          content: [{ type: "text", text: `Quiz created: id=${q.id}, title="${q.title}", published=${q.published}` }]
+          content: [{ type: "text", text: `Quiz created: id=${q.id}, title="${q.title}", published=${q.published}${describeTimeLimit(time_limit, q)}` }]
         };
       } catch (error: any) {
         if (error instanceof Error) {
@@ -124,14 +173,17 @@ export function registerQuizTools(server: McpServer, canvas: CanvasClient) {
       due_at: z.string().optional().describe("The due date for the quiz"),
       points_possible: z.number().optional().describe("The point value of the quiz"),
       published: z.boolean().optional().describe("Whether the quiz is published"),
+      time_limit: z.number().int().min(0).optional().describe(TIME_LIMIT_DESC),
     },
     { idempotentHint: true },
     async (args: any) => {
-      const { courseId, quizId, ...fields } = args;
+      const { courseId, quizId, time_limit, ...fields } = args;
       try {
-        const q = await canvas.put(`/api/v1/courses/${courseId}/quizzes/${quizId}`, { quiz: fields }) as any;
+        const q = await canvas.put(`/api/v1/courses/${courseId}/quizzes/${quizId}`, {
+          quiz: { ...fields, ...timeLimitField(time_limit) },
+        }) as any;
         return {
-          content: [{ type: "text", text: `Quiz updated: id=${q.id}, title="${q.title}", published=${q.published}` }]
+          content: [{ type: "text", text: `Quiz updated: id=${q.id}, title="${q.title}", published=${q.published}${describeTimeLimit(time_limit, q)}` }]
         };
       } catch (error: any) {
         if (error instanceof Error) {
