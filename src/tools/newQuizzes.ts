@@ -12,7 +12,7 @@ import { buildItemEntry, InteractionType } from "../newQuizItemBuilder.js";
 // id used throughout this file is an assignment_id — and that same id is what
 // grade-submission takes when hand-grading essay responses.
 
-const INTERACTION_TYPES = ['choice', 'true-false', 'multi-answer', 'essay', 'numeric', 'matching', 'rich-fill-blank', 'ordering', 'categorization'] as const;
+const INTERACTION_TYPES = ['choice', 'true-false', 'multi-answer', 'essay', 'numeric', 'matching', 'rich-fill-blank', 'ordering', 'categorization', 'hot-spot'] as const;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -336,7 +336,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
   // Tool: create-new-quiz-item
   server.tool(
     "create-new-quiz-item",
-    "Add a question to a New Quiz. Give the question text, the choices, and which choice is correct — answer IDs and scoring rules are generated for you. Supports choice, multi-answer, true-false, essay, numeric, matching, rich-fill-blank (fill in the blank), ordering, and categorization; use rawEntry for formula, hot-spot and file-upload. FILL IN THE BLANK: mark each blank by putting backticks around the correct answer in the body, e.g. \"The capital of France is `Paris`.\" — one blank per backticked run. STIMULUS (shared reading passage with several questions hanging off it): Canvas allows NEITHER creating a stimulus nor attaching a question to one through its API — both must be done in the Canvas UI (Insert Content > Stimulus, then add the questions inside its block). Verified against a live instance. The association can be READ back here: list-new-quiz-items and get-new-quiz-item report stimulus_quiz_entry_id.",
+    "Add a question to a New Quiz. Give the question text, the choices, and which choice is correct — answer IDs and scoring rules are generated for you. Supports choice, multi-answer, true-false, essay, numeric, matching, rich-fill-blank (fill in the blank), ordering, categorization, and hot-spot; use rawEntry for formula and file-upload. HOT SPOT: pass imageUrl plus either hotspotRect or hotspotPolygon. Coordinates are FRACTIONS of the image (0-1), not pixels. The image can be a Canvas Files URL (upload it with upload-course-file first) - it must be published and student-visible, or it will render for you and 403 for them. FILL IN THE BLANK: mark each blank by putting backticks around the correct answer in the body, e.g. \"The capital of France is `Paris`.\" — one blank per backticked run. STIMULUS (shared reading passage with several questions hanging off it): Canvas allows NEITHER creating a stimulus nor attaching a question to one through its API — both must be done in the Canvas UI (Insert Content > Stimulus, then add the questions inside its block). Verified against a live instance. The association can be READ back here: list-new-quiz-items and get-new-quiz-item report stimulus_quiz_entry_id.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The quiz's assignment ID"),
@@ -369,12 +369,18 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
         name: z.string(),
         items: z.array(z.string())
       })).optional().describe("For categorization: each category and the items belonging in it"),
+      imageUrl: z.string().optional().describe("For hot-spot: the image students click on. A Canvas Files URL works (verified live) — upload with upload-course-file, and make sure it is published, or students get a broken image where you see a working one."),
+      hotspotRect: z.object({
+        x: z.number(), y: z.number(), width: z.number(), height: z.number()
+      }).optional().describe("For hot-spot: the correct region as a rectangle, in FRACTIONS of the image (0-1), measured from the top-left. e.g. {x:0.1,y:0.1,width:0.3,height:0.2}. Mutually exclusive with hotspotPolygon."),
+      hotspotPolygon: z.array(z.object({ x: z.number(), y: z.number() }))
+        .optional().describe("For hot-spot: the correct region as 3+ points, in FRACTIONS of the image (0-1). Use for non-rectangular areas. Mutually exclusive with hotspotRect."),
       feedback: z.object({
         neutral: z.string().optional(),
         correct: z.string().optional(),
         incorrect: z.string().optional()
       }).optional().describe("Feedback shown to students after submitting"),
-      rawEntry: jsonObjectParam("Escape hatch: a complete `entry` object for types the builder doesn't cover (categorization, ordering, formula, hot-spot, rich-fill-blank)").optional()
+      rawEntry: jsonObjectParam("Escape hatch: a complete `entry` object for types the builder doesn't cover (formula, file-upload)").optional()
     },
     { destructiveHint: false },
     async (args: any) => {
@@ -406,6 +412,9 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
             topLabel: args.topLabel,
             bottomLabel: args.bottomLabel,
             categories: args.categories,
+            imageUrl: args.imageUrl,
+            hotspotRect: args.hotspotRect,
+            hotspotPolygon: args.hotspotPolygon,
             feedback: args.feedback,
           });
         }

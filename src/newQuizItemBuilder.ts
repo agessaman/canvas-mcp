@@ -14,7 +14,8 @@ export type InteractionType =
   | 'matching'
   | 'rich-fill-blank'
   | 'ordering'
-  | 'categorization';
+  | 'categorization'
+  | 'hot-spot';
 
 // Canvas's per-blank matching methods. The UI writes TextContainsAnswer by
 // default; the others come from the documented set.
@@ -47,6 +48,9 @@ export interface BuildItemInput {
   topLabel?: string;
   bottomLabel?: string;
   categories?: { name: string; items: string[] }[];
+  imageUrl?: string;
+  hotspotRect?: { x: number; y: number; width: number; height: number };
+  hotspotPolygon?: { x: number; y: number }[];
   feedback?: { neutral?: string; correct?: string; incorrect?: string };
 }
 
@@ -388,5 +392,78 @@ export function buildItemEntry(input: BuildItemInput): Record<string, any> {
         scoring_algorithm: 'Numeric',
       };
     }
+
+    // Copied from UI exemplar item 9315 (quiz 371875) and verified in the
+    // Canvas editor 2026-08-04, including a Canvas Files image_url — the
+    // service's own S3 item_media bucket is where the UI puts its uploads, not
+    // a requirement of the field, so the whole flow is automatable.
+    //
+    // Deliberately absent: user_response_type. Most other types carry one; the
+    // UI writes none here.
+    case 'hot-spot': {
+      if (!input.imageUrl) {
+        throw new Error('interactionType "hot-spot" requires imageUrl — the image students click on');
+      }
+      if (!!input.hotspotRect === !!input.hotspotPolygon) {
+        throw new Error('interactionType "hot-spot" requires exactly one of hotspotRect or hotspotPolygon');
+      }
+
+      const points = input.hotspotRect
+        ? rectToPolygon(input.hotspotRect)
+        : input.hotspotPolygon!;
+
+      if (points.length < 3) {
+        throw new Error(`hotspotPolygon needs at least 3 points to enclose an area (got ${points.length})`);
+      }
+      // Coordinates are fractions of the image, not pixels. A pixel value is
+      // stored happily and puts the hotspot off the image, where it renders as
+      // a question no answer can satisfy — silent, and only visible to whoever
+      // takes the quiz. Refuse instead.
+      for (const { x, y } of points) {
+        if (!inUnitRange(x) || !inUnitRange(y)) {
+          throw new Error(
+            `hot-spot coordinates are fractions of the image between 0 and 1, not pixels (got x=${x}, y=${y}). `
+            + 'Divide pixel positions by the image width and height.'
+          );
+        }
+      }
+
+      return {
+        ...base,
+        calculator_type: 'none',
+        interaction_data: { image_url: input.imageUrl, hotspots_count: 1 },
+        scoring_data: { value: [{ id: 1, type: 'polygon', coordinates: points }] },
+        answer_feedback: {},
+        scoring_algorithm: 'HotSpot',
+      };
+    }
   }
+}
+
+function inUnitRange(value: number): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+// The UI only ever wrote type "polygon", and a 4-point polygon renders as a
+// clean rectangle (verified on probe item 9317). So a rectangle is expressed on
+// the proven path rather than by guessing at a native "rectangle" shape type
+// that the validator would store whether or not the editor could draw it.
+function rectToPolygon(rect: { x: number; y: number; width: number; height: number }) {
+  if (!(rect.width > 0) || !(rect.height > 0)) {
+    throw new Error(`hotspotRect needs a width and height greater than 0 (got ${rect.width}x${rect.height})`);
+  }
+  const right = rect.x + rect.width;
+  const bottom = rect.y + rect.height;
+  if (!inUnitRange(right) || !inUnitRange(bottom)) {
+    throw new Error(
+      `hotspotRect runs past the edge of the image: x+width=${right}, y+height=${bottom}, both must be <= 1. `
+      + 'Coordinates are fractions of the image, not pixels.'
+    );
+  }
+  return [
+    { x: rect.x, y: rect.y },
+    { x: right, y: rect.y },
+    { x: right, y: bottom },
+    { x: rect.x, y: bottom },
+  ];
 }

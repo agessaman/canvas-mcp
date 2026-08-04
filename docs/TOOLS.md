@@ -684,7 +684,7 @@ Adds a question. Answer IDs and scoring rules are generated for you.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
-  - `interactionType`: `choice` | `multi-answer` | `true-false` | `essay` | `numeric` | `matching` (unless using `rawEntry`)
+  - `interactionType`: `choice` | `multi-answer` | `true-false` | `essay` | `numeric` | `matching` | `rich-fill-blank` | `ordering` | `categorization` | `hot-spot` (unless using `rawEntry`)
   - `body`: string (unless using `rawEntry`)
 - Optional parameters:
   - `title`: string, `pointsPossible`: number (default: 1), `position`: number
@@ -699,8 +699,11 @@ Adds a question. Answer IDs and scoring rules are generated for you.
   - `gradingNotes`: string — for `essay`
   - `matchPairs`: `{ left, right }[]` — correct pairings, for `matching`
   - `distractors`: string[] — extra unmatched answer options, for `matching`
+  - `imageUrl`: string — for `hot-spot`, the image students click on
+  - `hotspotRect`: `{ x, y, width, height }` — for `hot-spot`, the correct region as a rectangle
+  - `hotspotPolygon`: `{ x, y }[]` — for `hot-spot`, the correct region as 3+ points
   - `feedback`: `{ neutral?, correct?, incorrect? }`
-  - `rawEntry`: object — full `entry` payload for categorization, ordering, formula, hot-spot, rich-fill-blank
+  - `rawEntry`: object — full `entry` payload for formula and file-upload
 
 > **Note on stimulus items — stimulus support is READ-ONLY.** Tested exhaustively against a live instance (2026-08-03) with a genuine UI-authored stimulus present. Neither half can be written:
 >
@@ -714,6 +717,14 @@ Adds a question. Answer IDs and scoring rules are generated for you.
 > The working path: in the Canvas UI choose **Insert Content > Stimulus**, build the passage, then add the questions inside its block. Then confirm with `list-new-quiz-items`.
 >
 > *(Do not "fix" this by switching the client to form encoding. It was tried: Rails parses `interaction_data[choices][0][id]` into a string-keyed **hash** rather than an array, and turns numbers into strings, so a form-encoded item is stored malformed — and a malformed item can break the entire quiz editor page, not just itself.)*
+
+> **Note on `hot-spot`:** the shape came from a UI-authored exemplar and was confirmed rendering in the Canvas editor (2026-08-04).
+>
+> - **Coordinates are fractions of the image between 0 and 1, measured from the top-left — not pixels.** Pixel values are refused, because Canvas stores them happily and puts the hotspot off the image, where no answer can ever be correct and only the student sees it.
+> - `hotspotRect` and `hotspotPolygon` are mutually exclusive; a rectangle is emitted as a 4-point polygon, which is what the editor draws. `type: "polygon"` is the only shape the UI was observed to write — `"rectangle"` and `"circle"` are **not known to work** and are not guessed at here.
+> - **The image can be an ordinary Canvas Files URL** (verified live), so `upload-course-file` then `create-new-quiz-item` automates the whole flow. The New Quizzes S3 `item_media` bucket is just where the UI puts its own uploads, not a requirement.
+> - The image is fetched by the student's browser, so it **must be published and student-visible**. An unpublished or link-only file renders for a teacher and fails for students — see `set-file-availability`.
+> - Only one hotspot region per item is supported; `hotspots_count` is always 1. Multiple regions are untested.
 
 > **Note on `matching`:** the builder copies the shape the Canvas editor itself writes, captured from a UI-authored exemplar, after a version derived from the published appendix stored cleanly and then **broke the entire quiz page** in the UI (one bad item takes down the whole quiz, not just itself). If you hand-roll a matching item via `rawEntry`, match these exactly: `interaction_data.answers` are plain strings (distractors included); `interaction_data.questions` are `{ id, item_body }` where `item_body` is raw text, *not* `<p>`-wrapped, and `id` is a short numeric string like `"52556"`, not a UUID; `scoring_data.value` is a **map of question id → answer text**; `scoring_data.edit_data` is required (`{ matches: [{ answer_body, question_id, question_body }], distractors: [] }`) because the editor builds its match rows from it; and `scoring_algorithm` is `PartialDeep` or `DeepEquals`. There is no `answer_type: "match_string"` — the UI writes none.
 >

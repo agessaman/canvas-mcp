@@ -313,3 +313,88 @@ test('categorization: distractors hold the whole draggable pool, not just wrong 
     /has no items/
   );
 });
+
+// Shape copied from UI exemplar 9315 (quiz 371875) and confirmed rendering in
+// the Canvas editor, along with probe 9317 which proved a Canvas Files URL
+// works and that a 4-point polygon draws as a clean rectangle.
+test('hot-spot matches the shape the Canvas editor writes', () => {
+  const entry = buildItemEntry({
+    interactionType: 'hot-spot',
+    body: 'Click on Washington State',
+    imageUrl: 'https://gfalls.instructure.com/courses/18473/files/1235586/preview',
+    hotspotRect: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 },
+  });
+
+  assert.equal(entry.interaction_type_slug, 'hot-spot');
+  assert.equal(entry.scoring_algorithm, 'HotSpot');
+  assert.equal(entry.calculator_type, 'none');
+  assert.deepEqual(entry.interaction_data, {
+    image_url: 'https://gfalls.instructure.com/courses/18473/files/1235586/preview',
+    hotspots_count: 1,
+  });
+  // The UI writes no user_response_type on this type, unlike most others.
+  assert.equal('user_response_type' in entry, false);
+  assert.deepEqual(entry.scoring_data.value, [{
+    id: 1,
+    type: 'polygon',
+    coordinates: [
+      { x: 0.1, y: 0.2 }, { x: 0.4, y: 0.2 },
+      { x: 0.4, y: 0.6000000000000001 }, { x: 0.1, y: 0.6000000000000001 },
+    ],
+  }]);
+});
+
+test('a hot-spot polygon is passed through as given', () => {
+  const points = [{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.2 }, { x: 0.3, y: 0.7 }];
+  const entry = buildItemEntry({
+    interactionType: 'hot-spot', body: 'Click it',
+    imageUrl: 'https://example.test/map.png', hotspotPolygon: points,
+  });
+  assert.deepEqual(entry.scoring_data.value[0].coordinates, points);
+});
+
+// Pixels are the mistake this type invites, and Canvas stores them happily:
+// the hotspot lands off the image and no answer can ever be correct, which is
+// visible only to whoever sits the quiz.
+test('pixel coordinates are refused rather than stored off the image', () => {
+  assert.throws(
+    () => buildItemEntry({
+      interactionType: 'hot-spot', body: 'Click it',
+      imageUrl: 'https://example.test/map.png',
+      hotspotPolygon: [{ x: 120, y: 340 }, { x: 200, y: 340 }, { x: 200, y: 400 }],
+    }),
+    /fractions of the image between 0 and 1, not pixels/
+  );
+});
+
+test('a rectangle running off the edge of the image is refused', () => {
+  assert.throws(
+    () => buildItemEntry({
+      interactionType: 'hot-spot', body: 'Click it',
+      imageUrl: 'https://example.test/map.png',
+      hotspotRect: { x: 0.8, y: 0.1, width: 0.5, height: 0.2 },
+    }),
+    /runs past the edge of the image/
+  );
+});
+
+test('hot-spot requires an image, and exactly one region', () => {
+  assert.throws(
+    () => buildItemEntry({ interactionType: 'hot-spot', body: 'Click it', hotspotRect: { x: 0, y: 0, width: 1, height: 1 } }),
+    /requires imageUrl/
+  );
+  assert.throws(
+    () => buildItemEntry({
+      interactionType: 'hot-spot', body: 'Click it', imageUrl: 'https://example.test/m.png',
+    }),
+    /exactly one of hotspotRect or hotspotPolygon/
+  );
+  assert.throws(
+    () => buildItemEntry({
+      interactionType: 'hot-spot', body: 'Click it', imageUrl: 'https://example.test/m.png',
+      hotspotRect: { x: 0, y: 0, width: 0.5, height: 0.5 },
+      hotspotPolygon: [{ x: 0.1, y: 0.1 }, { x: 0.2, y: 0.1 }, { x: 0.2, y: 0.2 }],
+    }),
+    /exactly one of hotspotRect or hotspotPolygon/
+  );
+});
