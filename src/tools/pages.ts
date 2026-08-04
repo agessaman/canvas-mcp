@@ -304,30 +304,38 @@ export function registerPageTools(server: McpServer, canvas: CanvasClient) {
   // Tool: update-page-content
   server.tool(
     "update-page-content",
-    "Update or create a page with new content, replacing the entire body. If no body/title/editingRoles is provided, nothing is written and guidance is returned (set showStyleguidePreview to also inline the styleguide). For targeted edits to existing content, use patch-page-content instead.",
+    "Update or create a page with new content, replacing the entire body. NOTE: a page Canvas creates is UNPUBLISHED, "
+    + "so students cannot see it until published: pass published: true when the page is meant to be visible. "
+    + "If no body/title/editingRoles/published is provided, nothing is written and guidance is returned (set "
+    + "showStyleguidePreview to also inline the styleguide). For targeted edits to existing content, use "
+    + "patch-page-content instead.",
     {
       courseId: z.string().describe("The ID of the course"),
       pageUrl: z.string().describe("The page's URL slug (e.g., 'syllabus')"),
       title: z.string().optional().describe("The new title for the page (optional)"),
       body: z.string().optional().describe("The new HTML body for the page (optional)"),
       editingRoles: z.string().optional().describe("Comma-separated roles allowed to edit (optional)"),
+      published: z.boolean().optional().describe("Whether students can see the page. A newly created page is UNPUBLISHED unless this is true, and an unpublished page is invisible to students while looking perfectly fine to you."),
+      notifyOfUpdate: z.boolean().optional().describe("Notify students that the page changed. Off unless set — this sends a real notification to the class, so it is not something to pass while fixing a typo."),
       ignoreStyleguide: z.boolean().default(false).describe("Skip styleguide reference (not recommended)"),
       showStyleguidePreview: z.boolean().default(false).describe("When no body is provided, inline the full course styleguide HTML for reference (off by default to save tokens; use get-styleguide to fetch it on demand)")
     },
     { idempotentHint: true },
-    async ({ courseId, pageUrl, title, body, editingRoles, ignoreStyleguide = false, showStyleguidePreview = false }: {
+    async ({ courseId, pageUrl, title, body, editingRoles, published, notifyOfUpdate, ignoreStyleguide = false, showStyleguidePreview = false }: {
       courseId: string;
       pageUrl: string;
       title?: string;
       body?: string;
       editingRoles?: string;
+      published?: boolean;
+      notifyOfUpdate?: boolean;
       ignoreStyleguide?: boolean;
       showStyleguidePreview?: boolean;
     }) => {
       try {
         // Nothing to write: don't create/clear a page by accident. Return guidance
         // instead, and only inline the full styleguide when explicitly requested.
-        if (body === undefined && title === undefined && editingRoles === undefined) {
+        if (body === undefined && title === undefined && editingRoles === undefined && published === undefined) {
           let styleguideBlock = '';
           if (showStyleguidePreview && !ignoreStyleguide) {
             try {
@@ -360,9 +368,33 @@ export function registerPageTools(server: McpServer, canvas: CanvasClient) {
         if (title !== undefined) wiki_page.title = title;
         if (body !== undefined) wiki_page.body = body;
         if (editingRoles !== undefined) wiki_page.editing_roles = editingRoles;
-        
+        if (published !== undefined) wiki_page.published = published;
+        if (notifyOfUpdate !== undefined) wiki_page.notify_of_update = notifyOfUpdate;
+
         const page = (await canvas.updateOrCreatePage(courseId, pageUrl, { wiki_page }) as any);
-        
+
+        const notes: string[] = [];
+        // A page nobody can see is the failure this tool used to produce
+        // silently, so say so — but only when it was not asked for, since a
+        // warning on every call is one nobody reads.
+        if (!page.published && published !== false) {
+          notes.push(
+            '',
+            'WARNING: this page is UNPUBLISHED, so students cannot see it. Canvas creates pages in draft state; '
+            + 'call again with published: true to make it visible.'
+          );
+        }
+        // Canvas derives a new page's slug from its TITLE and ignores the one
+        // in the request path, so the page a caller just created may not be at
+        // the address they used. Verified live 2026-08-04.
+        if (page.url && page.url !== pageUrl) {
+          notes.push(
+            '',
+            `NOTE: Canvas stored this page at '${page.url}', not the '${pageUrl}' that was asked for — a new page's `
+            + 'slug is derived from its title. Use the stored one to read it back.'
+          );
+        }
+
         return {
           content: [
             {
@@ -372,7 +404,8 @@ export function registerPageTools(server: McpServer, canvas: CanvasClient) {
                 `Title: ${page.title}`,
                 `ID: ${page.page_id}`,
                 `Published: ${page.published ? 'Yes' : 'No'}`,
-                `Updated At: ${page.updated_at}`
+                `Updated At: ${page.updated_at}`,
+                ...notes
               ].join('\n')
             }
           ]
@@ -472,6 +505,8 @@ export function registerPageTools(server: McpServer, canvas: CanvasClient) {
       instructions: z.string().describe("Natural language instructions for what changes to make to the page content (e.g., 'Update office hours to 2-4pm on MWF', 'Add a warning about the upcoming exam', 'Fix all typos')"),
       title: z.string().optional().describe("New title for the page (optional)"),
       editingRoles: z.string().optional().describe("Comma-separated roles allowed to edit (optional)"),
+      published: z.boolean().optional().describe("Whether students can see the page. A newly created page is UNPUBLISHED unless this is true, and an unpublished page is invisible to students while looking perfectly fine to you."),
+      notifyOfUpdate: z.boolean().optional().describe("Notify students that the page changed. Off unless set — this sends a real notification to the class, so it is not something to pass while fixing a typo."),
       includeStyleguide: z.boolean().default(false).describe("Inline the full course styleguide HTML for reference (off by default to save tokens; fetch it on demand with get-styleguide)")
     },
     { readOnlyHint: true },

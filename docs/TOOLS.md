@@ -375,6 +375,8 @@ Updates (or creates) a page by URL slug.
 - Optional parameters:
   - `title`: string
   - `body`: string (HTML)
+  - `published`: boolean — whether students can see the page
+  - `notifyOfUpdate`: boolean — notify the class that the page changed
   - `editingRoles`: string (comma-separated roles)
 - Returns confirmation and updated page info
 
@@ -961,6 +963,9 @@ Fetches a file from a course's Files area so it can be looked at — the read-on
 - Returns the image itself, so a hotspot can be placed against the actual picture rather than a description of it. Placing one on an unseen image is how a well-formed hotspot ends up over the wrong part of the picture
 - A file whose header cannot be read says so, rather than reporting a plausible guess
 - Non-image files are summarised rather than dumped as base64; use `saveToPath` to get the bytes
+- **A page Canvas creates is UNPUBLISHED**, so it is invisible to students while looking perfectly normal to a teacher. Pass `published: true` for anything students are meant to read. The tool warns when a write leaves a page unpublished, unless `published: false` was explicit
+- **Canvas derives a new page's slug from its TITLE, not from `pageUrl`.** Creating `mcp-publish-probe` with the title "MCP Publish Probe (throwaway)" stored it at `mcp-publish-probe-throwaway`, and reading back the requested slug 404s. The tool reports the stored slug and says so when the two differ
+- `notifyOfUpdate` sends a real notification to the class. It is never sent unless asked for
 
 ---
 
