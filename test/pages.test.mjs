@@ -128,3 +128,86 @@ test('published on its own is a write, not a no-op', async () => {
     assert.ok(canvas.requests.some(r => r.method !== 'GET'), 'must actually write');
   });
 });
+
+// Canvas puts its Previous/Next module controls flush against the page body:
+// #module_navigation_target has no spacing above, #wiki_page_show none below.
+// Nothing but the body HTML is ours to change, so the gap comes from here.
+test('a page body gets a spacer so it does not sit flush against the module controls', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasPages());
+    await canvas.callTool('update-page-content', {
+      courseId: '18473', pageUrl: 'unit-1', body: '<p>hi</p>', published: true,
+    });
+    const write = canvas.requests.find(r => r.method !== 'GET');
+    assert.match(write.body.wiki_page.body, /class="mcp-page-end"/);
+    assert.match(write.body.wiki_page.body, /height: 2rem/);
+  });
+});
+
+// The accumulation hazard: read a page, edit it, write it back, repeat. Without
+// the marker check each pass would add another empty div for ever.
+test('the spacer is not added twice on a read-edit-write round trip', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasPages());
+    const once = '<p>hi</p>\n<div class="mcp-page-end" style="height: 2rem;" aria-hidden="true"></div>';
+    await canvas.callTool('update-page-content', {
+      courseId: '18473', pageUrl: 'unit-1', body: once, published: true,
+    });
+    const write = canvas.requests.find(r => r.method !== 'GET');
+    const count = (write.body.wiki_page.body.match(/mcp-page-end/g) || []).length;
+    assert.equal(count, 1, 'a second spacer would accumulate on every round trip');
+  });
+});
+
+test('page-end spacing can be turned off', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasPages());
+    await canvas.callTool('update-page-content', {
+      courseId: '18473', pageUrl: 'unit-1', body: '<p>hi</p>', pageEndSpacing: false, published: true,
+    });
+    const write = canvas.requests.find(r => r.method !== 'GET');
+    assert.doesNotMatch(write.body.wiki_page.body, /mcp-page-end/);
+  });
+});
+
+test('apply-page-changes spaces the page end too', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasPages());
+    await canvas.callTool('apply-page-changes', {
+      courseId: '18473', pageUrl: 'unit-1', newContent: '<p>revised</p>',
+    });
+    const write = canvas.requests.find(r => r.method !== 'GET');
+    assert.match(write.body.wiki_page.body, /mcp-page-end/);
+  });
+});
+
+// apply-page-changes is the writing half of the patch flow, so it needs the
+// publish parameter for the same reason update-page-content did.
+test('apply-page-changes can publish', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasPages());
+    await canvas.callTool('apply-page-changes', {
+      courseId: '18473', pageUrl: 'unit-1', newContent: '<p>revised</p>', published: true,
+    });
+    const write = canvas.requests.find(r => r.method !== 'GET');
+    assert.equal(write.body.wiki_page.published, true);
+  });
+});
+
+// patch-page-content does not write to Canvas at all. It briefly advertised
+// published and notifyOfUpdate because an edit matched a line it shares with
+// update-page-content — parameters that would have been accepted and silently
+// done nothing, which is the exact failure this server exists to avoid.
+test('the read-only patch tool advertises no write-only parameters', async () => {
+  await withMockCanvas(async canvas => {
+    const tools = await canvas.listTools();
+    const patch = tools.find(t => t.name === 'patch-page-content');
+    const params = Object.keys(patch.inputSchema.properties ?? {});
+    // Guard against this passing because the schema was read wrongly.
+    assert.ok(params.includes('instructions'), 'schema not read correctly');
+    for (const forbidden of ['published', 'notifyOfUpdate', 'pageEndSpacing']) {
+      assert.equal(params.includes(forbidden), false,
+        `patch-page-content does not write, so ${forbidden} would do nothing`);
+    }
+  });
+});

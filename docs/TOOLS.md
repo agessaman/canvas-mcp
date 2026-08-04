@@ -966,6 +966,9 @@ Fetches a file from a course's Files area so it can be looked at — the read-on
 - **A page Canvas creates is UNPUBLISHED**, so it is invisible to students while looking perfectly normal to a teacher. Pass `published: true` for anything students are meant to read. The tool warns when a write leaves a page unpublished, unless `published: false` was explicit
 - **Canvas derives a new page's slug from its TITLE, not from `pageUrl`.** Creating `mcp-publish-probe` with the title "MCP Publish Probe (throwaway)" stored it at `mcp-publish-probe-throwaway`, and reading back the requested slug 404s. The tool reports the stored slug and says so when the two differ
 - `notifyOfUpdate` sends a real notification to the class. It is never sent unless asked for
+- **Adds a page-end spacer.** Canvas puts its Previous/Next module controls flush against the body — `div#module_navigation_target` has no spacing above it and `div#wiki_page_show` none below — so a page whose last element has no bottom margin ends hard against them. A `div.mcp-page-end` of fixed height is appended. Idempotent: the marker survives Canvas's sanitizer (verified live), so a read-edit-write round trip does not stack them up. Turn it off with `pageEndSpacing: false`
+- A fixed height is used rather than a margin, because a margin on the last child can collapse away
+
 
 ---
 
