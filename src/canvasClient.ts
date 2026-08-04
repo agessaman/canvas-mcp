@@ -40,6 +40,14 @@ export class CanvasClient {
     return `${url}\0${JSON.stringify(sorted)}`;
   }
 
+  /**
+   * Drop every cached read. See SimpleCache.clear() for why this is needed:
+   * write-side invalidation cannot know about edits made outside this session.
+   */
+  clearCache(): number {
+    return this.cache.clear();
+  }
+
   private invalidateForWrite(url: string): void {
     const basePath = url.split('?')[0];
     this.cache.invalidatePrefix(basePath);

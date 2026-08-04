@@ -74,6 +74,39 @@ if (!config.apiToken) {
 // Create the CanvasClient instance
 const canvas = new CanvasClient(config.baseUrl, config.apiToken);
 
+// Tool: refresh-canvas-data — the only way to defeat the read cache.
+//
+// Reads are cached for 60 seconds without any network call, then revalidated
+// with an ETag. Write tools invalidate what they touch, so edits made THROUGH
+// this server are always reflected. Edits made anywhere else are not, and a
+// stale read looks exactly like the thing not existing — this cost a wrong
+// conclusion about the Canvas API during the 1.14 work.
+//
+// No read tool can force a refresh on its own: parameters that only change
+// formatting (list-new-quiz-items' `full`) share a cache key with the plain
+// call and are not a way around it.
+server.tool(
+  "refresh-canvas-data",
+  "Discard everything this server has cached from Canvas, so the next read fetches fresh data. "
+  + "Use it when Canvas was changed somewhere other than this conversation — you edited a quiz or page "
+  + "in the Canvas UI, a co-teacher changed something, or a long-running job (course copy, assignment "
+  + "duplication) has finished — and a read still shows the old state. Changes made by this server's own "
+  + "tools do not need it. Harmless to call: it only discards cached copies, never Canvas data.",
+  {},
+  { readOnlyHint: true },
+  async () => {
+    const dropped = canvas.clearCache();
+    return {
+      content: [{
+        type: "text",
+        text: dropped === 0
+          ? "Nothing was cached, so reads were already going to hit Canvas directly."
+          : `Discarded ${dropped} cached response(s). The next read of each will fetch fresh data from Canvas.`
+      }]
+    };
+  }
+);
+
 // Register course-related tools
 registerCourseTools(server, canvas);
 registerStudentTools(server, canvas);

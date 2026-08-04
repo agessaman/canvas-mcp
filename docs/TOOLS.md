@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **112 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **113 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -1070,3 +1070,22 @@ Sets the course's missing/late work policy, creating it if the course has none.
 - `lateDeductionInterval` alone is refused — it only says how often a deduction that is not happening would accrue
 - **Changes grades across the entire course, including work already submitted.** Scores students have already seen can change
 - Verified by re-reading the policy, not from the write's response
+
+---
+
+## Diagnostics
+
+### get-server-version
+Reports which build of this server the client has loaded. Use it to confirm an upgrade actually took effect — the MCP server is a child process and is not swapped out without a full restart of the host app.
+- No parameters
+
+---
+
+### refresh-canvas-data
+Discards every cached Canvas response, so the next read of each resource fetches fresh data.
+- No parameters
+- Reads are served from cache for 60 seconds with **no network call**, then revalidated with an ETag. Write tools invalidate what they touch, so changes made *through this server* are always reflected and need no refresh
+- Use it when Canvas changed somewhere else: you edited a quiz or page in the Canvas UI, a co-teacher changed something, or a long-running job (course copy, assignment duplication) finished
+- **This is the only way to defeat the cache.** No read tool can force a fresh fetch on its own — parameters that change only the formatting of a result, such as `list-new-quiz-items`' `full`, share a cache key with the plain call
+- **Why it matters:** a stale read is indistinguishable from the resource not existing. A question attached to a stimulus in the Canvas UI kept not appearing in a cached item listing during development, and was nearly recorded as a Canvas API limitation that does not exist
+- Harmless: it discards local copies only, never Canvas data, and makes no request to Canvas
