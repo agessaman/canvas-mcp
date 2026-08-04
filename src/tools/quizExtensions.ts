@@ -287,7 +287,10 @@ export function registerQuizExtensionTools(server: McpServer, canvas: CanvasClie
       studentIds: z.array(z.string()).optional().describe("Canvas user IDs of the students getting extra time. Mutually exclusive with sectionId."),
       sectionId: z.string().optional().describe("Grant to every currently-enrolled student in this section. Mutually exclusive with studentIds."),
       extraMinutes: EXTRA_MINUTES,
-      extraAttempts: z.number().int().min(0).optional().describe("Extra attempts beyond the quiz's limit, if retakes are part of the accommodation"),
+      extraAttempts: z.number().int().min(0).optional().describe(
+        "Extra attempts beyond the quiz's limit, if retakes are part of the accommodation. This is the ONLY way to "
+        + "grant a quiz retake — extend-assignment-attempts is refused on a quiz's assignment. 0 removes the grant."
+      ),
       reduceChoices: z.boolean().optional().describe("New Quizzes only: remove one wrong answer from multiple-choice questions with 4+ options"),
       manuallyUnlocked: z.boolean().optional().describe("Classic Quizzes only: let these students take the quiz even while it is locked for everyone else"),
       engine: z.enum(["classic", "new"]).optional().describe("Only needed if the ID is ambiguous (it can name a quiz under both engines)")
@@ -309,9 +312,21 @@ export function registerQuizExtensionTools(server: McpServer, canvas: CanvasClie
 
         const target = await resolveTargets(canvas, args);
         const ids = numericIds(target.ids);
-        const label = args.extraMinutes === 0
-          ? `Removed extra time for ${ids.length} student(s)`
-          : `Gave ${ids.length} student(s) ${args.extraMinutes} extra minute(s)`;
+        // Name every grant the call made, not just the minutes. Extra attempts
+        // were being sent and verified on readback but never mentioned, so a
+        // teacher granting a retake got back a message about the clock only —
+        // the silent-success shape this server exists to avoid.
+        const given: string[] = [];
+        const removed: string[] = [];
+        if (args.extraMinutes === 0) removed.push('extra time');
+        else given.push(`${args.extraMinutes} extra minute(s)`);
+        if (args.extraAttempts === 0) removed.push('extra attempts');
+        else if (args.extraAttempts !== undefined) given.push(`${args.extraAttempts} extra attempt(s)`);
+
+        const label = given.length
+          ? `Gave ${ids.length} student(s) ${given.join(' and ')}`
+            + (removed.length ? `, and removed ${removed.join(' and ')}` : '')
+          : `Removed ${removed.join(' and ')} for ${ids.length} student(s)`;
 
         if (engine.kind === 'classic') {
           const extensions = ids.map(user_id => {

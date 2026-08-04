@@ -281,14 +281,36 @@ export class CanvasClient {
     return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides`);
   }
   async createAssignmentOverride(courseId: string, assignmentId: string, data: any) {
-    return this.post(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides`, { assignment_override: data });
+    const result = await this.post(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides`, { assignment_override: data });
+    this.invalidateAssignments(courseId);
+    return result;
   }
   async updateAssignmentOverride(courseId: string, assignmentId: string, overrideId: string, data: any) {
-    return this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides/${overrideId}`, { assignment_override: data });
+    const result = await this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides/${overrideId}`, { assignment_override: data });
+    this.invalidateAssignments(courseId);
+    return result;
   }
   async deleteAssignmentOverride(courseId: string, assignmentId: string, overrideId: string) {
-    return this.delete(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides/${overrideId}`);
+    const result = await this.delete(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides/${overrideId}`);
+    this.invalidateAssignments(courseId);
+    return result;
   }
+
+  // An override moves a due date, so the cached ASSIGNMENTS LISTING is now
+  // wrong — and invalidateForWrite stops one level short of it. Writing to
+  // /courses/:id/assignments/:aid/overrides invalidates that path and climbs to
+  // /courses/:id/assignments/:aid, but the listing is cached under the shorter
+  // /courses/:id/assignments, which is not a prefix of either.
+  //
+  // Found live 2026-08-04, and the diagnosis took two tries. The submissions
+  // themselves are never cached (/submissions is in UNCACHED_PATTERNS), so
+  // Canvas's freshly recomputed `missing` flag came through immediately while
+  // list-missing-submissions joined its due dates from the stale listing
+  // (see grades.ts). The result was a row reading `status: missing` against a
+  // due date two weeks in the FUTURE — self-contradictory, and worse than a
+  // plainly stale row because it reads as a Canvas bug rather than a cache
+  // one. Two caches of differing lifetimes feeding one report will disagree;
+  // the uncached half is what makes the stale half visible.
 
   // --- Late policy ---
   //

@@ -215,3 +215,42 @@ test('the base due date comes from all_dates, not the assignment due_at', async 
     assert.doesNotMatch(text, /base due date \(2026-09-25/);
   });
 });
+
+// Found live 2026-08-04: after deleting an override, list-missing-submissions
+// reported `status: missing` against a due date two weeks in the FUTURE. The
+// submissions are never cached, so Canvas's recomputed flag arrived at once,
+// while the due date was joined from the cached ASSIGNMENTS LISTING — which an
+// override write does not reach, since it is cached one path level above the
+// override's parent.
+test('an override write drops the cached assignments listing the due dates come from', async () => {
+  await withMockCanvas(async canvas => {
+    let dueAt = '2026-08-01T23:59:00Z';
+    canvas.setResponse(({ url, method, body }) => {
+      if (url.includes('/students/submissions')) {
+        return [{ user_id: 6199, assignment_id: 371870, missing: true }];
+      }
+      if (url.includes('/enrollments')) {
+        return [{ user: { id: 6199, name: 'Adam Student' }, user_id: 6199, enrollment_state: 'active' }];
+      }
+      if (url.includes('/overrides')) {
+        if (method !== 'GET') { dueAt = '2026-08-20T23:59:00Z'; return { id: 900, ...body?.assignment_override }; }
+        return [];
+      }
+      if (/\/assignments(\?|$)/.test(url)) {
+        return [{ id: 371870, name: 'MCP Late Policy Probe', due_at: dueAt, points_possible: 10 }];
+      }
+      return { id: 371870, name: 'MCP Late Policy Probe', due_at: dueAt, points_possible: 10 };
+    });
+
+    await canvas.callTool('list-missing-submissions', { courseId: '18473' });
+    await canvas.callTool('create-assignment-override', {
+      courseId: '18473', assignmentId: '371870',
+      studentIds: ['6199'], dueAt: '2026-08-20T23:59:00Z',
+    });
+    const after = await canvas.callTool('list-missing-submissions', { courseId: '18473' });
+
+    // Served from cache this still says 2026-08-01, and the report contradicts
+    // itself: work flagged missing against a deadline that has not passed.
+    assert.match(canvas.textOf(after), /2026-08-20/);
+  });
+});

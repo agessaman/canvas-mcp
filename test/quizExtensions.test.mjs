@@ -150,6 +150,30 @@ test('a timed quiz reports the total clock the students end up with', async () =
   });
 });
 
+// Found live on quiz 111372: the grant went out and was verified, but the
+// message named only the minutes, so a retake looked like it had not happened.
+test('extra attempts are named in the result, not just the minutes', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith({ engine: 'classic' }));
+    const result = await canvas.callTool('extend-quiz-time', {
+      courseId: '18473', quizId: '900', studentIds: ['6199'], extraMinutes: 30, extraAttempts: 2,
+    });
+    const text = canvas.textOf(result);
+    assert.match(text, /30 extra minute\(s\) and 2 extra attempt\(s\)/);
+  });
+});
+
+test('clearing attempts while keeping time says which was removed', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(canvasWith({ engine: 'classic' }));
+    const result = await canvas.callTool('extend-quiz-time', {
+      courseId: '18473', quizId: '900', studentIds: ['6199'], extraMinutes: 30, extraAttempts: 0,
+    });
+    const text = canvas.textOf(result);
+    assert.match(text, /30 extra minute\(s\), and removed extra attempts/);
+  });
+});
+
 // Neither engine has a section-level extension, so a section is expanded to
 // user IDs — and that expansion is a snapshot the caller has to know about.
 test('a section is expanded to its students, with the snapshot said out loud', async () => {

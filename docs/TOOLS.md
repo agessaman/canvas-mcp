@@ -1002,7 +1002,7 @@ Gives students extra **minutes** on a timed quiz — the clock accommodation, as
   - Exactly one of `studentIds` (string array) or `sectionId` (string)
   - `extraMinutes`: integer 0–10080 (Canvas's own ceiling, one week)
 - Optional parameters:
-  - `extraAttempts`: integer — extra attempts beyond the quiz's limit
+  - `extraAttempts`: integer — extra attempts beyond the quiz's limit. **This is the only way to grant a quiz retake**; `extend-assignment-attempts` is refused by Canvas on a quiz's assignment. `0` removes the grant
   - `reduceChoices`: boolean — **New Quizzes only**: removes one wrong answer from multiple-choice questions with 4+ options
   - `manuallyUnlocked`: boolean — **Classic Quizzes only**: lets these students take the quiz while it is locked for everyone else
   - `engine`: `classic` | `new` — only needed when the ID is ambiguous
@@ -1051,6 +1051,7 @@ Gives students extra **attempts** at an assignment — another try, for a retake
 - Verified per student by re-reading the submission, which is where Canvas records `extra_attempts` — the write's own response does not say
 - A `sectionId` is expanded to its currently-enrolled students, and that expansion is a snapshot: students added later get nothing
 - Not a deadline and not a clock — see `extend-due-date` and `extend-quiz-time`
+- **Does not work on a quiz.** Canvas only accepts extra attempts on `online_upload`, `online_url` or `online_text_entry` submissions, and refuses a quiz's assignment outright. Grant a quiz retake with `extend-quiz-time`'s `extraAttempts` instead — the two are spelled almost identically and live on different endpoints
 
 ---
 

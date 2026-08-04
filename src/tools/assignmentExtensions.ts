@@ -27,7 +27,9 @@ export function registerAssignmentExtensionTools(server: McpServer, canvas: Canv
     "extend-assignment-attempts",
     "Give students extra ATTEMPTS at an assignment — another try at a submission, for a retake or a technical "
     + "failure. This is not a deadline and not a clock: use extend-due-date to move a due date, and "
-    + "extend-quiz-time for extra minutes on a timed quiz. Only meaningful on an assignment that limits attempts; "
+    + "extend-quiz-time for extra minutes on a timed quiz. Does NOT work on a quiz: Canvas only accepts extra "
+    + "attempts on online_upload, online_url or online_text_entry submissions, so a quiz retake has to be granted "
+    + "with extend-quiz-time's extraAttempts instead. Only meaningful on an assignment that limits attempts; "
     + "if attempts are unlimited the student already has as many as they want. Target either studentIds or a "
     + "sectionId.",
     {
