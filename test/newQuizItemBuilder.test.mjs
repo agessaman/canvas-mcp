@@ -334,14 +334,62 @@ test('hot-spot matches the shape the Canvas editor writes', () => {
   });
   // The UI writes no user_response_type on this type, unlike most others.
   assert.equal('user_response_type' in entry, false);
+  // A rectangle is two corners of a bounding box, not a four-point outline —
+  // and the editor calls it "rectangle" while storing "square".
   assert.deepEqual(entry.scoring_data.value, [{
     id: 1,
-    type: 'polygon',
-    coordinates: [
-      { x: 0.1, y: 0.2 }, { x: 0.4, y: 0.2 },
-      { x: 0.4, y: 0.6000000000000001 }, { x: 0.1, y: 0.6000000000000001 },
-    ],
+    type: 'square',
+    coordinates: [{ x: 0.1, y: 0.2 }, { x: 0.4, y: 0.6000000000000001 }],
   }]);
+});
+
+// From UI exemplar 9320. The two points are bounding-box corners; read as
+// [center, radii] — which is what the descending order suggests — the region
+// lands somewhere else entirely and nothing about the item looks wrong.
+test('an oval is two bounding-box corners, not a centre and radii', () => {
+  const entry = buildItemEntry({
+    interactionType: 'hot-spot', body: 'Click the sea',
+    imageUrl: 'https://example.test/map.png',
+    hotspotOval: { x: 0.06, y: 0.02, width: 0.06, height: 0.08 },
+  });
+  assert.equal(entry.scoring_data.value[0].type, 'oval');
+  assert.deepEqual(entry.scoring_data.value[0].coordinates, [
+    { x: 0.06, y: 0.02 },
+    { x: 0.12, y: 0.1 },
+  ]);
+});
+
+test('an oval accepts pixels like the other shapes', () => {
+  const entry = buildItemEntry({
+    interactionType: 'hot-spot', body: 'Click the sea',
+    imageUrl: 'https://example.test/map.png',
+    imagePixelWidth: 1000, imagePixelHeight: 500,
+    hotspotOval: { x: 100, y: 50, width: 200, height: 100 },
+  });
+  assert.deepEqual(entry.scoring_data.value[0].coordinates, [
+    { x: 0.1, y: 0.1 }, { x: 0.3, y: 0.3 },
+  ]);
+});
+
+test('a polygon still writes type polygon', () => {
+  const entry = buildItemEntry({
+    interactionType: 'hot-spot', body: 'Click it',
+    imageUrl: 'https://example.test/map.png',
+    hotspotPolygon: [{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.2 }, { x: 0.3, y: 0.7 }],
+  });
+  assert.equal(entry.scoring_data.value[0].type, 'polygon');
+});
+
+test('two shapes at once is refused, and says which two', () => {
+  assert.throws(
+    () => buildItemEntry({
+      interactionType: 'hot-spot', body: 'Click it',
+      imageUrl: 'https://example.test/map.png',
+      hotspotRect: { x: 0.1, y: 0.1, width: 0.2, height: 0.2 },
+      hotspotOval: { x: 0.1, y: 0.1, width: 0.2, height: 0.2 },
+    }),
+    /got hotspotRect and hotspotOval/
+  );
 });
 
 test('a hot-spot polygon is passed through as given', () => {
@@ -389,8 +437,7 @@ test('pixel coordinates are converted when the image size is given', () => {
     hotspotRect: { x: 250, y: 100, width: 500, height: 200 },
   });
   assert.deepEqual(entry.scoring_data.value[0].coordinates, [
-    { x: 0.25, y: 0.2 }, { x: 0.75, y: 0.2 },
-    { x: 0.75, y: 0.6 }, { x: 0.25, y: 0.6 },
+    { x: 0.25, y: 0.2 }, { x: 0.75, y: 0.6 },
   ]);
 });
 
@@ -441,7 +488,7 @@ test('hot-spot requires an image, and exactly one region', () => {
     () => buildItemEntry({
       interactionType: 'hot-spot', body: 'Click it', imageUrl: 'https://example.test/m.png',
     }),
-    /exactly one of hotspotRect or hotspotPolygon/
+    /exactly one of hotspotRect, hotspotOval or hotspotPolygon/
   );
   assert.throws(
     () => buildItemEntry({
@@ -449,6 +496,6 @@ test('hot-spot requires an image, and exactly one region', () => {
       hotspotRect: { x: 0, y: 0, width: 0.5, height: 0.5 },
       hotspotPolygon: [{ x: 0.1, y: 0.1 }, { x: 0.2, y: 0.1 }, { x: 0.2, y: 0.2 }],
     }),
-    /exactly one of hotspotRect or hotspotPolygon/
+    /exactly one of hotspotRect, hotspotOval or hotspotPolygon/
   );
 });

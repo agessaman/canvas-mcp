@@ -336,7 +336,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
   // Tool: create-new-quiz-item
   server.tool(
     "create-new-quiz-item",
-    "Add a question to a New Quiz. Give the question text, the choices, and which choice is correct — answer IDs and scoring rules are generated for you. Supports choice, multi-answer, true-false, essay, numeric, matching, rich-fill-blank (fill in the blank), ordering, categorization, and hot-spot; use rawEntry for formula and file-upload. HOT SPOT: pass imageUrl plus either hotspotRect or hotspotPolygon. Coordinates are FRACTIONS of the image (0-1); pass imagePixelWidth and imagePixelHeight to give them in pixels instead, which is usually easier and is how to get placement right. The image can be a Canvas Files URL (upload it with upload-course-file first) - it must be published and student-visible, or it will render for you and 403 for them. FILL IN THE BLANK: mark each blank by putting backticks around the correct answer in the body, e.g. \"The capital of France is `Paris`.\" — one blank per backticked run. STIMULUS (shared reading passage with several questions hanging off it): Canvas allows NEITHER creating a stimulus nor attaching a question to one through its API — both must be done in the Canvas UI (Insert Content > Stimulus, then add the questions inside its block). Verified against a live instance. The association can be READ back here: list-new-quiz-items and get-new-quiz-item report stimulus_quiz_entry_id.",
+    "Add a question to a New Quiz. Give the question text, the choices, and which choice is correct — answer IDs and scoring rules are generated for you. Supports choice, multi-answer, true-false, essay, numeric, matching, rich-fill-blank (fill in the blank), ordering, categorization, and hot-spot; use rawEntry for formula and file-upload. HOT SPOT: pass imageUrl plus exactly one of hotspotRect (rectangle), hotspotOval (ellipse) or hotspotPolygon — the same three shapes the Canvas editor offers. Coordinates are FRACTIONS of the image (0-1); pass imagePixelWidth and imagePixelHeight to give them in pixels instead, which is usually easier and is how to get placement right. The image can be a Canvas Files URL (upload it with upload-course-file first) - it must be published and student-visible, or it will render for you and 403 for them. FILL IN THE BLANK: mark each blank by putting backticks around the correct answer in the body, e.g. \"The capital of France is `Paris`.\" — one blank per backticked run. STIMULUS (shared reading passage with several questions hanging off it): Canvas allows NEITHER creating a stimulus nor attaching a question to one through its API — both must be done in the Canvas UI (Insert Content > Stimulus, then add the questions inside its block). Verified against a live instance. The association can be READ back here: list-new-quiz-items and get-new-quiz-item report stimulus_quiz_entry_id.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The quiz's assignment ID"),
@@ -375,6 +375,9 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
       hotspotRect: z.object({
         x: z.number(), y: z.number(), width: z.number(), height: z.number()
       }).optional().describe("For hot-spot: the correct region as a rectangle, measured from the top-left. FRACTIONS of the image (0-1) by default, or PIXELS if imagePixelWidth/Height are given. Mutually exclusive with hotspotPolygon."),
+      hotspotOval: z.object({
+        x: z.number(), y: z.number(), width: z.number(), height: z.number()
+      }).optional().describe("For hot-spot: the correct region as an ELLIPSE, given by its bounding box (same fields as hotspotRect). Mutually exclusive with the other shapes."),
       hotspotPolygon: z.array(z.object({ x: z.number(), y: z.number() }))
         .optional().describe("For hot-spot: the correct region as 3+ points, FRACTIONS of the image (0-1) by default, or PIXELS if imagePixelWidth/Height are given. Use for non-rectangular areas. Mutually exclusive with hotspotRect."),
       feedback: z.object({
@@ -418,6 +421,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
             imagePixelWidth: args.imagePixelWidth,
             imagePixelHeight: args.imagePixelHeight,
             hotspotRect: args.hotspotRect,
+            hotspotOval: args.hotspotOval,
             hotspotPolygon: args.hotspotPolygon,
             feedback: args.feedback,
           });

@@ -52,6 +52,7 @@ export interface BuildItemInput {
   imagePixelWidth?: number;
   imagePixelHeight?: number;
   hotspotRect?: { x: number; y: number; width: number; height: number };
+  hotspotOval?: { x: number; y: number; width: number; height: number };
   hotspotPolygon?: { x: number; y: number }[];
   feedback?: { neutral?: string; correct?: string; incorrect?: string };
 }
@@ -406,8 +407,16 @@ export function buildItemEntry(input: BuildItemInput): Record<string, any> {
       if (!input.imageUrl) {
         throw new Error('interactionType "hot-spot" requires imageUrl — the image students click on');
       }
-      if (!!input.hotspotRect === !!input.hotspotPolygon) {
-        throw new Error('interactionType "hot-spot" requires exactly one of hotspotRect or hotspotPolygon');
+      const shapes = [
+        ['hotspotRect', input.hotspotRect],
+        ['hotspotOval', input.hotspotOval],
+        ['hotspotPolygon', input.hotspotPolygon],
+      ].filter(([, value]) => value !== undefined);
+      if (shapes.length !== 1) {
+        throw new Error(
+          'interactionType "hot-spot" requires exactly one of hotspotRect, hotspotOval or hotspotPolygon'
+          + (shapes.length ? ` (got ${shapes.map(([name]) => name).join(' and ')})` : '')
+        );
       }
 
       // Canvas stores fractions, but nobody can estimate a fraction by looking
@@ -427,11 +436,14 @@ export function buildItemEntry(input: BuildItemInput): Record<string, any> {
         ? { x: input.imagePixelWidth!, y: input.imagePixelHeight! }
         : { x: 1, y: 1 };
 
-      const rawPoints = input.hotspotRect
-        ? rectToPolygon(input.hotspotRect)
-        : input.hotspotPolygon!;
+      // Each of the editor's three tools writes its own `type`, and the two
+      // box shapes are TWO CORNERS rather than an outline. Note the editor
+      // calls the rectangle tool "rectangle" in the UI and stores "square".
+      const box = input.hotspotRect ?? input.hotspotOval;
+      const shapeType = input.hotspotPolygon ? 'polygon' : input.hotspotOval ? 'oval' : 'square';
+      const rawPoints = box ? boxCorners(box, shapeType) : input.hotspotPolygon!;
 
-      if (rawPoints.length < 3) {
+      if (!box && rawPoints.length < 3) {
         throw new Error(`hotspotPolygon needs at least 3 points to enclose an area (got ${rawPoints.length})`);
       }
 
@@ -457,7 +469,7 @@ export function buildItemEntry(input: BuildItemInput): Record<string, any> {
         ...base,
         calculator_type: 'none',
         interaction_data: { image_url: input.imageUrl, hotspots_count: 1 },
-        scoring_data: { value: [{ id: 1, type: 'polygon', coordinates: points }] },
+        scoring_data: { value: [{ id: 1, type: shapeType, coordinates: points }] },
         answer_feedback: {},
         scoring_algorithm: 'HotSpot',
       };
@@ -469,20 +481,32 @@ function inUnitRange(value: number): boolean {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
-// The UI only ever wrote type "polygon", and a 4-point polygon renders as a
-// clean rectangle (verified on probe item 9317). So a rectangle is expressed on
-// the proven path rather than by guessing at a native "rectangle" shape type
-// that the validator would store whether or not the editor could draw it.
-function rectToPolygon(rect: { x: number; y: number; width: number; height: number }) {
-  if (!(rect.width > 0) || !(rect.height > 0)) {
-    throw new Error(`hotspotRect needs a width and height greater than 0 (got ${rect.width}x${rect.height})`);
+/**
+ * A square or oval hotspot is TWO points — opposite corners of its bounding
+ * box — not an outline. From UI exemplars 9321 (square) and 9320 (oval).
+ *
+ * The oval encoding was nearly got wrong. Its two points came back in
+ * descending order, which reads convincingly as [center, radii] — a common way
+ * to describe an ellipse. Checking the numbers against a known landmark in the
+ * same image settled it: under that reading the "Salish Sea" oval would span
+ * the entire width of Washington, while as a bounding box it lands on the
+ * northwest corner and reaches slightly into Canada, which is where the Salish
+ * Sea actually is. Two readings of the same two numbers, one of them silently
+ * wrong — exactly the shape of bug this question type keeps producing.
+ *
+ * The editor does not normalise the corner order (it stores the drag as made),
+ * so this emits min-then-max, matching the square exemplar.
+ */
+function boxCorners(
+  box: { x: number; y: number; width: number; height: number },
+  shape: string,
+) {
+  const name = shape === 'oval' ? 'hotspotOval' : 'hotspotRect';
+  if (!(box.width > 0) || !(box.height > 0)) {
+    throw new Error(`${name} needs a width and height greater than 0 (got ${box.width}x${box.height})`);
   }
-  const right = rect.x + rect.width;
-  const bottom = rect.y + rect.height;
   return [
-    { x: rect.x, y: rect.y },
-    { x: right, y: rect.y },
-    { x: right, y: bottom },
-    { x: rect.x, y: bottom },
+    { x: box.x, y: box.y },
+    { x: box.x + box.width, y: box.y + box.height },
   ];
 }

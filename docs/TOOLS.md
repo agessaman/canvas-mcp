@@ -702,6 +702,7 @@ Adds a question. Answer IDs and scoring rules are generated for you.
   - `imageUrl`: string — for `hot-spot`, the image students click on
   - `imagePixelWidth`, `imagePixelHeight`: number — the image's pixel size; give both to specify the hotspot in pixels
   - `hotspotRect`: `{ x, y, width, height }` — for `hot-spot`, the correct region as a rectangle
+  - `hotspotOval`: `{ x, y, width, height }` — for `hot-spot`, the correct region as an ellipse, given by its bounding box
   - `hotspotPolygon`: `{ x, y }[]` — for `hot-spot`, the correct region as 3+ points
   - `feedback`: `{ neutral?, correct?, incorrect? }`
   - `rawEntry`: object — full `entry` payload for formula and file-upload
@@ -723,7 +724,8 @@ Adds a question. Answer IDs and scoring rules are generated for you.
 >
 > - **Coordinates are measured from the top-left and stored as fractions of the image between 0 and 1.** Pass `imagePixelWidth` and `imagePixelHeight` (both, or neither) to give them in **pixels** instead and have them converted. Prefer this: every hotspot in the first live round rendered perfectly and sat in the wrong place, because fractions had been estimated by eye. Pixel positions can be read off any image viewer; fractions cannot be guessed.
 > - A coordinate landing outside the image is refused either way. Canvas stores it happily and puts the hotspot where no answer can ever be correct — silent, and visible only to the student sitting the quiz.
-> - `hotspotRect` and `hotspotPolygon` are mutually exclusive; a rectangle is emitted as a 4-point polygon, which is what the editor draws. `type: "polygon"` is the only shape the UI was observed to write — `"rectangle"` and `"circle"` are **not known to work** and are not guessed at here.
+> - The three shapes match the three tools in the Canvas editor and are mutually exclusive. `hotspotRect` writes `type: "square"` (the editor calls it *rectangle* in the UI and stores `square`), `hotspotOval` writes `"oval"`, `hotspotPolygon` writes `"polygon"`.
+> - **A square or oval is stored as two points — opposite corners of its bounding box — not as an outline.** The oval's two corners come back from the editor in whatever order they were dragged, which reads convincingly as `[center, radii]`; it is not. Checking the numbers against a known landmark in the same image is what settled it, and under the wrong reading the hotspot would have been silently misplaced.
 > - **The image can be an ordinary Canvas Files URL** (verified live), so `upload-course-file` then `create-new-quiz-item` automates the whole flow. The New Quizzes S3 `item_media` bucket is just where the UI puts its own uploads, not a requirement.
 > - The image is fetched by the student's browser, so it **must be published and student-visible**. An unpublished or link-only file renders for a teacher and fails for students — see `set-file-availability`.
 > - Only one hotspot region per item is supported; `hotspots_count` is always 1. Multiple regions are untested.
