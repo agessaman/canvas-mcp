@@ -700,6 +700,7 @@ Adds a question. Answer IDs and scoring rules are generated for you.
   - `matchPairs`: `{ left, right }[]` — correct pairings, for `matching`
   - `distractors`: string[] — extra unmatched answer options, for `matching`
   - `imageUrl`: string — for `hot-spot`, the image students click on
+  - `imagePixelWidth`, `imagePixelHeight`: number — the image's pixel size; give both to specify the hotspot in pixels
   - `hotspotRect`: `{ x, y, width, height }` — for `hot-spot`, the correct region as a rectangle
   - `hotspotPolygon`: `{ x, y }[]` — for `hot-spot`, the correct region as 3+ points
   - `feedback`: `{ neutral?, correct?, incorrect? }`
@@ -720,7 +721,8 @@ Adds a question. Answer IDs and scoring rules are generated for you.
 
 > **Note on `hot-spot`:** the shape came from a UI-authored exemplar and was confirmed rendering in the Canvas editor (2026-08-04).
 >
-> - **Coordinates are fractions of the image between 0 and 1, measured from the top-left — not pixels.** Pixel values are refused, because Canvas stores them happily and puts the hotspot off the image, where no answer can ever be correct and only the student sees it.
+> - **Coordinates are measured from the top-left and stored as fractions of the image between 0 and 1.** Pass `imagePixelWidth` and `imagePixelHeight` (both, or neither) to give them in **pixels** instead and have them converted. Prefer this: every hotspot in the first live round rendered perfectly and sat in the wrong place, because fractions had been estimated by eye. Pixel positions can be read off any image viewer; fractions cannot be guessed.
+> - A coordinate landing outside the image is refused either way. Canvas stores it happily and puts the hotspot where no answer can ever be correct — silent, and visible only to the student sitting the quiz.
 > - `hotspotRect` and `hotspotPolygon` are mutually exclusive; a rectangle is emitted as a 4-point polygon, which is what the editor draws. `type: "polygon"` is the only shape the UI was observed to write — `"rectangle"` and `"circle"` are **not known to work** and are not guessed at here.
 > - **The image can be an ordinary Canvas Files URL** (verified live), so `upload-course-file` then `create-new-quiz-item` automates the whole flow. The New Quizzes S3 `item_media` bucket is just where the UI puts its own uploads, not a requirement.
 > - The image is fetched by the student's browser, so it **must be published and student-visible**. An unpublished or link-only file renders for a teacher and fails for students — see `set-file-availability`.

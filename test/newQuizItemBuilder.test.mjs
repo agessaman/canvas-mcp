@@ -374,7 +374,61 @@ test('a rectangle running off the edge of the image is refused', () => {
       imageUrl: 'https://example.test/map.png',
       hotspotRect: { x: 0.8, y: 0.1, width: 0.5, height: 0.2 },
     }),
-    /runs past the edge of the image/
+    /between 0 and 1/
+  );
+});
+
+// Every hotspot authored through the API in the first round rendered perfectly
+// and was in the wrong place, because the fractions were estimated by eye.
+// Pixels are what someone reading positions off an image viewer actually has.
+test('pixel coordinates are converted when the image size is given', () => {
+  const entry = buildItemEntry({
+    interactionType: 'hot-spot', body: 'Click it',
+    imageUrl: 'https://example.test/map.png',
+    imagePixelWidth: 1000, imagePixelHeight: 500,
+    hotspotRect: { x: 250, y: 100, width: 500, height: 200 },
+  });
+  assert.deepEqual(entry.scoring_data.value[0].coordinates, [
+    { x: 0.25, y: 0.2 }, { x: 0.75, y: 0.2 },
+    { x: 0.75, y: 0.6 }, { x: 0.25, y: 0.6 },
+  ]);
+});
+
+test('a pixel point outside the image names the image size', () => {
+  assert.throws(
+    () => buildItemEntry({
+      interactionType: 'hot-spot', body: 'Click it',
+      imageUrl: 'https://example.test/map.png',
+      imagePixelWidth: 800, imagePixelHeight: 600,
+      hotspotPolygon: [{ x: 100, y: 100 }, { x: 900, y: 100 }, { x: 900, y: 200 }],
+    }),
+    /\(900, 100\) is outside the 800x600 image/
+  );
+});
+
+// Half a scale is worse than none: it would silently treat pixels as fractions.
+test('giving only one image dimension is refused', () => {
+  assert.throws(
+    () => buildItemEntry({
+      interactionType: 'hot-spot', body: 'Click it',
+      imageUrl: 'https://example.test/map.png',
+      imagePixelWidth: 1000,
+      hotspotRect: { x: 250, y: 100, width: 500, height: 200 },
+    }),
+    /must BOTH be given/
+  );
+});
+
+// The old error told the caller to divide by hand; it should now offer the
+// parameters that do it for them.
+test('the fractions error points at the pixel parameters', () => {
+  assert.throws(
+    () => buildItemEntry({
+      interactionType: 'hot-spot', body: 'Click it',
+      imageUrl: 'https://example.test/map.png',
+      hotspotPolygon: [{ x: 120, y: 340 }, { x: 200, y: 340 }, { x: 200, y: 400 }],
+    }),
+    /pass imagePixelWidth and imagePixelHeight/
   );
 });
 

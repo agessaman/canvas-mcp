@@ -49,6 +49,8 @@ export interface BuildItemInput {
   bottomLabel?: string;
   categories?: { name: string; items: string[] }[];
   imageUrl?: string;
+  imagePixelWidth?: number;
+  imagePixelHeight?: number;
   hotspotRect?: { x: number; y: number; width: number; height: number };
   hotspotPolygon?: { x: number; y: number }[];
   feedback?: { neutral?: string; correct?: string; incorrect?: string };
@@ -408,22 +410,45 @@ export function buildItemEntry(input: BuildItemInput): Record<string, any> {
         throw new Error('interactionType "hot-spot" requires exactly one of hotspotRect or hotspotPolygon');
       }
 
-      const points = input.hotspotRect
+      // Canvas stores fractions, but nobody can estimate a fraction by looking
+      // at a picture — the first API-authored hotspots were all placed wrong
+      // for exactly this reason, while rendering perfectly. Given the image's
+      // pixel size, coordinates may be supplied in pixels and converted here,
+      // which is what someone reading positions off an image viewer actually
+      // has.
+      const inPixels = input.imagePixelWidth !== undefined || input.imagePixelHeight !== undefined;
+      if (inPixels && !(input.imagePixelWidth! > 0 && input.imagePixelHeight! > 0)) {
+        throw new Error(
+          'imagePixelWidth and imagePixelHeight must BOTH be given, and both greater than 0, '
+          + 'to read hotspot coordinates as pixels. Omit both to supply fractions instead.'
+        );
+      }
+      const scale = inPixels
+        ? { x: input.imagePixelWidth!, y: input.imagePixelHeight! }
+        : { x: 1, y: 1 };
+
+      const rawPoints = input.hotspotRect
         ? rectToPolygon(input.hotspotRect)
         : input.hotspotPolygon!;
 
-      if (points.length < 3) {
-        throw new Error(`hotspotPolygon needs at least 3 points to enclose an area (got ${points.length})`);
+      if (rawPoints.length < 3) {
+        throw new Error(`hotspotPolygon needs at least 3 points to enclose an area (got ${rawPoints.length})`);
       }
-      // Coordinates are fractions of the image, not pixels. A pixel value is
-      // stored happily and puts the hotspot off the image, where it renders as
-      // a question no answer can satisfy — silent, and only visible to whoever
-      // takes the quiz. Refuse instead.
-      for (const { x, y } of points) {
-        if (!inUnitRange(x) || !inUnitRange(y)) {
+
+      const points = rawPoints.map(({ x, y }) => ({ x: x / scale.x, y: y / scale.y }));
+
+      // A pixel value passed as a fraction is stored happily and puts the
+      // hotspot off the image, where no answer can ever be correct — silent,
+      // and visible only to whoever sits the quiz.
+      for (const [index, point] of points.entries()) {
+        if (!inUnitRange(point.x) || !inUnitRange(point.y)) {
+          const { x, y } = rawPoints[index];
           throw new Error(
-            `hot-spot coordinates are fractions of the image between 0 and 1, not pixels (got x=${x}, y=${y}). `
-            + 'Divide pixel positions by the image width and height.'
+            inPixels
+              ? `hot-spot point (${x}, ${y}) is outside the ${input.imagePixelWidth}x${input.imagePixelHeight} image.`
+              : `hot-spot coordinates are fractions of the image between 0 and 1, not pixels (got x=${x}, y=${y}). `
+                + 'Either divide by the image width and height, or pass imagePixelWidth and imagePixelHeight '
+                + 'and give the coordinates in pixels.'
           );
         }
       }
@@ -454,12 +479,6 @@ function rectToPolygon(rect: { x: number; y: number; width: number; height: numb
   }
   const right = rect.x + rect.width;
   const bottom = rect.y + rect.height;
-  if (!inUnitRange(right) || !inUnitRange(bottom)) {
-    throw new Error(
-      `hotspotRect runs past the edge of the image: x+width=${right}, y+height=${bottom}, both must be <= 1. `
-      + 'Coordinates are fractions of the image, not pixels.'
-    );
-  }
   return [
     { x: rect.x, y: rect.y },
     { x: right, y: rect.y },
