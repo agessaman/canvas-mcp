@@ -461,6 +461,13 @@ export class CanvasClient {
   async createAssignmentGroup(courseId: string, data: any) {
     return this.post(`/api/v1/courses/${courseId}/assignment_groups`, data);
   }
+  // Flat parameters, like create — no assignment_group[...] wrapper. Group
+  // weights are shown on every assignment listing, so drop those too.
+  async updateAssignmentGroup(courseId: string, groupId: string, data: any) {
+    const result = await this.put(`/api/v1/courses/${courseId}/assignment_groups/${groupId}`, data);
+    this.invalidateAssignments(courseId);
+    return result;
+  }
 
   // --- Modules ---
   async listModules(courseId: string, params: any = {}) {

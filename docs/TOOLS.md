@@ -968,6 +968,25 @@ Fetches a file from a course's Files area so it can be looked at — the read-on
 - `notifyOfUpdate` sends a real notification to the class. It is never sent unless asked for
 - **Adds a page-end spacer.** Canvas puts its Previous/Next module controls flush against the body — `div#module_navigation_target` has no spacing above it and `div#wiki_page_show` none below — so a page whose last element has no bottom margin ends hard against them. A `div.mcp-page-end` of fixed height is appended. Idempotent: the marker survives Canvas's sanitizer (verified live), so a read-edit-write round trip does not stack them up. Turn it off with `pageEndSpacing: false`
 - A fixed height is used rather than a margin, because a margin on the last child can collapse away
+- **These parameters are flat**, not wrapped in `assignment_group[...]` the way assignments and quizzes are. Sending the wrapper made Canvas ignore every field, return 200, and create a default group called "Assignments" — fixed in 1.19.2
+- The tool re-reads what Canvas stored and warns if the name, weight or position differ from what was asked
+- **`rules` is not accepted on create** — Canvas takes it only on update. Use `update-assignment-group`
+
+---
+
+### update-assignment-group
+Renames an assignment group, changes its weight or position, or sets its grading rules.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentGroupId`: string (from `list-assignment-groups`)
+- Optional parameters:
+  - `name`, `position`, `group_weight`, `sis_source_id`, `integration_data`
+  - `rules`: object — `{"drop_lowest": 1}`, `{"drop_highest": 1}`, `{"never_drop": [assignmentId, ...]}`. Pass `{}` to clear
+- **Rules can only be set here.** Canvas's create endpoint accepts no rules at all
+- Canvas is asymmetric about rules: it **returns** them as an object but **takes** them as a newline-separated `key:value` string, with `never_drop` repeated per assignment. The object form is serialised for you
+- That encoding is inferred from the spec rather than a UI exemplar, so the tool re-reads the group and reports what Canvas actually stored — a wrong guess is loud, not silent
+- Omitting `rules` leaves existing rules untouched; an unrecognised rule key is refused rather than silently dropped
+- Only the fields you pass are changed; an update with no fields is refused
 
 
 ---
