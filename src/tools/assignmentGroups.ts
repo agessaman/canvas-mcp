@@ -207,6 +207,28 @@ export function registerAssignmentGroupTools(server: McpServer, canvas: CanvasCl
           }]
         };
       } catch (error: any) {
+        // never_drop reliably answers a bare 500 on gfalls.instructure.com —
+        // tested 2026-08-05 with the assignment published and unpublished,
+        // with and without a drop rule alongside it, and with more assignments
+        // in the group than the rules could consume. drop_lowest and
+        // drop_highest go through the same serialiser and both work, so the
+        // string format is not the problem. An opaque 500 usually means the
+        // shape is wrong (gotcha 10), but here the same shape succeeds without
+        // never_drop, so this looks like Canvas rather than the payload.
+        //
+        // Passing the bare 500 along would tell the caller nothing at all,
+        // which is worse than saying what is known.
+        const hitNeverDrop = rules !== undefined && rules.never_drop !== undefined;
+        const isServerError = /Canvas API 5\d\d/.test(error?.message ?? '');
+        if (hitNeverDrop && isServerError) {
+          throw new Error(
+            `Failed to update assignment group: ${error.message}\n\n`
+            + 'This is the known never_drop failure: Canvas answers a bare 500 for it on this instance, while '
+            + 'drop_lowest and drop_highest work through the identical code path. Set the never-drop exemption in '
+            + 'the Canvas UI (Assignments > the group\'s menu > Edit), or retry without never_drop — any '
+            + 'drop_lowest/drop_highest rules in the same call were NOT applied.'
+          );
+        }
         throw new Error(`Failed to update assignment group: ${error.message ?? 'Unknown error'}`);
       }
     }

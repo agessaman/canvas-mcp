@@ -984,7 +984,9 @@ Renames an assignment group, changes its weight or position, or sets its grading
   - `rules`: object — `{"drop_lowest": 1}`, `{"drop_highest": 1}`, `{"never_drop": [assignmentId, ...]}`. Pass `{}` to clear
 - **Rules can only be set here.** Canvas's create endpoint accepts no rules at all
 - Canvas is asymmetric about rules: it **returns** them as an object but **takes** them as a newline-separated `key:value` string, with `never_drop` repeated per assignment. The object form is serialised for you
-- That encoding is inferred from the spec rather than a UI exemplar, so the tool re-reads the group and reports what Canvas actually stored — a wrong guess is loud, not silent
+- Verified live 2026-08-05: `drop_lowest`, `drop_highest` and clearing with `{}` all work
+- **`never_drop` returns a bare 500 on this instance**, with the assignment published or not, alone or beside a drop rule. The other rules use the identical serialiser and work, so the encoding is not the cause. Set never-drop exemptions in the Canvas UI instead; the tool explains this rather than passing the 500 along, and warns that any drop rules in the same call did not land
+- The tool re-reads the group and reports what Canvas actually stored — a wrong guess is loud, not silent
 - Omitting `rules` leaves existing rules untouched; an unrecognised rule key is refused rather than silently dropped
 - Only the fields you pass are changed; an update with no fields is refused
 

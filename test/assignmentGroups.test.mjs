@@ -167,3 +167,54 @@ test('an update with no fields is refused instead of writing nothing', async () 
     assert.match(JSON.stringify(result), /Nothing to update/);
   });
 });
+
+// Verified live 2026-08-05: never_drop answers a bare 500 on this instance,
+// while drop_lowest and drop_highest go out through the same serialiser and
+// both work. Passing the bare 500 along would tell the caller nothing.
+test('a 500 on never_drop is explained rather than passed through raw', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => ({
+      __status: 500,
+      __body: [{ message: 'An error occurred.', error_code: 'internal_server_error' }],
+    }));
+    const result = await canvas.callTool('update-assignment-group', {
+      courseId: '18473', assignmentGroupId: '25050',
+      rules: { drop_lowest: 1, never_drop: [371877] },
+    });
+    const text = JSON.stringify(result);
+    assert.match(text, /known never_drop failure/);
+    assert.match(text, /Canvas UI/);
+    // The caller must know the rest of the call did not land either.
+    assert.match(text, /were NOT applied/);
+  });
+});
+
+// The explanation must not attach itself to unrelated failures.
+test('a 500 without never_drop is not blamed on never_drop', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => ({
+      __status: 500,
+      __body: [{ message: 'An error occurred.', error_code: 'internal_server_error' }],
+    }));
+    const result = await canvas.callTool('update-assignment-group', {
+      courseId: '18473', assignmentGroupId: '25050', rules: { drop_lowest: 1 },
+    });
+    assert.doesNotMatch(JSON.stringify(result), /known never_drop failure/);
+  });
+});
+
+// A 400 names the problem itself, so the explanation would only add noise.
+test('a descriptive 400 on never_drop is left to speak for itself', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => ({
+      __status: 400,
+      __body: { rules: [{ message: 'Drop rules cannot be higher than the number of assignments' }] },
+    }));
+    const result = await canvas.callTool('update-assignment-group', {
+      courseId: '18473', assignmentGroupId: '25050', rules: { never_drop: [371877] },
+    });
+    const text = JSON.stringify(result);
+    assert.match(text, /Drop rules cannot be higher/);
+    assert.doesNotMatch(text, /known never_drop failure/);
+  });
+});
