@@ -37,23 +37,42 @@ export function registerAssignmentGroupTools(server: McpServer, canvas: CanvasCl
   // Tool: create-assignment-group
   server.tool(
     "create-assignment-group",
-    "Create a new assignment group (bucket) in a course. All fields optional except courseId.",
+    "Create a new assignment group (bucket) in a course, e.g. \"Homework\" weighted 20%. All fields optional except courseId.",
     {
       courseId: z.string().describe("The ID of the course"),
-      name: z.string().optional(),
+      name: z.string().optional().describe("The group's name, e.g. \"Homework\". Canvas names it \"Assignments\" if omitted."),
       position: z.number().optional(),
-      group_weight: z.number().optional(),
+      group_weight: z.number().optional().describe("This group's percentage of the final grade. Only has an effect when the course is set to weight its assignment groups."),
       sis_source_id: z.string().optional(),
-      integration_data: jsonObjectParam("Arbitrary integration key/value data").optional(),
-      rules: jsonObjectParam("Group grading rules, e.g. {\"drop_lowest\": 1}").optional()
+      integration_data: jsonObjectParam("Arbitrary integration key/value data").optional()
     },
     { destructiveHint: false },
     async (args: any) => {
       const { courseId, ...fields } = args;
       try {
-        const g = await canvas.createAssignmentGroup(courseId, { assignment_group: fields }) as any;
+        // These parameters are FLAT, not wrapped in assignment_group[...] the
+        // way assignments and quizzes are. Sending the wrapper meant Canvas saw
+        // no fields at all: it silently ignored every one, returned 200, and
+        // created a default group called "Assignments" with weight 0. Reported
+        // by Adam and reproduced live 2026-08-05 (group 25049). The instance
+        // spec lists these as bare `name`, `position`, `group_weight`.
+        const g = await canvas.createAssignmentGroup(courseId, fields) as any;
+
+        // Same bug would be invisible again if the spelling ever drifts, so
+        // check what Canvas actually stored rather than trusting the 200.
+        const problems: string[] = [];
+        if (fields.name !== undefined && g.name !== fields.name) {
+          problems.push(`asked for name "${fields.name}", Canvas stored "${g.name}"`);
+        }
+        if (fields.group_weight !== undefined && Number(g.group_weight ?? 0) !== Number(fields.group_weight)) {
+          problems.push(`asked for weight ${fields.group_weight}, Canvas stored ${g.group_weight ?? 0}`);
+        }
+        const warning = problems.length
+          ? `\n\nWARNING: Canvas did not apply everything it was sent — ${problems.join('; ')}.`
+          : '';
+
         return {
-          content: [{ type: "text", text: `Assignment group created: id=${g.id}, name="${g.name}", position=${g.position}, weight=${g.group_weight}` }]
+          content: [{ type: "text", text: `Assignment group created: id=${g.id}, name="${g.name}", position=${g.position}, weight=${g.group_weight}${warning}` }]
         };
       } catch (error: any) {
         if (error instanceof Error) {
