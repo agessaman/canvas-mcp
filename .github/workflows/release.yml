@@ -34,18 +34,27 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The release notes read the log back to the previous release, and the
           # tag guard below needs the existing tags, so the full history is required.
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
 
       - run: npm ci
+
+      # The image parser tests build their fixtures with Pillow and skip
+      # themselves when it is absent. Left uninstalled, the gate quietly does not
+      # check the PNG, JPEG, progressive-JPEG and GIF readers at all — and a
+      # hotspot placed from a misread image lands somewhere plausible and wrong.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install --quiet pillow
 
       # npm test builds first, so this also leaves dist/ current for the pack below.
       - name: Build and test
@@ -91,7 +100,7 @@ jobs:
 
       # Every commit's bundle is downloadable from its run, including the ones
       # that publish nothing.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: canvas-mcp-${{ steps.version.outputs.version }}-${{ github.sha }}
           path: ${{ steps.version.outputs.bundle }}

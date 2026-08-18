@@ -61,7 +61,21 @@ test('an unrecognised file is undefined rather than a guess', () => {
 });
 
 // A truncated download must not be read as a valid header.
+//
+// This one builds its own bytes rather than truncating the Pillow fixture. The
+// assertion is that a prefix is refused, so it needs no real encoder output —
+// and being the only check here that guards against a truncated download, it is
+// the last one that should quietly skip itself on a machine without Pillow.
+// Reading the fixture unguarded is what it used to do, which failed with ENOENT
+// everywhere Pillow was missing, CI included.
 test('a truncated PNG is not reported as readable', () => {
-  const png = readFileSync(path.join(dir, 'a.png'));
-  assert.equal(readImageSize(png.subarray(0, 16)), undefined);
+  // Signature, then the IHDR length and type — 16 bytes, one short of any
+  // dimension. A parser that answers from these is guessing.
+  const truncated = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from([0x00, 0x00, 0x00, 0x0d]),
+    Buffer.from('IHDR', 'ascii'),
+  ]);
+  assert.equal(truncated.length, 16);
+  assert.equal(readImageSize(truncated), undefined);
 });
