@@ -118,7 +118,7 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
   // Tool: get-assignment
   server.tool(
     "get-assignment",
-    "Fetch metadata for a single assignment (due date, points, rubric, submission types, etc).",
+    "Fetch a single assignment, including its description — the HTML body students read — along with due date, points, rubric, submission types, and the rest of its settings.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment")
@@ -146,6 +146,14 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
           // accommodation that does nothing. Canvas encodes unlimited as -1.
           allowed_attempts: Number(a.allowed_attempts ?? -1) > 0 ? a.allowed_attempts : 'unlimited',
           position: a.position,
+          // The body students actually read. Canvas returns it on the assignment
+          // and this summary used to drop it, which left the description writable
+          // through create/update-assignment and never readable — so editing
+          // existing instructions meant overwriting them blind. Last in the object
+          // so a long body does not push the dates and points out of view. Null
+          // rather than absent when empty: an absent field reads as "this server
+          // cannot see it", which is the confusion that cost us this bug.
+          description: a.description ?? null,
         };
         return {
           content: [{ type: "text", text: JSON.stringify(summary) }]
@@ -166,7 +174,9 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
     {
       courseId: z.string().describe("The ID of the course"),
       name: z.string().optional(),
-      description: z.string().optional(),
+      description: z.string().optional().describe(
+        "The assignment body, as HTML — this is what students see under the title."
+      ),
       due_at: z.string().optional(),
       points_possible: z.number().optional(),
       submission_types: z.array(z.string()).optional(),
@@ -204,7 +214,11 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment"),
       name: z.string().optional(),
-      description: z.string().optional(),
+      description: z.string().optional().describe(
+        "The assignment body, as HTML. Canvas replaces the whole body with what you send, so read the "
+        + "current one with get-assignment first and edit that — sending a fresh body discards whatever "
+        + "was there."
+      ),
       due_at: z.string().optional(),
       points_possible: z.number().optional(),
       submission_types: z.array(z.string()).optional(),

@@ -57,11 +57,12 @@ Gets all assignments in a course with submission status.
 - **Privacy**: Student submission data is anonymized by default
 
 ### get-assignment
-Fetches metadata for a single assignment.
+Fetches a single assignment, body included.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
-- Returns due date, points, grading type, submission types, rubric presence, and publish state
+- Returns `description` — the HTML body students read, `null` when the assignment has none — plus due date, points, grading type, submission types, rubric presence, attempt limit, and publish state
+- Read the body here before changing it with `update-assignment`, which replaces it wholesale
 
 ### create-assignment
 Creates a new assignment in a course.
@@ -76,6 +77,7 @@ Updates an existing assignment.
   - `courseId`: string
   - `assignmentId`: string
 - Optional parameters: same as `create-assignment`
+- `description` replaces the entire body rather than merging into it, so fetch the current one with `get-assignment` and edit that
 
 ### delete-assignment
 Deletes (archives) an assignment from a course.
