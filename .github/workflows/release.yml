@@ -1,0 +1,152 @@
+# Packs the bundle on every push, and publishes a release when the version is new.
+#
+# Two things are deliberately separate here. Packing and verifying happen on
+# every push, because the packer is where this project's artifact has broken
+# before — silently, in ways dist/ on disk and the test suite cannot see. So the
+# bundle gets built and run out of on every commit, whether or not anything ships.
+#
+# Publishing is gated on the version having no release yet. This repo bumps the
+# version in package.json and manifest.json in every commit that changes
+# behaviour, which makes that bump the release signal; a commit that touches only
+# docs or CI packs, verifies, and publishes nothing.
+name: Release
+
+on:
+  push:
+    branches:
+      # Where the work actually happens. main is watched too, but stays inert
+      # until origin/main points at this line rather than upstream's 1.3.0.
+      - feat/instructor-tools
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # Two pushes in quick succession must not race to create the same tag. In
+  # flight runs are never cancelled: a run killed between "release created" and
+  # "bundle uploaded" would leave a release with no bundle attached to it.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The release notes read the log back to the previous release, and the
+          # tag guard below needs the existing tags, so the full history is required.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # npm test builds first, so this also leaves dist/ current for the pack below.
+      - name: Build and test
+        run: npm test
+
+      - name: Read the version
+        id: version
+        run: |
+          set -euo pipefail
+          PKG=$(node -p "require('./package.json').version")
+          MANIFEST=$(node -p "require('./manifest.json').version")
+          if [ "$PKG" != "$MANIFEST" ]; then
+            echo "::error::package.json says $PKG and manifest.json says $MANIFEST. Claude Desktop shows the manifest version, so shipping this would label the bundle with a version that is not the one inside it."
+            exit 1
+          fi
+          echo "version=$PKG" >> "$GITHUB_OUTPUT"
+          echo "tag=v$PKG" >> "$GITHUB_OUTPUT"
+          echo "bundle=canvas-mcp-$PKG.mcpb" >> "$GITHUB_OUTPUT"
+
+      - name: Pack the bundle
+        env:
+          BUNDLE: ${{ steps.version.outputs.bundle }}
+        run: |
+          set -euo pipefail
+          # dist/ lives outside node_modules, so it survives this reinstall.
+          # Reinstalling without devDependencies is the whole trick: packing them
+          # in ships the TypeScript compiler, which is 22MB unpacked and took a
+          # 3.6MB bundle to 17.9MB the one time it happened.
+          npm ci --omit=dev
+          # mcpb was a devDependency and was just removed with the rest, so it
+          # runs from npx — pinned to whatever package.json declares, rather than
+          # a second floating version. npx caches outside node_modules, so the
+          # bundle stays production-only.
+          SPEC="@anthropic-ai/mcpb@$(node -p "require('./package.json').devDependencies['@anthropic-ai/mcpb'].replace(/^[^0-9]*/, '')")"
+          npx -y -p "$SPEC" mcpb pack . "$BUNDLE"
+          echo "### Bundle" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$BUNDLE\` — $(du -h "$BUNDLE" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Runs the server out of the packed artifact over a real MCP handshake. The
+      # tests cannot catch a file the packer dropped; this can.
+      - name: Verify the bundle runs standalone
+        run: node scripts/verify-bundle.mjs "${{ steps.version.outputs.bundle }}"
+
+      # Every commit's bundle is downloadable from its run, including the ones
+      # that publish nothing.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: canvas-mcp-${{ steps.version.outputs.version }}-${{ github.sha }}
+          path: ${{ steps.version.outputs.bundle }}
+          if-no-files-found: error
+
+      - name: Decide whether this version is unreleased
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG is already released. Packed and verified; publishing nothing." >> "$GITHUB_STEP_SUMMARY"
+          elif git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
+            # v1.2.0 and v1.3.0 were inherited from upstream and point at upstream
+            # commits. Releasing onto one of those would publish this bundle under
+            # a tag describing a different tree, so refuse and say what to do.
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Tag $TAG already exists and has no release, so it predates this workflow. Bump the version, or delete the tag, to publish this commit."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compose the release notes
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Prefer the last release as the starting point; on the very first run
+          # there is none, so fall back to the newest reachable tag.
+          PREV=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""')
+          if [ -z "$PREV" ]; then
+            PREV=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          fi
+          node scripts/release-notes.mjs --version "$VERSION" --since "$PREV" > release-notes.md
+          echo "Notes composed from ${PREV:-the start of history}, $(wc -c < release-notes.md) chars." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          BUNDLE: ${{ steps.version.outputs.bundle }}
+        run: |
+          set -euo pipefail
+          # --generate-notes appends GitHub's own section under the composed
+          # notes, so pull-request based summaries still show up if this project
+          # ever starts using them. The tag is created at this exact commit.
+          gh release create "$TAG" "$BUNDLE" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes-file release-notes.md \
+            --generate-notes
+          echo "Published $TAG with $BUNDLE attached." >> "$GITHUB_STEP_SUMMARY"
