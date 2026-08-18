@@ -75,7 +75,7 @@
 
 One-click installation with Claude Desktop Extensions:
 
-1. **Download** the latest extension from [GitHub Releases](https://github.com/r-huijts/canvas-mcp/releases) (`.mcpb` or `.dxt` format, depending on the release)
+1. **Download** the latest extension from [GitHub Releases](https://github.com/agessaman/canvas-mcp/releases) (`.mcpb` file)
 2. **Open** the file with Claude Desktop (double-click or drag-and-drop)
 3. **Click "Install"**
 4. **Configure** your Canvas API token and base URL through the Claude Desktop UI
@@ -99,7 +99,7 @@ npx @r-huijts/canvas-mcp
 ### Option 3: From Source
 
 ```bash
-git clone https://github.com/r-huijts/canvas-mcp
+git clone -b feat/instructor-tools https://github.com/agessaman/canvas-mcp
 cd canvas-mcp
 npm install
 cp .env.example .env   # then edit with your credentials
