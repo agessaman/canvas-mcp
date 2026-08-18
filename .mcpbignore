@@ -1,8 +1,17 @@
-# Source and build config — only dist/ is needed at runtime
-src/
-test/
-tsconfig.json
-package-lock.json
+# Source and build config — only dist/ is needed at runtime.
+#
+# These are anchored with a leading slash because the patterns are gitignore
+# semantics: a bare "src/" matches at EVERY depth, so it also deletes
+# node_modules/<pkg>/src. That shipped a debug/ with nothing in it but a
+# package.json pointing main at the ./src/index.js that had just been stripped,
+# and debug is reachable from express inside the MCP SDK. Nothing broke only
+# because this server speaks stdio and never loads the HTTP transports. The
+# patterns below that are not anchored cost bundle size at worst, never a
+# missing module.
+/src/
+/test/
+/tsconfig.json
+/package-lock.json
 
 # Docs (the manifest carries its own description)
 docs/
