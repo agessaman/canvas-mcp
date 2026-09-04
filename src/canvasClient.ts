@@ -357,4 +357,33 @@ export class CanvasClient {
       this.handleError(error);
     }
   }
+
+  // --- Course Files & Folders (Files section) ---
+  async listCourseFolders(courseId: string, params: any = {}) {
+    return this.fetchAllPages(`/api/v1/courses/${courseId}/folders`, { per_page: 100, ...params });
+  }
+
+  async listFolderFolders(folderId: string, params: any = {}) {
+    return this.fetchAllPages(`/api/v1/folders/${folderId}/folders`, { per_page: 100, ...params });
+  }
+
+  async getFolder(courseId: string, folderId: string = 'root') {
+    return this.get(`/api/v1/courses/${courseId}/folders/${folderId}`);
+  }
+
+  async resolveFolderPath(courseId: string, path?: string) {
+    const trimmed = (path || '').replace(/^\/+|\/+$/g, '');
+    const suffix = trimmed
+      ? `/${trimmed.split('/').map(encodeURIComponent).join('/')}`
+      : '';
+    return this.get(`/api/v1/courses/${courseId}/folders/by_path${suffix}`);
+  }
+
+  async listCourseFiles(courseId: string, params: any = {}) {
+    return this.fetchAllPages(`/api/v1/courses/${courseId}/files`, { per_page: 100, ...params });
+  }
+
+  async listFolderFiles(folderId: string, params: any = {}) {
+    return this.fetchAllPages(`/api/v1/folders/${folderId}/files`, { per_page: 100, ...params });
+  }
 } 

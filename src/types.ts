@@ -45,6 +45,26 @@ export interface CanvasFile {
   url: string;
   created_at: string;
   updated_at: string;
+  folder_id?: number;
+  locked?: boolean;
+  hidden?: boolean;
+}
+
+export interface CanvasFolder {
+  id: number;
+  name: string;
+  full_name: string;
+  parent_folder_id: number | null;
+  files_count: number;
+  folders_count: number;
+  position?: number;
+  locked?: boolean;
+  hidden?: boolean;
+  hidden_for_user?: boolean;
+  locked_for_user?: boolean;
+  for_submissions?: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface SubmissionAttachment extends CanvasFile {

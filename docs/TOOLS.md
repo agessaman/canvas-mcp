@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **60 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **63 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -288,6 +288,37 @@ Removes an item from a module.
   - `moduleId`: string
   - `itemId`: string
 - Returns confirmation of deletion
+
+## Files
+
+### list-folders
+Lists folders in a course Files section.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `folderId`: string — if set, list only immediate subfolders of that folder
+- Without `folderId`, returns the full folder tree with IDs, file/folder counts, and hidden/locked flags
+- With `folderId`, returns only the children of that folder
+
+### list-files
+Lists files in a course Files section.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `folderId`: string — if set, list only files in that folder
+  - `searchTerm`: string — partial filename match
+  - `contentTypes`: string[] — filter by content type, e.g. `["image"]` or `["application/pdf"]`
+- Without `folderId`, returns all course files with folder paths
+- Returns display name, file ID, folder path, content type, and size
+
+### list-folder-contents
+Browses one folder like the Canvas Files UI (subfolders and files together).
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `folderId`: string — folder ID; use `"root"` or omit for the course Files root
+  - `path`: string — path relative to course files (e.g. `Workshops/Slides`); overrides `folderId` when set
+- Returns folder metadata plus immediate subfolders and files
 
 ## Pages
 
