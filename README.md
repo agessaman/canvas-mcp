@@ -41,13 +41,14 @@
 - **Students** — enrollment lists with privacy-first anonymization
 - **Sections** — list sections and section-filtered submissions
 - **Modules** — full module and module-item CRUD
+- **Files** — browse the course Files section: folder trees, file lists, and per-folder contents
 - **Pages** — edit content, manage revisions, and use the styleguide system (`generate-styleguide`, `patch-page-content`)
 - **Quizzes** — full quiz, question, and question-group CRUD
 - **ePortfolios** — list and read student ePortfolios
 - **Prompts** — `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**60 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**63 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -211,6 +212,10 @@ Show rubric statistics for assignment 67890 in course 12345
 ```
 
 ```
+List all folders and files in the Files section of course 12345
+```
+
+```
 Generate a styleguide for course 12345, then patch the syllabus page to match it
 ```
 
@@ -267,6 +272,7 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | Sections | 2 | `list-sections`, `list-section-submissions` |
 | Rubrics | 4 | `list-rubrics`, `get-rubric-statistics`, `list-rubric-assessments`, `attach-rubric-to-assignment` |
 | Modules | 10 | `list-modules`, `list-module-items`, `toggle-module-publish`, `create-module`, `update-module`, `delete-module`, `get-module-item`, `create-module-item`, `update-module-item`, `delete-module-item` |
+| Files | 3 | `list-folders`, `list-files`, `list-folder-contents` |
 | Pages | 9 | `list-pages`, `get-page-content`, `update-page-content`, `list-page-revisions`, `revert-page-revision`, `patch-page-content`, `apply-page-changes`, `generate-styleguide`, `get-styleguide` |
 | Quizzes | 15 | `list-quizzes`, `get-quiz`, `create-quiz`, `update-quiz`, `delete-quiz`, `list-quiz-questions`, `get-quiz-question`, `create-quiz-question`, `update-quiz-question`, `delete-quiz-question`, `list-quiz-question-groups`, `get-quiz-question-group`, `create-quiz-question-group`, `update-quiz-question-group`, `delete-quiz-question-group` |
 | ePortfolios | 3 | `list-eportfolios`, `get-eportfolio`, `get-eportfolio-pages` |
