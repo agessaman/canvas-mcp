@@ -2,7 +2,7 @@
   "mcpb_version": "0.1",
   "name": "canvas-mcp",
   "display_name": "Canvas LMS Integration",
-  "version": "1.2.0",
+  "version": "1.5.0",
   "description": "Comprehensive Canvas LMS integration for course management, assignments, pages, students, and rubric analysis",
   "long_description": "This extension provides full Canvas LMS integration capabilities including course management, assignment creation and grading, page editing with styleguide support, student management with privacy controls, module organization, submission tracking, and comprehensive rubric statistics analysis. Perfect for educators who want to streamline their Canvas workflows directly from Claude Desktop.",
   "author": {
@@ -107,6 +107,12 @@
     { "name": "create-quiz-question-group", "description": "Create a quiz question group" },
     { "name": "update-quiz-question-group", "description": "Update a quiz question group" },
     { "name": "delete-quiz-question-group", "description": "Delete a quiz question group" },
+    { "name": "list-quiz-submissions", "description": "List every student's quiz attempt with score, timing and state" },
+    { "name": "get-quiz-statistics", "description": "Aggregate item analysis: answer distribution, difficulty index, point-biserial" },
+    { "name": "get-quiz-submission-answers", "description": "One student's answer to every question, joined to question text and correct answer" },
+    { "name": "get-quiz-report", "description": "Generate and parse a student_analysis or item_analysis quiz report" },
+    { "name": "get-quiz-submission-events", "description": "Answer-change trail and page focus events for a quiz attempt" },
+    { "name": "update-quiz-submission-score", "description": "Regrade a quiz attempt with per-question overrides or fudge points" },
     { "name": "list-eportfolios", "description": "List ePortfolios for a user" },
     { "name": "get-eportfolio", "description": "Get ePortfolio details" },
     { "name": "get-eportfolio-pages", "description": "List pages in an ePortfolio" }

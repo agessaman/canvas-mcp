@@ -44,11 +44,12 @@
 - **Files** — browse the course Files section: folder trees, file lists, and per-folder contents
 - **Pages** — edit content, manage revisions, and use the styleguide system (`generate-styleguide`, `patch-page-content`)
 - **Quizzes** — full quiz, question, and question-group CRUD
+- **Quiz results** — per-student answers, item analysis, report generation, and regrading
 - **ePortfolios** — list and read student ePortfolios
 - **Prompts** — `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**63 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**69 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -275,6 +276,7 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | Files | 3 | `list-folders`, `list-files`, `list-folder-contents` |
 | Pages | 9 | `list-pages`, `get-page-content`, `update-page-content`, `list-page-revisions`, `revert-page-revision`, `patch-page-content`, `apply-page-changes`, `generate-styleguide`, `get-styleguide` |
 | Quizzes | 15 | `list-quizzes`, `get-quiz`, `create-quiz`, `update-quiz`, `delete-quiz`, `list-quiz-questions`, `get-quiz-question`, `create-quiz-question`, `update-quiz-question`, `delete-quiz-question`, `list-quiz-question-groups`, `get-quiz-question-group`, `create-quiz-question-group`, `update-quiz-question-group`, `delete-quiz-question-group` |
+| Quiz Results | 6 | `list-quiz-submissions`, `get-quiz-statistics`, `get-quiz-submission-answers`, `get-quiz-report`, `get-quiz-submission-events`, `update-quiz-submission-score` |
 | ePortfolios | 3 | `list-eportfolios`, `get-eportfolio`, `get-eportfolio-pages` |
 
 **Full parameter reference:** [docs/TOOLS.md](docs/TOOLS.md)

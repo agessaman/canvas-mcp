@@ -107,6 +107,32 @@ export class DataAnonymizer {
   }
 
   /**
+   * The stable pseudonym for a user id, allocating one on first use.
+   * Quiz results carry a bare user_id with no name to overwrite, so callers
+   * need to look the label up rather than rewrite an object.
+   */
+  static pseudonymFor(userId: any): string {
+    const key = String(userId);
+    if (!this.userNameMap.has(key)) {
+      this.userNameMap.set(key, `Student ${this.userCounter++}`);
+    }
+    return this.userNameMap.get(key)!;
+  }
+
+  /**
+   * Anonymize quiz submissions. These carry user_id rather than a nested user,
+   * and when include[]=user is requested the users arrive in a sibling array,
+   * so anonymizeSubmission would leave both untouched.
+   */
+  static anonymizeQuizSubmissions(quizSubmissions: any[]): any[] {
+    if (!Array.isArray(quizSubmissions)) return quizSubmissions;
+    return quizSubmissions.map(qs => {
+      if (!qs || qs.user_id === undefined || qs.user_id === null) return qs;
+      return { ...qs, student: this.pseudonymFor(qs.user_id) };
+    });
+  }
+
+  /**
    * Reset the anonymization state (useful for testing)
    */
   static reset(): void {

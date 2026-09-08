@@ -17,6 +17,7 @@ import { registerSubmissionTools } from './tools/submissions.js';
 import { registerRubricTools } from './tools/rubrics.js';
 import { registerPrompts } from "./tools/prompts.js";
 import { registerQuizTools } from "./tools/quizzes.js";
+import { registerQuizResultTools } from "./tools/quizResults.js";
 import { registerEportfolioTools } from './tools/eportfolios.js';
 import { registerFileTools } from './tools/files.js';
 // Load environment variables
@@ -25,7 +26,7 @@ dotenv.config();
 // Create the MCP server
 const server = new McpServer({
   name: "Canvas MCP Server",
-  version: "1.2.0"
+  version: "1.5.0"
 });
 
 // Read configuration from environment variables
@@ -55,6 +56,7 @@ registerSubmissionTools(server, canvas);
 registerRubricTools(server, canvas);
 registerPrompts(server, canvas);
 registerQuizTools(server, canvas);
+registerQuizResultTools(server, canvas);
 registerEportfolioTools(server, canvas);
 registerFileTools(server, canvas);
 // Start the server
