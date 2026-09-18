@@ -59,7 +59,7 @@
 - **Prompts** — `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**118 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**118 tools** and **1 prompt** in total, plus **6 opt-in tools** for New Quizzes item banks (see [below](#new-quizzes-item-banks-opt-in)). See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -121,6 +121,7 @@ Set these environment variables (via `.env` file, MCP client config, or shell):
 |----------|----------|-------------|
 | `CANVAS_API_TOKEN` | Yes | Personal access token from Canvas |
 | `CANVAS_BASE_URL` | No | Your Canvas instance URL (default: `https://fhict.instructure.com`) |
+| `CANVAS_ENABLE_ITEM_BANKS` | No | Set to `true` to add the six New Quizzes item bank tools, which use a **private** Instructure API. Off by default — see [New Quizzes item banks](#new-quizzes-item-banks-opt-in) |
 
 See [.env.example](.env.example) for a template.
 
@@ -317,14 +318,32 @@ The two New Quizzes accommodations also **add together** rather than one overrid
 
 `list-question-banks`, `get-question-bank` and `list-question-bank-questions` read the **Classic** `AssessmentQuestionBank` store — the pool a Classic quiz's question group draws from.
 
-**New Quizzes item banks are a different store, and no Canvas API token reaches them.** They live in a separate Instructure service (AMS) that Canvas only enters through an LTI launch; the Item Banks page in course navigation is an empty container Canvas hands that service's own URL to. Every plausible endpoint spelling was probed against a live instance on 2026-09-17 and returns a 404.
+**New Quizzes item banks are a different store, and no Canvas API token reaches them.** They live in a separate Instructure service (AMS) that Canvas only enters through an LTI launch; the Item Banks page in course navigation is an empty container Canvas hands that service's own URL to. Every plausible endpoint spelling was probed against a live instance on 2026-09-17 and returns a 404. The [opt-in item bank tools](#new-quizzes-item-banks-opt-in) reach them a different way — by replaying that LTI launch rather than by finding a Canvas endpoint, which is why they are gated behind a flag.
 
-What you *can* see is how a New Quiz uses them. `list-new-quiz-items` distinguishes the two bank-backed item types instead of blanking both out:
+Either way, you can see how a New Quiz uses them. `list-new-quiz-items` distinguishes the two bank-backed item types instead of blanking both out:
 
 - **`BankEntry`** — one question that happens to live in a bank, linked into the quiz. The question and its answer key are in the payload, so it is shown in full, with the `bank_id` it came from.
-- **`Bank`** — a random draw. The item reports which bank, the pool size, and how many it pulls (`item 9624 draws 8 of 12 from bank 290`), followed by a note that the pool itself has to be opened in Canvas. Which questions a given student sees is decided at attempt time regardless.
+- **`Bank`** — a random draw. The item reports which bank, the pool size, and how many it pulls (`item 9624 draws 8 of 12 from bank 290`), followed by a note pointing at the pool — at `list-item-bank-questions` when the item bank tools are on, and at the Canvas UI when they are not. Which questions a given student sees is decided at attempt time regardless.
 
 A course whose quizzes were imported from QTI usually has **both** kinds of bank. They have separate ID spaces and do not cross-reference, so a Classic bank whose title matches is not the pool the New Quiz is drawing from.
+
+### New Quizzes item banks (opt-in)
+
+Six further tools — `list-item-banks`, `get-item-bank`, `list-item-bank-questions`, `create-item-bank-question`, `update-item-bank-question` and `delete-item-bank-question` — read and edit New Quizzes item banks. **They are off unless you switch them on**, with `CANVAS_ENABLE_ITEM_BANKS=true` or the "Enable New Quizzes item bank tools" checkbox in the desktop extension's settings. With the flag off they are not registered at all, so a stock install never contacts the hosts they use.
+
+They are gated because **they do not use the Canvas API**. There is no Canvas endpoint for a New Quizzes item bank, public or otherwise: the banks live in a separate Instructure service that Canvas only enters through an LTI launch, and the Item Banks page in course navigation is an empty container Canvas hands that service's own URL to. These tools work by replaying that launch headlessly — Canvas signs it, the server never forges anything — and then calling the bank service directly. What that buys and what it costs:
+
+- **It is undocumented and unversioned.** Instructure can change or withdraw any of it without notice, and when they do these tools break while the rest of the server keeps working. Every error they raise says "private API" so a failure is not mistaken for a bug in your own call.
+- **It holds more than a Bearer token.** Rendering the launch means a short-lived Canvas web session cookie and two minted JWTs, all kept in memory, never written to disk or logged, and never sent anywhere but the host that issued them. Your `CANVAS_API_TOKEN` itself never leaves Canvas. This is a heavier auth posture than the rest of the server, which is the main reason for the switch.
+- **The host is derived, not assumed.** The bank service's region comes from the installed Quizzes 2 tool, so instances outside `iad-prod` work — but this has only been verified against one instance.
+
+Two things about item banks that are easy to get wrong:
+
+**The bank list is scoped to you, not to the course.** These tools take a `courseId` because the launch needs a context, not because it filters anything: launching from two different courses returns the same banks. Use `search` to narrow by title.
+
+**A question has two IDs and they are not interchangeable.** `list-item-bank-questions` reports both. `entryId` is the question's membership in this bank and is what `delete-item-bank-question` takes; `itemId` is the question itself and is what `update-item-bank-question` takes. A question a student has already seen becomes immutable and can no longer be edited.
+
+Bank questions are templates: a quiz built from a bank holds its own copy, so editing the bank does not change quizzes already built from it.
 
 ### A note on messaging
 

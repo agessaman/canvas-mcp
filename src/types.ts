@@ -1,6 +1,24 @@
 export interface CanvasConfig {
   apiToken: string;
   baseUrl: string;
+  // New Quizzes item bank tools reach a private Instructure service rather than
+  // the Canvas API, so they are off unless the operator asks for them. See
+  // src/newQuizzesLti.ts.
+  enableItemBanks: boolean;
+}
+
+/**
+ * Whether the New Quizzes item bank tools are switched on.
+ *
+ * Read from the environment in two places — index.ts, to decide whether to
+ * register them, and newQuizzes.ts, so the note on a bank-backed quiz item can
+ * point at `list-item-banks` when it exists and at the Canvas UI when it does
+ * not. One function rather than two copies of the regex, because the two must
+ * never disagree: a note telling a reader to call a tool that was never
+ * registered is worse than no note.
+ */
+export function itemBanksEnabled(): boolean {
+  return /^(1|true|yes)$/i.test(process.env.CANVAS_ENABLE_ITEM_BANKS ?? "");
 }
 
 export interface Term {

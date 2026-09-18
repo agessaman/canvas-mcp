@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **118 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **118 tools** exposed by the Canvas MCP server, plus the **6 opt-in tools** for [New Quizzes item banks](#new-quizzes-item-banks-opt-in). For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -1181,6 +1181,94 @@ Sets the course's missing/late work policy, creating it if the course has none.
 - `lateDeductionInterval` alone is refused — it only says how often a deduction that is not happening would accrue
 - **Changes grades across the entire course, including work already submitted.** Scores students have already seen can change
 - Verified by re-reading the policy, not from the write's response
+
+---
+
+## New Quizzes Item Banks (opt-in)
+
+**These six tools are not registered unless `CANVAS_ENABLE_ITEM_BANKS=true`** (or the extension's "Enable New Quizzes item bank tools" checkbox is ticked). With the flag off they do not appear in the tool list and the server never contacts the hosts they use.
+
+> **They do not use the Canvas API.** There is no Canvas endpoint for a New Quizzes item bank. The banks are held by a separate Instructure service that Canvas enters only through an LTI launch, and these tools work by replaying that launch headlessly: Canvas issues a short-lived web session, signs the launch itself, and the resulting token is exchanged for one the bank service accepts. Nothing is forged, but nothing here is documented either — Instructure can change or withdraw it without notice. Every error from these tools names the private API so a break is not mistaken for a bad call.
+>
+> The session cookie and the minted tokens are held in memory only, never written to disk or logged. `CANVAS_API_TOKEN` is never sent to any host but Canvas. The bank service's region is read from the installed Quizzes 2 tool rather than assumed, though only one instance has been verified.
+
+Two things to know before using them:
+
+- **The bank list is scoped to you, not to the course.** `courseId` supplies the launch context the service requires; it does not filter anything. Launching from two different courses returns the same banks. Narrow with `search` instead.
+- **A question has two IDs.** `entryId` is its membership in a bank — what `delete-item-bank-question` takes. `itemId` is the question itself — what `update-item-bank-question` takes. `list-item-bank-questions` reports both, labelled. Passing one where the other belongs returns a 404 from a service whose errors are not written for you.
+
+Classic question banks are a **different store** with a separate ID space; see [Question Banks (Classic)](#question-banks-classic). A course whose quizzes came from a QTI import usually has both.
+
+### list-item-banks
+Lists the New Quizzes item banks visible to the account the token belongs to.
+- Required parameters:
+  - `courseId`: string — the launch context, **not** a filter
+- Optional parameters:
+  - `search`: string — server-side substring match on the bank title
+  - `page`: number (default: 1)
+  - `perPage`: number (default: 50)
+- Returns `id`, `title`, `question_count`, `shared_with_count`, `permission`, `archived`, `last_used`, `updated_at` per bank, and the size of the whole collection rather than of the page
+
+---
+
+### get-item-bank
+Fetches one item bank.
+- Required parameters:
+  - `courseId`: string — the launch context
+  - `bankId`: string
+- Returns the bank's full record, including `entry_count` and whether it is archived
+
+---
+
+### list-item-bank-questions
+Lists the questions in a bank — the pool a randomising quiz actually draws from.
+- Required parameters:
+  - `courseId`: string — the launch context
+  - `bankId`: string
+- Optional parameters:
+  - `full`: boolean (default: false) — the complete payload of each question, answer key and feedback included, rather than a summary
+  - `text`: string — **matches titles and tags, not question bodies.** A word visible in a question can still match nothing
+  - `interactionType`: one of `choice`, `true-false`, `multi-answer`, `essay`, `numeric`, `matching`, `rich-fill-blank`, `ordering`, `categorization`, `hot-spot`
+  - `page`: number (default: 1), `perPage`: number (default: 50)
+- Each summary carries `entryId`, `itemId`, `interaction_type`, `title`, `item_body`, `status` and `updated_at`
+- **`status: "immutable"` means a student has seen the question** and it can no longer be edited
+
+---
+
+### create-item-bank-question
+Adds a question to an existing bank. Takes the same question parameters as [`create-new-quiz-item`](#create-new-quiz-item) — question text, choices, and which one is correct; answer IDs and scoring rules are generated.
+- Required parameters:
+  - `courseId`: string — the launch context
+  - `bankId`: string — the bank must already exist; creating a bank is not exposed here
+  - `interactionType` and `body`, unless `rawEntry` is given
+- Optional parameters: the full question set — `title`, `choices`, `correctChoiceIndex`, `correctChoiceIndexes`, `partialCredit`, `correctBoolean`, `numericAnswer`, `numericMargin`, `numericMarginType`, `gradingNotes`, `matchPairs`, `distractors`, `blankMatching`, `orderItems`, `topLabel`, `bottomLabel`, `categories`, `imageUrl`, `imagePixelWidth`, `imagePixelHeight`, `hotspotRect`, `hotspotOval`, `hotspotPolygon`, `feedback`, `rawEntry`
+- **There is no `pointsPossible`.** A bank question carries no points: points are set on the quiz item that draws from the bank, so the same question can be worth different amounts in different quizzes
+- Returns both new IDs — the `entryId` to remove it with and the `itemId` to edit it with
+- Two requests under the hood: the question is stored, then linked into the bank. If the link fails the error says so and names the orphaned `itemId`, because a stored-but-unlinked question is in no bank and invisible to every listing
+
+---
+
+### update-item-bank-question
+Replaces a question's content.
+- Required parameters:
+  - `courseId`: string — the launch context
+  - `bankId`: string
+  - `itemId`: string — the **question's** ID, not the `entryId`
+  - `interactionType` and `body`, unless `rawEntry` is given
+- Optional parameters: the same question set as `create-item-bank-question`
+- **A whole-question replacement, not a patch.** Fields you leave out are not preserved; read the current question with `list-item-bank-questions` `full=true` first if you are changing only part of it
+- **A question's type cannot be changed.** To turn a multiple-choice question into an essay, delete it and create a new one
+- A question a student has already seen is immutable and the edit is refused, with that explanation
+
+---
+
+### delete-item-bank-question
+Removes a question from a bank.
+- Required parameters:
+  - `courseId`: string — the launch context
+  - `bankId`: string
+  - `entryId`: string — the **bank entry's** ID, not the `itemId`
+- Quizzes already built from the bank hold their own copies and are unaffected
 
 ---
 

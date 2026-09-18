@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { createRequire } from "node:module";
 import * as dotenv from "dotenv";
-import { CanvasConfig } from './types.js';
+import { CanvasConfig, itemBanksEnabled } from './types.js';
 import { CanvasClient } from './canvasClient.js';
 import { registerCourseTools } from './tools/courses.js';
 import { registerStudentTools } from './tools/students.js';
@@ -32,6 +32,8 @@ import { registerCourseCopyTools } from './tools/courseCopy.js';
 import { registerCalendarTools } from './tools/calendar.js';
 import { registerLatePolicyTools } from './tools/latePolicy.js';
 import { registerAssignmentExtensionTools } from './tools/assignmentExtensions.js';
+import { NewQuizzesLtiClient } from './newQuizzesLti.js';
+import { registerNewQuizItemBankTools } from './tools/newQuizItemBanks.js';
 // Load environment variables
 dotenv.config();
 
@@ -64,6 +66,7 @@ server.tool(
 const config: CanvasConfig = {
   apiToken: process.env.CANVAS_API_TOKEN || "",
   baseUrl: process.env.CANVAS_BASE_URL || "https://fhict.instructure.com",
+  enableItemBanks: itemBanksEnabled(),
 };
 
 // Validate configuration
@@ -74,6 +77,11 @@ if (!config.apiToken) {
 
 // Create the CanvasClient instance
 const canvas = new CanvasClient(config.baseUrl, config.apiToken);
+
+// Assigned below only when the item bank flag is on. Declared here so
+// refresh-canvas-data can clear its cached LTI launch too — the handler runs
+// long after this line, so it sees whatever the flag decided.
+let itemBanks: NewQuizzesLtiClient | undefined;
 
 // Tool: refresh-canvas-data — the only way to defeat the read cache.
 //
@@ -97,6 +105,7 @@ server.tool(
   { readOnlyHint: true },
   async () => {
     const dropped = canvas.clearCache();
+    itemBanks?.clearSessions();
     return {
       content: [{
         type: "text",
@@ -134,6 +143,17 @@ registerCourseCopyTools(server, canvas);
 registerCalendarTools(server, canvas);
 registerLatePolicyTools(server, canvas);
 registerAssignmentExtensionTools(server, canvas);
+
+// New Quizzes item banks — registered only when the operator opts in, because
+// they are the one part of this server that calls a private, undocumented
+// Instructure API rather than Canvas's. Off by default means a stock install
+// never touches those hosts, and the tool list stays honest about what it can
+// actually do: a tool that is present but always errors is worse than absent.
+if (config.enableItemBanks) {
+  itemBanks = new NewQuizzesLtiClient(canvas, config.baseUrl, config.apiToken);
+  registerNewQuizItemBankTools(server, itemBanks);
+}
+
 // Start the server
 async function startServer() {
   try {

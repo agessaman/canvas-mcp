@@ -6,6 +6,7 @@ import {
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 import { buildItemEntry, InteractionType } from "../newQuizItemBuilder.js";
+import { itemBanksEnabled } from "../types.js";
 
 // New Quizzes live at /api/quiz/v1, a different API root from Classic Quizzes
 // (/api/v1/courses/:id/quizzes). A New Quiz is backed by an Assignment, so the
@@ -132,12 +133,23 @@ function bankPoolNote(draws: any[]): string {
   const which = draws
     .map(i => `item ${i.id} draws ${i.properties?.sample_num ?? '?'} of ${i.entry?.item_entry_count ?? '?'} from bank ${i.entry?.id ?? '?'} (${i.entry?.title ?? 'untitled'})`)
     .join('; ');
-  return `\n\nNOTE — ${draws.length} item(s) pull questions at random from an item bank: ${which}. `
-    + `Which questions a student sees is decided at attempt time, and the bank's contents are NOT readable `
-    + `through the Canvas API: New Quizzes item banks live in a separate Instructure service that Canvas only `
-    + `reaches through an LTI launch. To see or edit the pool, open Item Banks in the Canvas course navigation. `
-    + `(list-question-banks reads CLASSIC quiz banks — a different store, which will not contain these, though a `
-    + `course whose quizzes were imported from QTI often has both.)`;
+  const common = `\n\nNOTE — ${draws.length} item(s) pull questions at random from an item bank: ${which}. `
+    + `Which questions a student sees is decided at attempt time. `;
+  const classic = `(list-question-banks reads CLASSIC quiz banks — a different store, which will not contain these, `
+    + `though a course whose quizzes were imported from QTI often has both.)`;
+
+  // Two wordings, because the honest answer changes with the flag. With the
+  // item bank tools registered the pool IS readable, and sending the reader to
+  // the Canvas UI would be wrong; without them it is not reachable at all, and
+  // naming a tool that does not exist would be worse.
+  return itemBanksEnabled()
+    ? common
+      + `The pool itself is not in this payload, but list-item-bank-questions can read it — pass the bank id above. `
+      + classic
+    : common
+      + `The bank's contents are NOT readable through the Canvas API: New Quizzes item banks live in a separate `
+      + `Instructure service that Canvas only reaches through an LTI launch. To see or edit the pool, open Item `
+      + `Banks in the Canvas course navigation. ` + classic;
 }
 
 export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {

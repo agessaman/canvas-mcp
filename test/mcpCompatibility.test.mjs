@@ -18,6 +18,11 @@ test('the stdio server exposes its tools to a vendor-neutral MCP client', async 
       ...process.env,
       CANVAS_API_TOKEN: 'mcp-compatibility-test-token',
       CANVAS_BASE_URL: 'https://canvas.invalid',
+      // The manifest lists every tool the extension can expose, item banks
+      // included, so the full set is what this deep-equal compares against.
+      // The opposite direction — that they are absent when the flag is off —
+      // is asserted below.
+      CANVAS_ENABLE_ITEM_BANKS: 'true',
     },
     stderr: 'pipe',
   });
@@ -67,4 +72,57 @@ test('the stdio server exposes its tools to a vendor-neutral MCP client', async 
   } finally {
     await client.close();
   }
+});
+
+const ITEM_BANK_TOOLS = [
+  'list-item-banks',
+  'get-item-bank',
+  'list-item-bank-questions',
+  'create-item-bank-question',
+  'update-item-bank-question',
+  'delete-item-bank-question',
+];
+
+test('the item bank tools are absent unless the operator opts in', async () => {
+  // Not registered rather than registered-and-erroring. A stock install should
+  // never advertise a tool that would reach a private Instructure service, and
+  // a tool that is always going to fail is worse for a client than one that was
+  // never offered.
+  const listWithFlag = async (value) => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(repoRoot, 'dist/index.js')],
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        CANVAS_API_TOKEN: 'mcp-compatibility-test-token',
+        CANVAS_BASE_URL: 'https://canvas.invalid',
+        CANVAS_ENABLE_ITEM_BANKS: value,
+      },
+      stderr: 'pipe',
+    });
+    const client = new Client({ name: 'canvas-mcp-flag-test', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+      const { tools } = await client.listTools();
+      return new Set(tools.map((tool) => tool.name));
+    } finally {
+      await client.close();
+    }
+  };
+
+  const off = await listWithFlag('');
+  for (const name of ITEM_BANK_TOOLS) {
+    assert.ok(!off.has(name), `${name} is registered with the flag off`);
+  }
+
+  const on = await listWithFlag('true');
+  for (const name of ITEM_BANK_TOOLS) {
+    assert.ok(on.has(name), `${name} is missing with the flag on`);
+  }
+  assert.equal(on.size - off.size, ITEM_BANK_TOOLS.length, 'the flag should add exactly the item bank tools');
+
+  // A value that is not a recognised truthy spelling must leave them off.
+  const bogus = await listWithFlag('maybe');
+  assert.equal(bogus.size, off.size, 'an unrecognised flag value should not enable the tools');
 });

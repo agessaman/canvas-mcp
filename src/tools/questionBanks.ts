@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
+import { itemBanksEnabled } from "../types.js";
 
 /**
  * Classic question banks — the AssessmentQuestionBank store, shared by every
@@ -57,10 +58,13 @@ export function registerQuestionBankTools(server: McpServer, canvas: CanvasClien
     "List the CLASSIC quiz question banks in a course or account, with how many questions each holds. "
     + "These are the pools a Classic quiz draws random questions from: a quiz's question group "
     + "(list-quiz-question-groups) names one by assessment_question_bank_id. "
-    + "NEW QUIZZES ITEM BANKS ARE NOT LISTED HERE and cannot be — they are stored in a separate Instructure "
-    + "service that Canvas only reaches through an LTI launch, and no Canvas API token can read or write one. "
-    + "An empty result for a course that visibly has banks in New Quizzes means exactly that, not a permissions "
-    + "problem. Read-only: Canvas publishes no API for creating a bank or adding questions to one.",
+    + "NEW QUIZZES ITEM BANKS ARE NOT LISTED HERE — they are stored in a separate Instructure service that "
+    + "Canvas only reaches through an LTI launch, and no Canvas API token can read or write one. An empty "
+    + "result for a course that visibly has banks in New Quizzes means exactly that, not a permissions problem. "
+    // Only names list-item-banks when it is actually registered: pointing at a
+    // tool the client cannot see is a worse answer than pointing at the UI.
+    + (itemBanksEnabled() ? "Use list-item-banks to read those. " : "")
+    + "Read-only: Canvas publishes no API for creating a bank or adding questions to one.",
     {
       courseId: z.string().optional().describe("The ID of the course whose banks to list. " + BANK_CONTEXT_HELP),
       accountId: z.string().optional().describe("The ID of the account whose banks to list, instead of a course. " + BANK_CONTEXT_HELP)
@@ -87,8 +91,10 @@ export function registerQuestionBankTools(server: McpServer, canvas: CanvasClien
             text: rows.length > 0
               ? `Classic question banks in ${where}:\n\n${JSON.stringify(rows, null, 2)}`
               : `No Classic question banks in ${where}. If this course's banks were built in New Quizzes, they are `
-                + `held in Instructure's separate item-bank service and no Canvas API can reach them — open `
-                + `Item Banks in the Canvas course navigation instead.`
+                + `held in Instructure's separate item-bank service, which no Canvas API can reach — `
+                + (itemBanksEnabled()
+                    ? `read those with list-item-banks.`
+                    : `open Item Banks in the Canvas course navigation instead.`)
           }]
         };
       } catch (error: any) {
