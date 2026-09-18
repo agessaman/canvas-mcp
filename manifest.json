@@ -313,6 +313,30 @@
       "description": "Delete a quiz question group"
     },
     {
+      "name": "list-quiz-submissions",
+      "description": "List every student's quiz attempt with score, timing and state"
+    },
+    {
+      "name": "get-quiz-statistics",
+      "description": "Aggregate item analysis: answer distribution, difficulty index, point-biserial"
+    },
+    {
+      "name": "get-quiz-submission-answers",
+      "description": "One student's answer to every question, joined to question text and correct answer"
+    },
+    {
+      "name": "get-quiz-report",
+      "description": "Generate and parse a student_analysis or item_analysis quiz report"
+    },
+    {
+      "name": "get-quiz-submission-events",
+      "description": "Answer-change trail and page focus events for a quiz attempt"
+    },
+    {
+      "name": "update-quiz-submission-score",
+      "description": "Regrade a quiz attempt with per-question overrides or fudge points"
+    },
+    {
       "name": "list-question-banks",
       "description": "List Classic quiz question banks in a course or account"
     },

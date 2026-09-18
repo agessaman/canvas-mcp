@@ -132,6 +132,8 @@ The extension provides these Canvas capabilities:
 ### 🗂️ **Organization**
 - `list-modules` - Course module management
 - `list-assignment-groups` - Assignment grouping
+- `list-course-folders` - Course Files folder tree
+- `list-course-files` - Course Files file list, optionally one folder
 
 ## 🔒 Privacy & Security
 

@@ -11,7 +11,15 @@ import { SimpleCache } from './cache.js';
 // live — two consecutive status checks returned an identical workflow_state
 // while the copy was demonstrably progressing. A status that can be a minute
 // stale is a status you cannot act on.
-const UNCACHED_PATTERNS = ['/submissions', '/enrollments', '/conversations', '/todo', '/progress', '/content_migrations'];
+//
+// The quiz-result endpoints are live for the same reason: /statistics and
+// /events change with every attempt a student submits, and a quiz report is
+// polled until its file appears, exactly like a migration. /quiz_submissions
+// covers the per-attempt paths that do not also contain /submissions.
+const UNCACHED_PATTERNS = [
+  '/submissions', '/enrollments', '/conversations', '/todo', '/progress', '/content_migrations',
+  '/statistics', '/reports', '/events', '/quiz_submissions',
+];
 
 // Safety bound on Link-header following, so a malformed or self-referential
 // `next` link can't loop indefinitely. At per_page=100 this is 50k records.
@@ -192,6 +200,66 @@ export class CanvasClient {
     }
     if (cacheable) this.cache.set(key, results);
     return results;
+  }
+
+  // Several quiz endpoints wrap their payload in a JSON-API-ish envelope
+  // ({ "quiz_submissions": [...] }) rather than returning a bare array, which
+  // fetchAllPages would discard. This merges every top-level array across all
+  // pages, keyed by envelope key, deduping by id.
+  async fetchAllPagesEnvelope(url: string, params: any = {}): Promise<Record<string, any[]>> {
+    const merged: Record<string, any[]> = {};
+    const seen: Record<string, Set<any>> = {};
+    const per_page = params.per_page || 100;
+    let page = 1;
+    try {
+      while (true) {
+        const response = await this.axios.get(url, { params: { ...params, page, per_page } });
+        const body = response.data;
+        if (!body || typeof body !== 'object') break;
+
+        let addedAny = false;
+        for (const [key, value] of Object.entries(body)) {
+          if (!Array.isArray(value)) continue;
+          merged[key] ??= [];
+          seen[key] ??= new Set();
+          for (const item of value) {
+            const id = item?.id;
+            if (id !== undefined) {
+              if (seen[key].has(id)) continue;
+              seen[key].add(id);
+            }
+            merged[key].push(item);
+            addedAny = true;
+          }
+        }
+        if (!addedAny) break;
+
+        const linkHeader = response.headers['link'] as string | undefined;
+        if (!linkHeader || !this.parseLinkHeader(linkHeader).next) break;
+        page++;
+      }
+    } catch (error: any) {
+      this.handleError(error);
+    }
+    return merged;
+  }
+
+  // Single-page envelope fetch: pulls one keyed array out of the wrapper.
+  async getEnvelope<T>(url: string, key: string, params: any = {}): Promise<T[]> {
+    const body = await this.get<any>(url, params);
+    const value = body?.[key];
+    if (Array.isArray(value)) return value as T[];
+    return Array.isArray(body) ? (body as T[]) : [];
+  }
+
+  // Fetch a Canvas-hosted file (e.g. a generated quiz report) as text.
+  async downloadText(fileUrl: string): Promise<string> {
+    try {
+      const response = await this.axios.get(fileUrl, { responseType: 'text', maxRedirects: 5 });
+      return typeof response.data === 'string' ? response.data : String(response.data);
+    } catch (error: any) {
+      this.handleError(error);
+    }
   }
 
   // Centralized error handler.

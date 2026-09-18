@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **118 tools** exposed by the Canvas MCP server, plus the **6 opt-in tools** for [New Quizzes item banks](#new-quizzes-item-banks-opt-in). For setup and usage, see the [README](../README.md).
+Full parameter reference for all **124 tools** exposed by the Canvas MCP server, plus the **6 opt-in tools** for [New Quizzes item banks](#new-quizzes-item-banks-opt-in). For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -557,6 +557,78 @@ Deletes a quiz question group.
   - `quizId`: string
   - `groupId`: string
 - Returns confirmation of deletion
+
+## Quiz Results
+
+### list-quiz-submissions
+Lists every student's quiz attempt with score, timing, and state. The starting point for quiz analysis.
+- Required parameters:
+  - `courseId`: string
+  - `quizId`: string
+- Optional parameters:
+  - `anonymous`: boolean (default: true) — replace student identity with a stable pseudonym
+- Returns a class-level score summary plus per-attempt `score`, `kept_score`, `time_spent`, `workflow_state`, and `fudge_points`
+- **Privacy**: Student data is anonymized by default
+
+### get-quiz-statistics
+Aggregate item analysis for a quiz.
+- Required parameters:
+  - `courseId`: string
+  - `quizId`: string
+- Optional parameters:
+  - `allVersions`: boolean (default: false) — include every attempt rather than the most recent per student
+- Returns per-question response distribution across answer choices, `difficulty_index`, `alpha`, and point-biserial correlation per distractor, plus class mean/stdev/percentiles
+- Aggregate only — contains no per-student data
+
+### get-quiz-submission-answers
+One student's actual answer to every question, joined against question text and the correct answer.
+- Required parameters:
+  - `courseId`: string
+  - `quizId`: string
+  - `userId`: string
+- Optional parameters:
+  - `attempt`: number (default: most recent)
+  - `anonymous`: boolean (default: true)
+- Returns per-question `given_answer`, `correct_answers`, `points_earned`, and `correct`
+- Requires a graded quiz (`quiz_type: assignment` or `graded_survey`); practice quizzes have no backing assignment
+- **Privacy**: Student data is anonymized by default
+
+### get-quiz-report
+Generates (or reuses) a Canvas quiz report and returns its parsed contents. Polls until generation completes, up to 90 seconds.
+- Required parameters:
+  - `courseId`: string
+  - `quizId`: string
+- Optional parameters:
+  - `reportType`: `"student_analysis"` | `"item_analysis"` (default: `student_analysis`)
+  - `allVersions`: boolean (default: false)
+  - `format`: `"summary"` | `"full"` (default: `summary`) — `full` returns every cell of the answer matrix and can be large
+  - `regenerate`: boolean (default: false) — force a fresh report instead of reusing an existing one
+  - `anonymous`: boolean (default: true)
+- `student_analysis` gives the whole-class student x question answer matrix; `item_analysis` gives per-question difficulty and discrimination
+- If generation exceeds 90 seconds the tool returns a message; call it again to pick up the finished file
+- **Privacy**: Names are pseudonymized and SIS/section columns are blanked by default
+
+### get-quiz-submission-events
+The event trail for a single quiz attempt.
+- Required parameters:
+  - `courseId`: string
+  - `quizId`: string
+  - `submissionId`: string — the quiz submission ID from `list-quiz-submissions`, not the user ID
+- Optional parameters:
+  - `attempt`: number (default: most recent)
+- Returns answer-change history and page focus/blur events, with a `page_left_count` summary
+
+### update-quiz-submission-score
+Regrades a quiz attempt.
+- Required parameters:
+  - `courseId`: string
+  - `quizId`: string
+  - `submissionId`: string — the quiz submission ID, not the user ID
+  - `attempt`: number
+- Optional parameters (at least one required):
+  - `fudgePoints`: number — points added to or subtracted from the total
+  - `questions`: object keyed by question ID, e.g. `{ "1234": { "score": 2, "comment": "Accepted alternative phrasing" } }`
+- Returns the updated score, kept score, and fudge points
 
 ## Question Banks (Classic)
 

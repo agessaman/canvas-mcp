@@ -43,6 +43,7 @@
 - **Modules** — full module and module-item CRUD
 - **Pages** — edit content, manage revisions, and use the styleguide system (`generate-styleguide`, `patch-page-content`)
 - **Quizzes** — full quiz, question, and question-group CRUD (Classic Quizzes)
+- **Quiz results** — per-student answers, item analysis, report generation, and regrading
 - **New Quizzes** — authoring and item analysis on the separate `/api/quiz/v1` API, with a question builder that generates answer IDs and scoring rules for you
 - **Grading queue** — `list-grading-todo` answers "what do I need to grade?" across every course
 - **Grades & intervention** — course-wide gradebook, missing-work report, and engagement analytics for planning outreach
@@ -59,7 +60,7 @@
 - **Prompts** — `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**118 tools** and **1 prompt** in total, plus **6 opt-in tools** for New Quizzes item banks (see [below](#new-quizzes-item-banks-opt-in)). See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**124 tools** and **1 prompt** in total, plus **6 opt-in tools** for New Quizzes item banks (see [below](#new-quizzes-item-banks-opt-in)). See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -228,6 +229,14 @@ Show rubric statistics for assignment 67890 in course 12345
 ```
 
 ```
+List all folders and files in the Files section of course 12345
+```
+
+```
+Which questions on quiz 456 in course 12345 did the class find hardest, and which wrong answer drew the most students?
+```
+
+```
 Generate a styleguide for course 12345, then patch the syllabus page to match it
 ```
 
@@ -288,6 +297,7 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | Modules | 10 | `list-modules`, `list-module-items`, `toggle-module-publish`, `create-module`, `update-module`, `delete-module`, `get-module-item`, `create-module-item`, `update-module-item`, `delete-module-item` |
 | Pages | 9 | `list-pages`, `get-page-content`, `update-page-content`, `list-page-revisions`, `revert-page-revision`, `patch-page-content`, `apply-page-changes`, `generate-styleguide`, `get-styleguide` |
 | Quizzes | 15 | `list-quizzes`, `get-quiz`, `create-quiz`, `update-quiz`, `delete-quiz`, `list-quiz-questions`, `get-quiz-question`, `create-quiz-question`, `update-quiz-question`, `delete-quiz-question`, `list-quiz-question-groups`, `get-quiz-question-group`, `create-quiz-question-group`, `update-quiz-question-group`, `delete-quiz-question-group` |
+| Quiz Results | 6 | `list-quiz-submissions`, `get-quiz-statistics`, `get-quiz-submission-answers`, `get-quiz-report`, `get-quiz-submission-events`, `update-quiz-submission-score` |
 | New Quizzes | 11 | `list-new-quizzes`, `get-new-quiz`, `create-new-quiz`, `update-new-quiz`, `delete-new-quiz`, `list-new-quiz-items`, `get-new-quiz-item`, `create-new-quiz-item`, `update-new-quiz-item`, `delete-new-quiz-item`, `get-new-quiz-report` |
 | Grading Queue | 2 | `list-grading-todo`, `get-todo-counts` |
 | Grades & Intervention | 3 | `get-course-grades`, `list-missing-submissions`, `get-student-engagement` |

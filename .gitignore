@@ -55,3 +55,6 @@ openai/canvas-lms/.app.json
 # Test coverage
 coverage/
 .nyc_output/
+
+# graphify knowledge graph output
+graphify-out/
