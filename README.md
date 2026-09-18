@@ -206,6 +206,10 @@ Any MCP client that supports stdio transport can use the same configuration patt
 
 This works with [Cursor](https://docs.cursor.com/context/mcp), VS Code MCP extensions, and other stdio-based clients. Consult your client's MCP documentation for where to place the config file.
 
+### ChatGPT and Codex
+
+The same stdio server can be maintained alongside the Claude Desktop extension and connected privately to ChatGPT through OpenAI Secure MCP Tunnel. The repository includes an OpenAI plugin scaffold, a tunnel runbook, and a vendor-neutral MCP compatibility test in [`openai/README.md`](openai/README.md).
+
 ## Usage Examples
 
 Copy-paste these prompts into your AI assistant after connecting the server:

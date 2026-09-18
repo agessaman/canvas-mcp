@@ -24,6 +24,7 @@
     "pack-extension": "mcpb pack",
     "verify-bundle": "node scripts/verify-bundle.mjs",
     "build-extension": "npm run build && npm run pack-extension",
+    "test:mcp-compat": "npm run build && node --test test/mcpCompatibility.test.mjs",
     "test": "npm run build && node --test 'test/**/*.test.mjs'"
   },
   "dependencies": {

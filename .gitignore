@@ -50,7 +50,8 @@ uv.lock
 
 # Personal config files
 claude_desktop_config.json
+openai/canvas-lms/.app.json
 
 # Test coverage
 coverage/
-.nyc_output/ 
+.nyc_output/
