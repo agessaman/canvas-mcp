@@ -42,6 +42,104 @@ function stimulusAttachRefusal(itemId?: string): string {
     + 'afterwards — an attached question reports stimulus_quiz_entry_id set to the stimulus\'s item ID.';
 }
 
+/**
+ * Two of the four entry types a New Quiz item can have involve a bank, and they
+ * are NOT the same thing. Both were being run through an Item-shaped summary
+ * that read `entry.interaction_type_slug`, `entry.title` and `entry.item_body`
+ * — fields neither of them has at that level — so both rendered as a row of
+ * nulls, indistinguishable from a broken question. That is why a quiz built on
+ * banks looked empty here. Shapes captured live on 2026-09-17:
+ *
+ * "Bank" — a RANDOM DRAW. One item stands for the whole draw:
+ *   { properties: { sample_num: "1" },            <- how many it pulls
+ *     entry: { id: "151", title: "...",           <- the bank
+ *              entry_count: 2, item_entry_count: 2 } }   <- how many it can pull from
+ *   The questions themselves are NOT in this payload and not anywhere in the
+ *   Canvas API — see bankPoolNote.
+ *
+ * "BankEntry" — ONE question that happens to live in a bank, linked into the
+ * quiz. The whole question, answer key included, IS here, one level deeper:
+ *   { entry: { bank_id: "134", entry_type: "Item",
+ *              entry: { interaction_type_slug: "choice", item_body, ... } } }
+ *   So it needs unwrapping, not a warning: nothing about it is unreadable.
+ */
+function unwrapQuestion(entry: any): any {
+  // A BankEntry nests the real question one level down; everything else is it.
+  return entry?.entry_type === 'Item' && entry?.entry ? entry.entry : entry;
+}
+
+// Only a random draw hides its questions. A BankEntry is fully readable, so
+// warning about it would send the reader off to the Canvas UI for something
+// that is already on the screen.
+function isBankDraw(item: any): boolean {
+  return item?.entry_type === 'Bank';
+}
+
+function summariseItem(i: any): Record<string, any> {
+  const base = {
+    id: i.id,
+    position: i.position,
+    points_possible: i.points_possible,
+    entry_type: i.entry_type,
+  };
+
+  if (isBankDraw(i)) {
+    return {
+      ...base,
+      bank_id: i.entry?.id ?? null,
+      bank_title: i.entry?.title ?? null,
+      // sample_num arrives as a string ("1"); reported as Canvas spells it
+      // rather than coerced, so a missing value stays visibly missing.
+      draws_questions: i.properties?.sample_num ?? null,
+      pool_size: i.entry?.item_entry_count ?? i.entry?.entry_count ?? null,
+    };
+  }
+
+  const q = unwrapQuestion(i.entry);
+  if (!q?.interaction_type_slug) {
+    // Not a question and not a draw — an entry type added since this was
+    // written. Pass it through whole rather than projecting a shape onto it,
+    // which is the mistake this function exists to undo.
+    return { ...base, entry: i.entry ?? null };
+  }
+  return {
+    ...base,
+    type: q.interaction_type_slug,
+    title: q.title,
+    item_body: q.item_body,
+    // Which bank this question is linked from, when it is linked from one.
+    ...(i.entry?.bank_id ? { bank_id: i.entry.bank_id } : {}),
+    // Present when this question hangs off a stimulus (reading passage).
+    // Read-only: Canvas will not accept this field on a write, so a
+    // question is attached to a stimulus in the Canvas UI only.
+    ...(i.stimulus_quiz_entry_id ? { stimulus_quiz_entry_id: i.stimulus_quiz_entry_id } : {}),
+  };
+}
+
+/**
+ * Named after the boundary rather than after a failure, because nothing failed:
+ * the draw is reported faithfully, and its pool simply is not in Canvas. New
+ * Quizzes item banks are held by a separate Instructure service (AMS), which
+ * Canvas reaches only through an LTI launch — `ItemBanksController#show`
+ * renders an empty container and hands the browser that service's own api_url.
+ * Probed live on 2026-09-17: every plausible spelling under /api/quiz/v1
+ * (/banks, /banks/:id/entries, /item_banks, /courses/:id/banks, and the same
+ * under /api/v1) returns Canvas's 404 page. So no Canvas API token reaches the
+ * pool, and a caller not told this will keep trying tools that cannot work.
+ */
+function bankPoolNote(draws: any[]): string {
+  if (draws.length === 0) return '';
+  const which = draws
+    .map(i => `item ${i.id} draws ${i.properties?.sample_num ?? '?'} of ${i.entry?.item_entry_count ?? '?'} from bank ${i.entry?.id ?? '?'} (${i.entry?.title ?? 'untitled'})`)
+    .join('; ');
+  return `\n\nNOTE — ${draws.length} item(s) pull questions at random from an item bank: ${which}. `
+    + `Which questions a student sees is decided at attempt time, and the bank's contents are NOT readable `
+    + `through the Canvas API: New Quizzes item banks live in a separate Instructure service that Canvas only `
+    + `reaches through an LTI launch. To see or edit the pool, open Item Banks in the Canvas course navigation. `
+    + `(list-question-banks reads CLASSIC quiz banks — a different store, which will not contain these, though a `
+    + `course whose quizzes were imported from QTI often has both.)`;
+}
+
 export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
   // Tool: list-new-quizzes
   server.tool(
@@ -276,7 +374,9 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
   // Tool: list-new-quiz-items
   server.tool(
     "list-new-quiz-items",
-    "List all questions (items) in a New Quiz, with their type, points, and position.",
+    "List all questions (items) in a New Quiz, with their type, points, and position. An item that draws random "
+    + "questions from an item bank is listed too, with the bank it pulls from — but the bank's own contents are "
+    + "not readable through any Canvas API, and the answer says so rather than showing an empty question.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The quiz's assignment ID"),
@@ -286,24 +386,13 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
     async ({ courseId, assignmentId, full = false }: { courseId: string; assignmentId: string; full?: boolean }) => {
       try {
         const items = await canvas.listNewQuizItems(courseId, assignmentId);
-        const payload = full ? items : items.map((i: any) => ({
-          id: i.id,
-          position: i.position,
-          points_possible: i.points_possible,
-          entry_type: i.entry_type,
-          type: i.entry?.interaction_type_slug,
-          title: i.entry?.title,
-          item_body: i.entry?.item_body,
-          // Present when this question hangs off a stimulus (reading passage).
-          // Read-only: Canvas will not accept this field on a write, so a
-          // question is attached to a stimulus in the Canvas UI only.
-          ...(i.stimulus_quiz_entry_id ? { stimulus_quiz_entry_id: i.stimulus_quiz_entry_id } : {}),
-        }));
+        const payload = full ? items : items.map(summariseItem);
+        const draws = items.filter(isBankDraw);
         return {
           content: [{
             type: "text",
             text: items.length > 0
-              ? JSON.stringify(payload, null, 2)
+              ? JSON.stringify(payload, null, 2) + bankPoolNote(draws)
               : "This quiz has no questions yet."
           }]
         };

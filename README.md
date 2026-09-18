@@ -59,7 +59,7 @@
 - **Prompts** — `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**113 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**118 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -312,6 +312,19 @@ The two engines also express **extra time** completely differently — Classic p
 One Canvas behaviour is worth knowing before exam day: **New Quizzes refuses a per-quiz accommodation for a student who has not yet opened that quiz** — which is exactly the situation when you are setting extra time up in advance. `set-course-quiz-accommodations` has no such restriction and is the way to grant it beforehand. Classic Quizzes lets you extend at any time.
 
 The two New Quizzes accommodations also **add together** rather than one overriding the other: a student with a standing course-wide 45 minutes who is then given 30 on a particular quiz ends up with 75. Canvas offers no way to read either value back, so both tools say this on every grant.
+
+### Question banks
+
+`list-question-banks`, `get-question-bank` and `list-question-bank-questions` read the **Classic** `AssessmentQuestionBank` store — the pool a Classic quiz's question group draws from.
+
+**New Quizzes item banks are a different store, and no Canvas API token reaches them.** They live in a separate Instructure service (AMS) that Canvas only enters through an LTI launch; the Item Banks page in course navigation is an empty container Canvas hands that service's own URL to. Every plausible endpoint spelling was probed against a live instance on 2026-09-17 and returns a 404.
+
+What you *can* see is how a New Quiz uses them. `list-new-quiz-items` distinguishes the two bank-backed item types instead of blanking both out:
+
+- **`BankEntry`** — one question that happens to live in a bank, linked into the quiz. The question and its answer key are in the payload, so it is shown in full, with the `bank_id` it came from.
+- **`Bank`** — a random draw. The item reports which bank, the pool size, and how many it pulls (`item 9624 draws 8 of 12 from bank 290`), followed by a note that the pool itself has to be opened in Canvas. Which questions a given student sees is decided at attempt time regardless.
+
+A course whose quizzes were imported from QTI usually has **both** kinds of bank. They have separate ID spaces and do not cross-reference, so a Classic bank whose title matches is not the pool the New Quiz is drawing from.
 
 ### A note on messaging
 

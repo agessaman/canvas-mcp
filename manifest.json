@@ -305,6 +305,18 @@
       "description": "Delete a quiz question group"
     },
     {
+      "name": "list-question-banks",
+      "description": "List Classic quiz question banks in a course or account"
+    },
+    {
+      "name": "get-question-bank",
+      "description": "Fetch a single Classic question bank"
+    },
+    {
+      "name": "list-question-bank-questions",
+      "description": "List the questions inside a Classic question bank"
+    },
+    {
       "name": "list-eportfolios",
       "description": "List ePortfolios for a user"
     },

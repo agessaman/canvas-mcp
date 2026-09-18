@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **113 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **118 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -558,6 +558,37 @@ Deletes a quiz question group.
   - `groupId`: string
 - Returns confirmation of deletion
 
+## Question Banks (Classic)
+
+The `AssessmentQuestionBank` store — the pools a **Classic** quiz draws random questions from. A Classic quiz's question group (`list-quiz-question-groups`) names one by `assessment_question_bank_id`; these tools say what is inside it.
+
+> **New Quizzes item banks are a different store and are NOT reachable here — or anywhere in the Canvas API.** They are held by a separate Instructure service (AMS), which Canvas reaches only through an LTI launch: `ItemBanksController#show` renders an empty `<div id="ams_container">` and hands the browser that service's own `api_url` from `Services::Ams`. Probed live 2026-09-17 — `/api/quiz/v1/banks`, `/banks/:id/entries`, `/item_banks`, `/courses/:id/banks` and the `/api/v1` spellings of each all return Canvas's 404 page. See `list-new-quiz-items` for what a New Quiz *does* report about its banks.
+>
+> A course whose quizzes were imported from QTI often has **both**: Classic banks from the import, and New Quizzes banks the importer built alongside them. The two have separate ID spaces and do not cross-reference, so a Classic bank with a matching title is not the pool a New Quiz is drawing from.
+
+> **Read-only, by Canvas's limit rather than by choice.** `config/routes.rb` exposes three GETs under `/api/v1` and nothing else. Creating a bank or adding a question to one exists only on the non-API HTML routes the Canvas UI posts to with a session cookie, where a Bearer token is not accepted.
+
+### list-question-banks
+Lists Classic question banks in a course or account, with question counts.
+- Required parameters (exactly one):
+  - `courseId`: string, or `accountId`: string — giving both, or neither, is refused rather than guessed at
+- Returns `id`, `title`, `question_count`, `context`, `updated_at` per bank
+
+### get-question-bank
+Fetches a single Classic question bank.
+- Required parameters:
+  - `bankId`: string
+- Returns the full `AssessmentQuestionBank` object
+
+### list-question-bank-questions
+Lists the questions inside a Classic bank — the actual pool.
+- Required parameters:
+  - `bankId`: string
+- Optional parameters:
+  - `full`: boolean (default: false) — include answer keys and feedback
+- Canvas returns the answer key whether or not it is asked for (verified live 2026-09-17), so `full` controls what is **shown**, not what is fetched.
+- A bank question is a **template**: a quiz that pulls it holds its own copy, so editing the bank does not change quizzes already built from it.
+
 ## ePortfolios
 
 ### list-eportfolios
@@ -671,12 +702,23 @@ Deletes a New Quiz and its underlying assignment.
   - `assignmentId`: string
 
 ### list-new-quiz-items
-Lists questions in a New Quiz.
+Lists questions in a New Quiz, including the ones backed by item banks.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
 - Optional parameters:
   - `full`: boolean (default: false) — include answer keys
+
+A New Quiz item has one of four `entry_type`s, and two of them involve a bank. They are not the same thing, and until 1.21.0 both were run through a summary shaped for a plain question — which reads `entry.interaction_type_slug`, `entry.title` and `entry.item_body`, fields neither of them has at that level. Both rendered as a row of nulls, so a test built from banks looked empty. Shapes captured live 2026-09-17:
+
+| `entry_type` | What it is | Reported as |
+| --- | --- | --- |
+| `Item` | An ordinary question | `type`, `title`, `item_body` |
+| `Stimulus` | A shared reading passage | as above; see the stimulus note below |
+| `Bank` | **A random draw.** One item stands for the whole draw | `bank_id`, `bank_title`, `draws_questions` (from `properties.sample_num`), `pool_size` |
+| `BankEntry` | **One question that lives in a bank**, linked into the quiz | the question, unwrapped from one extra level of nesting, plus `bank_id` |
+
+A `BankEntry` carries its whole question, answer key included — nothing about it is unreadable, so it is shown like any other question. A `Bank` does not: which questions a student sees is decided at attempt time, and the pool is in the AMS service. When a quiz contains draws, the answer ends with a note naming each one (`item 9624 draws 8 of 12 from bank 290 (...)`) and saying where the pool can be opened. The note fires for draws only.
 
 ### get-new-quiz-item
 Fetches one question with its full payload and answer key.
