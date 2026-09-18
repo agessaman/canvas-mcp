@@ -2,9 +2,9 @@
   "manifest_version": "0.1",
   "name": "canvas-mcp",
   "display_name": "Canvas LMS Integration",
-  "version": "1.20.7",
+  "version": "1.21.0",
   "description": "Comprehensive Canvas LMS integration for course management, assignments, pages, students, and rubric analysis",
-  "long_description": "This extension provides full Canvas LMS integration capabilities including course management, assignment creation and grading, page editing with styleguide support, student management with privacy controls, module organization, submission tracking, and comprehensive rubric statistics analysis. It also covers the instructor grading queue (what needs grading across every course), New Quizzes authoring and item analysis on the separate /api/quiz/v1 API, course-wide grades with missing-work and engagement reports for intervention planning, and read-only Canvas inbox triage. Perfect for educators who want to streamline their Canvas workflows directly from Claude Desktop. Developed by A. Gessaman based on work by R.Huijts.",
+  "long_description": "This extension provides full Canvas LMS integration capabilities including course management, assignment creation and grading, page editing with styleguide support, student management with privacy controls, module organization, submission tracking, and comprehensive rubric statistics analysis. It also covers the instructor grading queue (what needs grading across every course), Classic quiz results (per-student answers, item statistics, reports and regrading), New Quizzes authoring and item analysis on the separate /api/quiz/v1 API, course-wide grades with missing-work and engagement reports for intervention planning, and read-only Canvas inbox triage. Perfect for educators who want to streamline their Canvas workflows directly from Claude Desktop. Developed by A. Gessaman based on work by R.Huijts.",
   "author": {
     "name": "A. Gessaman",
     "url": "https://github.com/agessaman"
@@ -314,27 +314,27 @@
     },
     {
       "name": "list-quiz-submissions",
-      "description": "List every student's quiz attempt with score, timing and state"
+      "description": "List every student's Classic quiz attempt with score, timing and state"
     },
     {
       "name": "get-quiz-statistics",
-      "description": "Aggregate item analysis: answer distribution, difficulty index, point-biserial"
+      "description": "Classic quiz item analysis: answer distribution, difficulty index, point-biserial"
     },
     {
       "name": "get-quiz-submission-answers",
-      "description": "One student's answer to every question, joined to question text and correct answer"
+      "description": "One student's answer to every Classic quiz question, joined to the question and its correct answer"
     },
     {
       "name": "get-quiz-report",
-      "description": "Generate and parse a student_analysis or item_analysis quiz report"
+      "description": "Generate and parse a Classic quiz student_analysis or item_analysis report"
     },
     {
       "name": "get-quiz-submission-events",
-      "description": "Answer-change trail and page focus events for a quiz attempt"
+      "description": "Answer-change trail and page focus events for a Classic quiz attempt"
     },
     {
       "name": "update-quiz-submission-score",
-      "description": "Regrade a quiz attempt with per-question overrides or fudge points"
+      "description": "Regrade a Classic quiz attempt with per-question scores or fudge points"
     },
     {
       "name": "list-question-banks",

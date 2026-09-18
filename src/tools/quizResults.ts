@@ -49,11 +49,41 @@ function parseCsv(text: string): string[][] {
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * The questions one attempt was actually shown. The quiz's current question
+ * list is the wrong join for two common cases: a question group drawing from a
+ * bank (the drawn questions are not quiz questions at all, so every one came
+ * back with no text and no correct answer), and a quiz edited after the
+ * student took it. Canvas returns the attempt's own set when given the quiz
+ * submission id and attempt; the current list is only the fallback.
+ */
+async function questionsAsPresented(
+  canvas: CanvasClient, courseId: string, quizId: string, userId: string, attempt: number | undefined
+): Promise<any[]> {
+  const url = `/api/v1/courses/${courseId}/quizzes/${quizId}/questions`;
+  if (attempt !== undefined) {
+    try {
+      const envelope = await canvas.listQuizSubmissions(courseId, quizId);
+      const quizSubmission = (envelope.quiz_submissions ?? []).find((qs: any) => String(qs.user_id) === String(userId));
+      if (quizSubmission) {
+        const presented = await canvas.fetchAllPages<any>(url, {
+          quiz_submission_id: quizSubmission.id,
+          quiz_submission_attempt: attempt,
+        });
+        if (presented.length > 0) return presented;
+      }
+    } catch {
+      // Fall through to the quiz's current questions.
+    }
+  }
+  return canvas.fetchAllPages<any>(url);
+}
+
 export function registerQuizResultTools(server: McpServer, canvas: CanvasClient) {
   // Tool: list-quiz-submissions
   server.tool(
     "list-quiz-submissions",
-    "List every student's quiz attempt with score, timing and state. Start here when analysing a quiz; use get-quiz-submission-answers for per-question detail.",
+    "List every student's attempt on a Classic quiz with score, timing and state. Start here when analysing a Classic quiz; use get-quiz-submission-answers for per-question detail. Classic Quizzes only (list-quizzes) — for a New Quiz, use list-assignment-submissions with its assignment ID.",
     {
       courseId: z.string().describe("The ID of the course"),
       quizId: z.string().describe("The ID of the quiz"),
@@ -62,12 +92,21 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
     { readOnlyHint: true },
     async ({ courseId, quizId, anonymous = true }: { courseId: string; quizId: string; anonymous?: boolean }) => {
       try {
-        const envelope = await canvas.fetchAllPagesEnvelope(
-          `/api/v1/courses/${courseId}/quizzes/${quizId}/submissions`,
-          { per_page: 100 }
+        // A quiz submission carries only user_id. Names come from a sibling
+        // `users` array, which is only worth asking for when they will be shown.
+        const envelope = await canvas.listQuizSubmissions(
+          courseId,
+          quizId,
+          anonymous ? { per_page: 100 } : { per_page: 100, include: ['user'] }
         );
         const raw = envelope.quiz_submissions ?? [];
-        const submissions = (anonymous ? DataAnonymizer.anonymizeQuizSubmissions(raw) : raw).map((s: any) => ({
+        const nameById = new Map<string, string>(
+          (envelope.users ?? []).map((u: any) => [String(u.id), u.name])
+        );
+        const labelled = anonymous
+          ? DataAnonymizer.anonymizeQuizSubmissions(raw)
+          : raw.map((s: any) => ({ ...s, student: nameById.get(String(s.user_id)) }));
+        const submissions = labelled.map((s: any) => ({
           id: s.id,
           user_id: s.user_id,
           ...(s.student ? { student: s.student } : {}),
@@ -85,17 +124,22 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
           overdue_and_needs_submission: s.overdue_and_needs_submission,
         }));
 
-        const graded = submissions.filter((s: any) => typeof s.kept_score === 'number');
+        // Granting an extension to a student who has not started creates a
+        // "settings_only" submission: a row that holds extra time or attempts
+        // and no attempt at all. It stays in the list, where the extension is
+        // worth seeing, but is not counted as a submission.
+        const attempted = submissions.filter((s: any) => s.workflow_state !== 'settings_only');
+        const graded = attempted.filter((s: any) => typeof s.kept_score === 'number');
         const scores = graded.map((s: any) => s.kept_score as number);
         const summary = scores.length
           ? {
-              submissions: submissions.length,
+              submissions: attempted.length,
               graded: scores.length,
               average: Number((scores.reduce((a: number, b: number) => a + b, 0) / scores.length).toFixed(2)),
               high: Math.max(...scores),
               low: Math.min(...scores),
             }
-          : { submissions: submissions.length, graded: 0 };
+          : { submissions: attempted.length, graded: 0 };
 
         return {
           content: [{ type: "text", text: JSON.stringify({ summary, submissions }) }]
@@ -112,7 +156,7 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
   // Tool: get-quiz-statistics
   server.tool(
     "get-quiz-statistics",
-    "Get aggregate item analysis for a quiz: per-question response distribution across answer choices, difficulty index, and point-biserial correlation per distractor. Aggregate only — no per-student data.",
+    "Get aggregate item analysis for a Classic quiz: per-question response distribution across answer choices, difficulty index, and point-biserial correlation per distractor. Aggregate only — no per-student data. For a New Quiz, use get-new-quiz-report.",
     {
       courseId: z.string().describe("The ID of the course"),
       quizId: z.string().describe("The ID of the quiz"),
@@ -201,7 +245,7 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
   // Tool: get-quiz-submission-answers
   server.tool(
     "get-quiz-submission-answers",
-    "Get one student's actual answer to every question in a quiz, joined against the question text and the correct answer. Use list-quiz-submissions first to find user IDs.",
+    "Get one student's actual answer to every question in a Classic quiz, joined against the question text and the correct answer as that attempt was shown them. Use list-quiz-submissions first to find user IDs.",
     {
       courseId: z.string().describe("The ID of the course"),
       quizId: z.string().describe("The ID of the quiz"),
@@ -214,18 +258,22 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
       courseId: string; quizId: string; userId: string; attempt?: number; anonymous?: boolean;
     }) => {
       try {
-        const quiz = await canvas.get(`/api/v1/courses/${courseId}/quizzes/${quizId}`) as any;
+        const quiz = await canvas.getClassicQuiz(courseId, quizId) as any;
         if (!quiz.assignment_id) {
           throw new Error(`Quiz ${quizId} has no backing assignment (practice quizzes and ungraded surveys expose no per-question answers through this route).`);
         }
 
-        const submission = await canvas.get(
-          `/api/v1/courses/${courseId}/assignments/${quiz.assignment_id}/submissions/${userId}`,
-          { include: ['submission_history'] }
+        const submission = await canvas.getSubmission(
+          courseId,
+          String(quiz.assignment_id),
+          userId,
+          { include: anonymous ? ['submission_history'] : ['submission_history', 'user'] }
         ) as any;
 
         const history: any[] = Array.isArray(submission.submission_history) ? submission.submission_history : [];
-        const candidates = history.filter(h => Array.isArray(h.submission_data));
+        const candidates = history
+          .filter(h => Array.isArray(h.submission_data))
+          .sort((a, b) => (a.attempt ?? 0) - (b.attempt ?? 0));
         if (candidates.length === 0) {
           return {
             content: [{
@@ -241,10 +289,7 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
           throw new Error(`Attempt ${attempt} not found. Available attempts: ${candidates.map(c => c.attempt).join(', ')}`);
         }
 
-        const questions: any[] = await canvas.fetchAllPages(
-          `/api/v1/courses/${courseId}/quizzes/${quizId}/questions`,
-          { per_page: 100 }
-        );
+        const questions = await questionsAsPresented(canvas, courseId, quizId, userId, chosen.attempt);
         const questionById = new Map<any, any>(questions.map(q => [q.id, q]));
 
         const answers = (chosen.submission_data ?? []).map((d: any) => {
@@ -301,29 +346,32 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
   // Tool: get-quiz-report
   server.tool(
     "get-quiz-report",
-    "Generate (or reuse) a Canvas quiz report and return its parsed contents. 'student_analysis' gives the whole-class student x question answer matrix; 'item_analysis' gives per-question difficulty and discrimination. Generation is asynchronous and this tool polls until it finishes.",
+    "Generate (or reuse) a Classic quiz report and return its parsed contents. 'student_analysis' gives the whole-class student x question answer matrix; 'item_analysis' gives per-question difficulty and discrimination. Generation is asynchronous: this polls for up to waitSeconds, and if the report is not ready by then, calling again picks up the same report rather than starting another. For a New Quiz use get-new-quiz-report.",
     {
       courseId: z.string().describe("The ID of the course"),
       quizId: z.string().describe("The ID of the quiz"),
       reportType: z.enum(["student_analysis", "item_analysis"]).default("student_analysis").describe("Which report to produce"),
       allVersions: z.boolean().default(false).describe("Include every attempt rather than only the most recent one per student"),
       format: z.enum(["summary", "full"]).default("summary").describe("'summary' aggregates per question and per student; 'full' returns every cell (can be large)"),
-      regenerate: z.boolean().default(false).describe("Force a fresh report instead of reusing an existing one"),
+      regenerate: z.boolean().default(false).describe("Ask Canvas for a new report instead of reusing the last one. Canvas still returns the existing report when no submissions have arrived since it was generated."),
+      waitSeconds: z.number().min(0).max(50).default(30).describe("How long to wait for a report that is still generating before returning (default 30; clients commonly give up on a tool call after 60)"),
       anonymous: z.boolean().default(true).describe("Whether to replace student identity with a stable pseudonym (default: true for privacy)"),
     },
     { readOnlyHint: true },
-    async ({ courseId, quizId, reportType = "student_analysis", allVersions = false, format = "summary", regenerate = false, anonymous = true }: {
-      courseId: string; quizId: string; reportType?: string; allVersions?: boolean; format?: string; regenerate?: boolean; anonymous?: boolean;
+    async ({ courseId, quizId, reportType = "student_analysis", allVersions = false, format = "summary", regenerate = false, waitSeconds = 30, anonymous = true }: {
+      courseId: string; quizId: string; reportType?: string; allVersions?: boolean; format?: string; regenerate?: boolean; waitSeconds?: number; anonymous?: boolean;
     }) => {
       const base = `/api/v1/courses/${courseId}/quizzes/${quizId}/reports`;
       try {
         const matches = (r: any) => r.report_type === reportType && !!r.includes_all_versions === allVersions;
 
+        const findExisting = async () => {
+          const existing = await canvas.get(base, { includes_all_versions: allVersions, include: ['file', 'progress'] }) as any[];
+          return (Array.isArray(existing) ? existing : []).find(matches);
+        };
+
         let report: any;
-        if (!regenerate) {
-          const existing = await canvas.get(base, { includes_all_versions: allVersions, 'include[]': 'file' }) as any[];
-          report = (Array.isArray(existing) ? existing : []).find(matches);
-        }
+        if (!regenerate) report = await findExisting();
 
         if (!report || regenerate || !report.file) {
           try {
@@ -332,24 +380,32 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
               include: ['file', 'progress'],
             });
           } catch (error: any) {
-            // Canvas rejects a duplicate in-flight report; fall back to the existing one.
-            const existing = await canvas.get(base, { includes_all_versions: allVersions, 'include[]': 'file' }) as any[];
-            report = (Array.isArray(existing) ? existing : []).find(matches);
+            // Canvas answers 409 while the same report is already generating;
+            // pick that one up and wait on it instead.
+            report = await findExisting();
             if (!report) throw error;
           }
         }
 
         // Poll until the file materialises (Canvas generates reports out of band).
-        const deadline = Date.now() + 90_000;
-        while (!report?.file?.url && Date.now() < deadline) {
-          await sleep(3000);
-          report = await canvas.get(`${base}/${report.id}`, { 'include[]': 'file' });
+        // A failed job never grows a file, so it is checked on every pass rather
+        // than left to run out the clock and be reported as "still generating".
+        const deadline = Date.now() + waitSeconds * 1000;
+        while (!report?.file?.url) {
+          if (report?.progress?.workflow_state === 'failed') {
+            throw new Error(`Canvas could not generate the ${reportType} report: ${report.progress.message ?? 'no detail provided'}`);
+          }
+          if (Date.now() >= deadline) break;
+          await sleep(2000);
+          report = await canvas.get(`${base}/${report.id}`, { include: ['file', 'progress'] });
         }
         if (!report?.file?.url) {
+          const done = report?.progress?.completion;
           return {
             content: [{
               type: "text",
-              text: `Report ${report?.id} (${reportType}) is still generating after 90s. Call get-quiz-report again shortly to pick up the finished file.`
+              text: `Report ${report?.id} (${reportType}) is still generating${typeof done === 'number' ? ` (${done}% complete)` : ''}. `
+                + `Call get-quiz-report again with the same arguments to pick up the finished file.`
             }]
           };
         }
@@ -360,7 +416,7 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
           return { content: [{ type: "text", text: `Report ${reportType} generated but contains no data rows (the quiz may have no submissions).` }] };
         }
 
-        const header = rows[0];
+        const header = rows[0].map(h => h.trim());
         const body = rows.slice(1);
         const meta = { report_id: report.id, report_type: reportType, includes_all_versions: report.includes_all_versions, generated_at: report.created_at, rows: body.length };
 
@@ -381,28 +437,40 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
           return row;
         });
 
-        if (reportType === 'item_analysis' || format === 'full') {
-          const objects = cleaned.map(r => Object.fromEntries(header.map((h, i) => [h, r[i] ?? ''])));
-          return { content: [{ type: "text", text: JSON.stringify({ ...meta, columns: header, rows: objects }) }] };
-        }
-
-        // student_analysis summary: per-question point stats plus per-student totals.
-        // Question columns are "<id>: <text>" followed by an unnamed points column.
-        const questionCols: { label: string; pointsIndex: number }[] = [];
-        for (let i = 0; i < header.length; i++) {
-          if (/^\d+:/.test(header[i].trim()) && header[i + 1] !== undefined && header[i + 1].trim() === '') {
-            questionCols.push({ label: header[i].trim(), pointsIndex: i + 1 });
+        // In student_analysis each question is two columns: "<id>: <text>" for
+        // the answer, then its points, headed by the question's points possible
+        // ("1.0"). Every points column can carry the same header, so they are
+        // renamed after their question before headers become object keys —
+        // otherwise each question's points overwrote the last one's.
+        const questionCols: { label: string; pointsIndex: number; pointsPossible: number | null }[] = [];
+        const columns = [...header];
+        for (let i = 0; i < header.length - 1; i++) {
+          if (/^\d+:/.test(header[i]) && !/^\d+:/.test(header[i + 1])) {
+            const possible = header[i + 1] === '' ? NaN : Number(header[i + 1]);
+            questionCols.push({ label: header[i], pointsIndex: i + 1, pointsPossible: Number.isFinite(possible) ? possible : null });
+            columns[i + 1] = `${header[i].split(':')[0]}: points`;
           }
         }
 
-        const questionStats = questionCols.map(({ label, pointsIndex }) => {
+        if (reportType === 'item_analysis' || format === 'full') {
+          const objects = cleaned.map(r => Object.fromEntries(columns.map((h, i) => [h, r[i] ?? ''])));
+          return { content: [{ type: "text", text: JSON.stringify({ ...meta, columns, rows: objects }) }] };
+        }
+
+        // A blank cell is a question the student was never shown or skipped,
+        // not a zero — Number('') is 0, which would count it as a wrong answer.
+        const numeric = (cell: string | undefined) => (cell ?? '').trim() === '' ? NaN : Number(cell);
+
+        const questionStats = questionCols.map(({ label, pointsIndex, pointsPossible }) => {
           const points = cleaned
-            .map(r => Number(r[pointsIndex]))
+            .map(r => numeric(r[pointsIndex]))
             .filter(n => Number.isFinite(n));
           const max = points.length ? Math.max(...points) : 0;
-          const fullCredit = points.filter(p => p === max && max > 0).length;
+          const full = pointsPossible ?? max;
+          const fullCredit = points.filter(p => full > 0 && p >= full).length;
           return {
             question: label.length > 160 ? `${label.slice(0, 160)}…` : label,
+            points_possible: pointsPossible,
             responses: points.length,
             mean_points: points.length ? Number((points.reduce((a, b) => a + b, 0) / points.length).toFixed(2)) : null,
             max_points_observed: max,
@@ -411,12 +479,15 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
           };
         });
 
-        const scoreIndex = header.findIndex(h => h.trim().toLowerCase() === 'score');
-        const students = cleaned.map(r => ({
-          student: nameIndex >= 0 ? r[nameIndex] : null,
-          user_id: idIndex >= 0 ? r[idIndex] : null,
-          score: scoreIndex >= 0 ? Number(r[scoreIndex]) : null,
-        }));
+        const scoreIndex = header.findIndex(h => h.toLowerCase() === 'score');
+        const students = cleaned.map(r => {
+          const score = scoreIndex >= 0 ? numeric(r[scoreIndex]) : NaN;
+          return {
+            student: nameIndex >= 0 ? r[nameIndex] : null,
+            user_id: idIndex >= 0 ? r[idIndex] : null,
+            score: Number.isFinite(score) ? score : null,
+          };
+        });
 
         return {
           content: [{
@@ -441,7 +512,7 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
   // Tool: get-quiz-submission-events
   server.tool(
     "get-quiz-submission-events",
-    "Get the event trail for one quiz attempt: how answers changed over time, and when the student left or returned to the quiz page. Use the submission id from list-quiz-submissions.",
+    "Get the event trail for one Classic quiz attempt: how answers changed over time, and when the student left or returned to the quiz page. Requires Canvas's Quiz Log Auditing feature. Use the submission id from list-quiz-submissions.",
     {
       courseId: z.string().describe("The ID of the course"),
       quizId: z.string().describe("The ID of the quiz"),
@@ -458,6 +529,16 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
           params
         );
         const events = envelope.quiz_submission_events ?? [];
+        if (events.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text: `No events recorded for quiz submission ${submissionId}${attempt !== undefined ? ` (attempt ${attempt})` : ''}. `
+                + `Canvas only records them while the "Quiz Log Auditing" feature is enabled for the course, and only from `
+                + `the moment it was turned on — so an empty log is not evidence that the student never left the page.`
+            }]
+          };
+        }
 
         const counts: Record<string, number> = {};
         for (const e of events) counts[e.event_type] = (counts[e.event_type] ?? 0) + 1;
@@ -497,13 +578,13 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
   // Tool: update-quiz-submission-score
   server.tool(
     "update-quiz-submission-score",
-    "Regrade a quiz attempt: override the score on individual questions and/or apply fudge points to the total.",
+    "Regrade a Classic quiz attempt: override the score on individual questions and/or set fudge points on the total. Use the submission id from list-quiz-submissions.",
     {
       courseId: z.string().describe("The ID of the course"),
       quizId: z.string().describe("The ID of the quiz"),
       submissionId: z.string().describe("The ID of the quiz submission (not the user ID)"),
       attempt: z.number().describe("Which attempt to regrade"),
-      fudgePoints: z.number().optional().describe("Points to add to (or subtract from) the total score"),
+      fudgePoints: z.number().optional().describe("Fudge points for the attempt, added to (or, if negative, subtracted from) its total. This SETS the attempt's fudge points, replacing any already there — it does not add to them."),
       questions: z.record(z.object({
         score: z.number().optional(),
         comment: z.string().optional(),

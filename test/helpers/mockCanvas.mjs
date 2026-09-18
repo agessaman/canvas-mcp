@@ -21,15 +21,27 @@ export async function withMockCanvas(run) {
     req.on('data', chunk => (body += chunk));
     req.on('end', () => {
       const parsed = body ? JSON.parse(body) : null;
-      requests.push({ method: req.method, url: req.url, body: parsed });
+      requests.push({ method: req.method, url: req.url, body: parsed, headers: req.headers });
       // A responder can answer with a status other than 200 by returning
       // { __status, __body }. Needed for anything that probes an endpoint and
       // treats a 404 as an answer rather than an error — quiz engine detection
       // asks both engines about an ID and reads the 404 as "not this one".
+      //
+      // { __headers } adds response headers (a Link header, to paginate), and
+      // { __text } answers with that string verbatim instead of JSON — a
+      // generated report is a CSV file, not an API response.
       const answer = respondWith({ url: req.url, body: parsed, method: req.method });
       const status = answer?.__status ?? 200;
-      res.writeHead(status, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(answer?.__status ? (answer.__body ?? {}) : answer));
+      const extraHeaders = answer?.__headers ?? {};
+      if (typeof answer?.__text === 'string') {
+        res.writeHead(status, { 'Content-Type': 'text/csv', ...extraHeaders });
+        res.end(answer.__text);
+        return;
+      }
+      const wrapped = answer?.__status !== undefined || answer?.__headers !== undefined;
+      const payload = wrapped ? (answer.__body ?? {}) : answer;
+      res.writeHead(status, { 'Content-Type': 'application/json', ...extraHeaders });
+      res.end(JSON.stringify(payload));
     });
   });
   await new Promise(resolve => httpServer.listen(0, '127.0.0.1', resolve));

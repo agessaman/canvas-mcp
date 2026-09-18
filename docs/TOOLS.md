@@ -558,7 +558,9 @@ Deletes a quiz question group.
   - `groupId`: string
 - Returns confirmation of deletion
 
-## Quiz Results
+## Quiz Results (Classic)
+
+Reading and regrading what students actually did on a **Classic** quiz. None of these reach New Quizzes, whose IDs live in a separate space — a New Quiz's ID passed here can name an unrelated Classic quiz. For a New Quiz, use `get-new-quiz-report`, or `list-assignment-submissions` with its assignment ID.
 
 ### list-quiz-submissions
 Lists every student's quiz attempt with score, timing, and state. The starting point for quiz analysis.
@@ -566,8 +568,9 @@ Lists every student's quiz attempt with score, timing, and state. The starting p
   - `courseId`: string
   - `quizId`: string
 - Optional parameters:
-  - `anonymous`: boolean (default: true) — replace student identity with a stable pseudonym
-- Returns a class-level score summary plus per-attempt `score`, `kept_score`, `time_spent`, `workflow_state`, and `fudge_points`
+  - `anonymous`: boolean (default: true) — replace student identity with a stable pseudonym; `false` shows real names
+- Returns a class-level score summary plus per-attempt `score`, `kept_score`, `time_spent`, `workflow_state`, `extra_time`, `extra_attempts` and `fudge_points`
+- A student granted an extension before starting appears with `workflow_state: settings_only`. That row holds the extension and no attempt, so it is listed but not counted in the summary.
 - **Privacy**: Student data is anonymized by default
 
 ### get-quiz-statistics
@@ -577,11 +580,11 @@ Aggregate item analysis for a quiz.
   - `quizId`: string
 - Optional parameters:
   - `allVersions`: boolean (default: false) — include every attempt rather than the most recent per student
-- Returns per-question response distribution across answer choices, `difficulty_index`, `alpha`, and point-biserial correlation per distractor, plus class mean/stdev/percentiles
+- Returns per-question response distribution across answer choices, `difficulty_index`, `alpha`, and point-biserial correlation per distractor, plus class mean/high/low/stdev
 - Aggregate only — contains no per-student data
 
 ### get-quiz-submission-answers
-One student's actual answer to every question, joined against question text and the correct answer.
+One student's actual answer to every question, joined against the question text and the correct answer.
 - Required parameters:
   - `courseId`: string
   - `quizId`: string
@@ -590,11 +593,12 @@ One student's actual answer to every question, joined against question text and 
   - `attempt`: number (default: most recent)
   - `anonymous`: boolean (default: true)
 - Returns per-question `given_answer`, `correct_answers`, `points_earned`, and `correct`
+- Questions are joined as that attempt was shown them, not as the quiz reads today. That matters for a question group drawing from a bank, whose drawn questions are not in the quiz's own question list, and for a quiz edited after the student took it.
 - Requires a graded quiz (`quiz_type: assignment` or `graded_survey`); practice quizzes have no backing assignment
 - **Privacy**: Student data is anonymized by default
 
 ### get-quiz-report
-Generates (or reuses) a Canvas quiz report and returns its parsed contents. Polls until generation completes, up to 90 seconds.
+Generates (or reuses) a Canvas quiz report and returns its parsed contents.
 - Required parameters:
   - `courseId`: string
   - `quizId`: string
@@ -602,10 +606,12 @@ Generates (or reuses) a Canvas quiz report and returns its parsed contents. Poll
   - `reportType`: `"student_analysis"` | `"item_analysis"` (default: `student_analysis`)
   - `allVersions`: boolean (default: false)
   - `format`: `"summary"` | `"full"` (default: `summary`) — `full` returns every cell of the answer matrix and can be large
-  - `regenerate`: boolean (default: false) — force a fresh report instead of reusing an existing one
+  - `regenerate`: boolean (default: false) — ask for a new report; Canvas still returns the existing one if no submissions have arrived since
+  - `waitSeconds`: number, 0–50 (default: 30) — how long to wait on a report that is still generating
   - `anonymous`: boolean (default: true)
 - `student_analysis` gives the whole-class student x question answer matrix; `item_analysis` gives per-question difficulty and discrimination
-- If generation exceeds 90 seconds the tool returns a message; call it again to pick up the finished file
+- In `full` format each question's points column is keyed `"<question id>: points"`. Canvas heads every one of them with the question's points possible, so the raw headers repeat.
+- If the report is not ready within `waitSeconds`, the tool says so; calling it again with the same arguments picks up the same report rather than starting another. A report Canvas fails to generate is reported as an error, not as still generating.
 - **Privacy**: Names are pseudonymized and SIS/section columns are blanked by default
 
 ### get-quiz-submission-events
@@ -617,6 +623,7 @@ The event trail for a single quiz attempt.
 - Optional parameters:
   - `attempt`: number (default: most recent)
 - Returns answer-change history and page focus/blur events, with a `page_left_count` summary
+- Canvas records these only while the course has **Quiz Log Auditing** enabled, and only from when it was turned on. An empty log is not evidence that the student stayed on the page.
 
 ### update-quiz-submission-score
 Regrades a quiz attempt.
@@ -626,7 +633,7 @@ Regrades a quiz attempt.
   - `submissionId`: string — the quiz submission ID, not the user ID
   - `attempt`: number
 - Optional parameters (at least one required):
-  - `fudgePoints`: number — points added to or subtracted from the total
+  - `fudgePoints`: number — **sets** the attempt's fudge points (added to its total, or subtracted if negative), replacing any already there
   - `questions`: object keyed by question ID, e.g. `{ "1234": { "score": 2, "comment": "Accepted alternative phrasing" } }`
 - Returns the updated score, kept score, and fudge points
 

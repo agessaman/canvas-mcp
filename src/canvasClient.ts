@@ -203,17 +203,20 @@ export class CanvasClient {
   }
 
   // Several quiz endpoints wrap their payload in a JSON-API-ish envelope
-  // ({ "quiz_submissions": [...] }) rather than returning a bare array, which
-  // fetchAllPages would discard. This merges every top-level array across all
-  // pages, keyed by envelope key, deduping by id.
+  // ({ "quiz_submissions": [...], "users": [...] }) rather than returning a bare
+  // array, which fetchAllPages would discard. This merges every top-level array
+  // across all pages, keyed by envelope key, deduping by id.
+  //
+  // Pages are followed by the Link header's `next` URL for the same reason
+  // fetchAllPages does it, and bounded by MAX_PAGES. Not cached: every caller
+  // reads live quiz-attempt data that UNCACHED_PATTERNS excludes anyway.
   async fetchAllPagesEnvelope(url: string, params: any = {}): Promise<Record<string, any[]>> {
     const merged: Record<string, any[]> = {};
     const seen: Record<string, Set<any>> = {};
     const per_page = params.per_page || 100;
-    let page = 1;
     try {
-      while (true) {
-        const response = await this.axios.get(url, { params: { ...params, page, per_page } });
+      let response = await this.axios.get(url, { params: { ...params, per_page } });
+      for (let hop = 0; hop < MAX_PAGES; hop++) {
         const body = response.data;
         if (!body || typeof body !== 'object') break;
 
@@ -235,8 +238,9 @@ export class CanvasClient {
         if (!addedAny) break;
 
         const linkHeader = response.headers['link'] as string | undefined;
-        if (!linkHeader || !this.parseLinkHeader(linkHeader).next) break;
-        page++;
+        const next = linkHeader ? this.parseLinkHeader(linkHeader).next : undefined;
+        if (!next) break;
+        response = await this.axios.get(next);
       }
     } catch (error: any) {
       this.handleError(error);
@@ -253,10 +257,16 @@ export class CanvasClient {
   }
 
   // Fetch a Canvas-hosted file (e.g. a generated quiz report) as text.
+  // The bearer token only goes along when the URL is this Canvas instance, the
+  // same rule uploadCourseFile follows for a Location header. A leading BOM is
+  // dropped so the first CSV column name compares cleanly.
   async downloadText(fileUrl: string): Promise<string> {
     try {
-      const response = await this.axios.get(fileUrl, { responseType: 'text', maxRedirects: 5 });
-      return typeof response.data === 'string' ? response.data : String(response.data);
+      const absolute = new URL(fileUrl, this.baseUrl).toString();
+      const client = this.isSameHostAsCanvas(absolute) ? this.axios : axios;
+      const response = await client.get(absolute, { responseType: 'text', maxRedirects: 5 });
+      const text = typeof response.data === 'string' ? response.data : String(response.data);
+      return text.replace(/^\uFEFF/, '');
     } catch (error: any) {
       this.handleError(error);
     }
@@ -431,8 +441,13 @@ export class CanvasClient {
   // Classic quiz submissions carry the granted extra_time/extra_attempts, which
   // is the only way to read back who already has an extension. New Quizzes has
   // no equivalent — its accommodations API is write-only.
+  //
+  // The response is an envelope ({ quiz_submissions, users?, ... }), so it goes
+  // through fetchAllPagesEnvelope: a plain get() read only the first page, and
+  // Canvas's default page is 10, so an extension held by the eleventh student
+  // onward was reported as absent.
   async listQuizSubmissions(courseId: string, quizId: string, params: any = {}) {
-    return this.get<any>(`/api/v1/courses/${courseId}/quizzes/${quizId}/submissions`, params);
+    return this.fetchAllPagesEnvelope(`/api/v1/courses/${courseId}/quizzes/${quizId}/submissions`, params);
   }
   async getClassicQuiz(courseId: string, quizId: string) {
     return this.get(`/api/v1/courses/${courseId}/quizzes/${quizId}`);

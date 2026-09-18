@@ -43,7 +43,7 @@
 - **Modules** — full module and module-item CRUD
 - **Pages** — edit content, manage revisions, and use the styleguide system (`generate-styleguide`, `patch-page-content`)
 - **Quizzes** — full quiz, question, and question-group CRUD (Classic Quizzes)
-- **Quiz results** — per-student answers, item analysis, report generation, and regrading
+- **Quiz results** — per-student answers, item analysis, report generation, answer-change logs and regrading (Classic Quizzes)
 - **New Quizzes** — authoring and item analysis on the separate `/api/quiz/v1` API, with a question builder that generates answer IDs and scoring rules for you
 - **Grading queue** — `list-grading-todo` answers "what do I need to grade?" across every course
 - **Grades & intervention** — course-wide gradebook, missing-work report, and engagement analytics for planning outreach
