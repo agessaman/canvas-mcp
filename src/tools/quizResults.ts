@@ -2,24 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 import { DataAnonymizer } from "../anonymizer.js";
-
-/** Canvas question/answer text is HTML; flatten it so results stay readable. */
-function stripHtml(html: any, maxLength = 300): string {
-  if (typeof html !== 'string') return '';
-  const text = html
-    .replace(/<br\s*\/?>/gi, ' ')
-    .replace(/<\/(p|div|li|tr)>/gi, ' ')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
-  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
-}
+import { stripHtml } from "../html.js";
 
 /** Minimal RFC 4180 parser — quiz reports arrive as CSV and we have no csv dep. */
 function parseCsv(text: string): string[][] {

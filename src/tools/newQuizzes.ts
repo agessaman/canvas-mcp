@@ -7,6 +7,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 import { buildItemEntry, InteractionType } from "../newQuizItemBuilder.js";
 import { itemBanksEnabled } from "../types.js";
+import { DataAnonymizer } from "../anonymizer.js";
+import { stripHtml } from "../html.js";
 
 // New Quizzes live at /api/quiz/v1, a different API root from Classic Quizzes
 // (/api/v1/courses/:id/quizzes). A New Quiz is backed by an Assignment, so the
@@ -16,6 +18,101 @@ import { itemBanksEnabled } from "../types.js";
 const INTERACTION_TYPES = ['choice', 'true-false', 'multi-answer', 'essay', 'numeric', 'matching', 'rich-fill-blank', 'ordering', 'categorization', 'hot-spot'] as const;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * A New Quiz item_analysis row per question. The interesting numbers are the
+ * same for every question type, but the response breakdown is not: choice and
+ * true-false carry `choices`, matching carries a `questions` map of prompt to
+ * answer counts, and an essay carries a score distribution instead — a summary
+ * that only read `choices` would report those questions as unanswered.
+ */
+function summariseItemAnalysis(items: any[], full: boolean): any[] {
+  const bodyLength = full ? 2000 : 200;
+  const answerLength = full ? 500 : 120;
+  return items.map((item, index) => {
+    const meta = item?.metadata ?? {};
+    const scores = item?.scores ?? {};
+    const answers = item?.answer_summary ?? {};
+    const aggregate = answers.aggregate ?? {};
+    const row: any = {
+      position: index + 1,
+      item_id: meta.item_id,
+      interaction_type: meta.interaction_type,
+      question: stripHtml(meta.item_body, bodyLength),
+      points_possible: scores.points_possible,
+      mean: scores.mean,
+      median: scores.median,
+      difficulty_index: scores.difficulty_index,
+      discrimination_index: scores.discrimination_index,
+      pearson_correlation: scores.pearson_correlation,
+      correct: aggregate.correct?.count,
+      incorrect: aggregate.incorrect?.count,
+      no_answer: answers.no_answer?.count,
+    };
+    if (Array.isArray(answers.choices)) {
+      row.choices = answers.choices.map((choice: any) => ({
+        text: stripHtml(choice?.body, answerLength),
+        count: choice?.count,
+        percentage: choice?.percentage,
+        correct: !!choice?.correct,
+      }));
+    }
+    if (answers.questions && typeof answers.questions === 'object') {
+      row.pairs = Object.entries(answers.questions).map(([id, sub]: [string, any]) => ({
+        id,
+        prompt: stripHtml(sub?.body, answerLength),
+        answers: Object.values(sub?.answers ?? {}).map((answer: any) => ({
+          text: stripHtml(answer?.body, answerLength),
+          count: answer?.count,
+          correct: !!answer?.correct,
+        })),
+      }));
+    }
+    if (Array.isArray(answers.score_distribution)) {
+      row.score_distribution = answers.score_distribution.map((bucket: any) => ({
+        score: bucket?.score, count: bucket?.count,
+      }));
+    }
+    if (answers.graded) row.graded = answers.graded.count;
+    return row;
+  });
+}
+
+/**
+ * A New Quiz student_analysis row per student. The report carries name, SIS id
+ * and section for every one of them, so the identifying fields go only when
+ * the caller asked for them.
+ */
+function summariseStudentAnalysis(rows: any[], anonymous: boolean, full: boolean): any[] {
+  return rows.map(row => {
+    const student = row?.student_data ?? {};
+    const responses: any[] = Array.isArray(row?.item_responses) ? row.item_responses : [];
+    const scored = responses.filter(r => typeof r?.score === 'number');
+    const out: any = {
+      user_id: student.id,
+      student: anonymous ? DataAnonymizer.pseudonymFor(student.id) : student.name,
+      ...(anonymous ? {} : { sis_id: student.sis_id }),
+      sections: student.section_info?.section_names,
+      submitted_at: student.submitted_at,
+      elapsed_time: student.elapsed_time,
+      attempt: student.attempt,
+      score: round2(scored.reduce((total, r) => total + r.score, 0)),
+      answered: responses.filter(r => r?.answer !== null && r?.answer !== undefined && r?.answer !== '').length,
+      questions: responses.length,
+    };
+    if (full) {
+      out.responses = responses.map(r => ({
+        item_id: r?.item_id,
+        item_type: r?.item_type,
+        score: r?.score,
+        answer: typeof r?.answer === 'string' ? stripHtml(r.answer, 500) : r?.answer,
+      }));
+    }
+    return out;
+  });
+}
 
 /**
  * `stimulus_quiz_entry_id` is READ-ONLY through the public API. Proven live on
@@ -625,57 +722,107 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
   // Tool: get-new-quiz-report
   server.tool(
     "get-new-quiz-report",
-    "Generate and retrieve a New Quiz report. 'item_analysis' shows how the class performed per question (which questions were hardest); 'student_analysis' shows per-student responses. Report generation is async — this polls until ready and returns a download URL.",
+    "Read a New Quiz report. 'item_analysis' gives per-question difficulty, discrimination and how the class spread across the answer choices; 'student_analysis' gives each student's answer and score per question. Generation is asynchronous: this queues the report, polls for up to waitSeconds, then downloads and parses it. If it is not ready in time, call again with the progressId it hands back — that picks up the same job instead of queueing another.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The quiz's assignment ID"),
       reportType: z.enum(['item_analysis', 'student_analysis']).default('item_analysis'),
-      format: z.enum(['json', 'csv']).default('json'),
-      waitSeconds: z.number().default(30).describe("How long to poll for the report before returning the progress ID")
+      format: z.enum(['summary', 'full']).default('summary').describe("'summary' trims question and answer text; 'full' adds every student's per-question responses (can be large)"),
+      waitSeconds: z.number().min(0).max(50).default(30).describe("How long to wait for a report that is still generating before returning (default 30; clients commonly give up on a tool call after 60)"),
+      progressId: z.string().optional().describe("Resume the job from an earlier call that returned before the report was ready, rather than generating a new one"),
+      anonymous: z.boolean().default(true).describe("Whether to replace student identity with a stable pseudonym (default: true for privacy). student_analysis only."),
     },
     { readOnlyHint: true },
-    async ({ courseId, assignmentId, reportType = 'item_analysis', format = 'json', waitSeconds = 30 }: { courseId: string; assignmentId: string; reportType?: string; format?: string; waitSeconds?: number }) => {
+    async ({ courseId, assignmentId, reportType = 'item_analysis', format = 'summary', waitSeconds = 30, progressId, anonymous = true }: {
+      courseId: string; assignmentId: string; reportType?: string; format?: string; waitSeconds?: number; progressId?: string; anonymous?: boolean;
+    }) => {
       try {
-        let progress: any;
-        try {
-          progress = await canvas.createNewQuizReport(courseId, assignmentId, reportType, format);
-        } catch (error: any) {
-          if (String(error.message).includes('409')) {
-            throw new Error('A report for this quiz is already being generated. Wait a moment and try again.');
+        let latest: any;
+        if (progressId) {
+          latest = await canvas.getProgress(String(progressId));
+        } else {
+          let created: any;
+          try {
+            created = await canvas.createNewQuizReport(courseId, assignmentId, reportType, 'json');
+          } catch (error: any) {
+            if (String(error.message).includes('409')) {
+              throw new Error('A report for this quiz is already being generated. Wait a moment and try again.');
+            }
+            throw error;
           }
-          throw error;
+          // Canvas answers with the Progress nested under `progress`. Reading
+          // `created.id` instead finds nothing, and the caller is handed a
+          // queued job it can only re-queue — the loop this guards against.
+          latest = created?.progress ?? created;
         }
 
-        const progressId = progress?.id;
-        if (!progressId) {
-          return { content: [{ type: "text", text: JSON.stringify(progress, null, 2) }] };
+        const id = latest?.id;
+        if (!id) {
+          throw new Error(`Canvas did not return a progress job for the ${reportType} report: ${JSON.stringify(latest)}`);
         }
 
         const deadline = Date.now() + waitSeconds * 1000;
-        let latest = progress;
-        while (Date.now() < deadline) {
-          if (latest.workflow_state === 'completed' || latest.workflow_state === 'failed') break;
+        while (latest?.workflow_state !== 'completed' && latest?.workflow_state !== 'failed') {
+          if (Date.now() >= deadline) break;
           await sleep(2000);
-          latest = await canvas.getProgress(String(progressId)) as any;
+          latest = await canvas.getProgress(String(id)) as any;
         }
 
-        if (latest.workflow_state === 'completed') {
+        if (latest?.workflow_state === 'failed') {
+          throw new Error(`Canvas could not generate the ${reportType} report: ${latest.message ?? 'no detail provided'}`);
+        }
+        if (latest?.workflow_state !== 'completed') {
           return {
             content: [{
               type: "text",
-              text: `${reportType} report ready:\n\n${JSON.stringify(latest.results ?? latest, null, 2)}`
+              text: `Report ${reportType} is still generating (${latest?.completion ?? 0}% complete). `
+                + `Call get-new-quiz-report again with progressId "${id}" to pick up this same job — calling without it queues another one.`
             }]
           };
         }
-        if (latest.workflow_state === 'failed') {
-          throw new Error(`Report generation failed: ${latest.message ?? 'no detail provided'}`);
+
+        const url = latest?.results?.url;
+        if (!url) {
+          throw new Error(`The ${reportType} report finished but Canvas returned no download URL: ${JSON.stringify(latest.results ?? latest)}`);
         }
-        return {
-          content: [{
-            type: "text",
-            text: `Report still generating (${latest.completion ?? 0}% complete). Progress ID ${progressId} — re-run this tool or check back shortly.`
-          }]
-        };
+
+        let text: string;
+        try {
+          text = await canvas.downloadText(url);
+        } catch (error: any) {
+          // Canvas signs these links for a single download, so a spent link
+          // cannot be retried — only a fresh report can.
+          throw new Error(`The finished ${reportType} report could not be downloaded (${error.message ?? 'unknown error'}). `
+            + `Canvas signs the download link for one use only, so run this tool again without progressId to generate a fresh report.`);
+        }
+
+        let payload: any;
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          return { content: [{ type: "text", text: `${reportType} report (unparsed):\n\n${text.slice(0, 20000)}` }] };
+        }
+
+        const rows: any[] = Array.isArray(payload) ? payload : [];
+        if (rows.length === 0) {
+          return { content: [{ type: "text", text: `The ${reportType} report generated but contains no rows (the quiz may have no submissions yet).` }] };
+        }
+
+        const body = reportType === 'student_analysis'
+          ? {
+            report_type: reportType,
+            assignment_id: assignmentId,
+            students: rows.length,
+            student_analysis: summariseStudentAnalysis(rows, anonymous, format === 'full'),
+          }
+          : {
+            report_type: reportType,
+            assignment_id: assignmentId,
+            items: rows.length,
+            item_analysis: summariseItemAnalysis(rows, format === 'full'),
+          };
+
+        return { content: [{ type: "text", text: JSON.stringify(body) }] };
       } catch (error: any) {
         throw new Error(`Failed to get New Quiz report: ${error.message ?? 'Unknown error'}`);
       }

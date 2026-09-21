@@ -873,14 +873,20 @@ Deletes a question from a New Quiz.
   - `courseId`, `assignmentId`, `itemId`: string
 
 ### get-new-quiz-report
-Generates and retrieves a quiz report. Polls the async job until ready.
+Generates a New Quiz report, polls the async job, then downloads and parses it. `item_analysis` gives per-question difficulty, discrimination and the class's spread across the answer choices; `student_analysis` gives each student's answer and score per question.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
 - Optional parameters:
   - `reportType`: `item_analysis` (default) | `student_analysis`
-  - `format`: `json` (default) | `csv`
-  - `waitSeconds`: number (default: 30)
+  - `format`: `summary` (default) | `full` — `full` adds every student's per-question responses
+  - `waitSeconds`: number (default: 30, max 50)
+  - `progressId`: string — resume the job from a call that returned before the report was ready
+  - `anonymous`: boolean (default: true) — `student_analysis` only
+
+Notes:
+- Generation is asynchronous. If the report is not ready within `waitSeconds`, the tool returns the progress ID; call it again with `progressId` to pick up **the same** job. Calling without one queues another report.
+- Canvas signs the report download for a single use, so a report is read on the call that finds it finished. If the download fails, generate a fresh report (call without `progressId`).
 
 ## Conversations (read-only)
 
