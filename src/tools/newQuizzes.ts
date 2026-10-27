@@ -5,6 +5,7 @@ import {
 } from "../newQuizSettings.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
+import type { NewQuizzesLtiClient } from "../newQuizzesLti.js";
 import { buildItemEntry, InteractionType } from "../newQuizItemBuilder.js";
 import { itemBanksEnabled } from "../types.js";
 import { DataAnonymizer } from "../anonymizer.js";
@@ -115,29 +116,67 @@ function summariseStudentAnalysis(rows: any[], anonymous: boolean, full: boolean
 }
 
 /**
- * `stimulus_quiz_entry_id` is READ-ONLY through the public API. Proven live on
- * 2026-08-03 against a genuine UI-authored stimulus (item 9307 in quiz 371872):
- * it was rejected in four different ways and stored "" every time — on create
- * and on update, as JSON and as form-encoded params, using both the stimulus's
- * quiz_entry ID (9307) and its entry ID (196).
+ * Stimuli and attaching questions to them.
  *
- * It is absent from the POST and PATCH parameter lists in the instance's own
- * API spec, which is the documentary half of the same fact: the field appears
- * on the QuizItem *response* model only.
+ * The public API cannot do either: `stimulus_quiz_entry_id` is read-only there
+ * (written four ways on 2026-08-03, stored "" every time, 200 each time) and
+ * entry_type "Stimulus" is refused with a bare 400. The Canvas quiz editor does
+ * both on quiz-api with a quiz.build token, and so do these tools when the
+ * private New Quizzes tools are switched on (NewQuizzesLtiClient):
  *
- * The Canvas UI does the attach against a different service entirely
- * (quiz-api-*.instructure.com/api/quizzes/:internal_id/quiz_entries), on an ID
- * space the public API never exposes. So this is not a payload to get right —
- * refuse it and name the one route that works.
+ *   POST /api/quizzes/:q/stimuli        { stimulus: {...} }       -> the passage
+ *   POST /api/quizzes/:q/quiz_entries   { quiz_entry: { entry_type: "Stimulus", entry_id } }
+ *   PATCH /api/quizzes/:q/quiz_entries/:itemId { quiz_entry: { stimulus_quiz_entry_id } }
+ *
+ * quiz_entry IDs on quiz-api are the item IDs /api/quiz/v1 reports, so a
+ * stimulus created here is the stimulusQuizEntryId the public API reads back.
+ * Verified end to end on assignment 371872, 2026-10-27.
  */
-function stimulusAttachRefusal(itemId?: string): string {
-  return 'stimulusQuizEntryId cannot be set through the Canvas API — the field is read-only there, and a '
-    + 'write is accepted with a 200 and silently stored as empty, so a question would look attached and '
-    + 'stand alone.\n\nAttach it in the Canvas UI instead: open the quiz, find the stimulus, and add or drag '
-    + 'the question into its block. '
-    + (itemId ? `The question (item ${itemId}) already exists, so it only needs moving. ` : '')
-    + 'get-new-quiz-item and list-new-quiz-items DO read the association back, so you can confirm it '
-    + 'afterwards — an attached question reports stimulus_quiz_entry_id set to the stimulus\'s item ID.';
+function privateApiRequired(what: string): string {
+  return `${what} needs the private New Quizzes API, which is switched off. Canvas's public API cannot do it (it `
+    + `accepts stimulus_quiz_entry_id and silently stores nothing). Turn on CANVAS_ENABLE_ITEM_BANKS (the "Enable `
+    + `New Quizzes item bank tools" setting in the desktop extension), or do it in the Canvas UI: Insert Content > `
+    + `Stimulus, then add the questions inside its block.`;
+}
+
+/** Fetch an item fresh and check it is a stimulus in this quiz. */
+async function requireStimulus(canvas: CanvasClient, courseId: string, assignmentId: string, stimulusId: string) {
+  let stimulus: any;
+  try {
+    stimulus = await canvas.getNewQuizItem(courseId, assignmentId, stimulusId);
+  } catch (error: any) {
+    throw new Error(`Stimulus ${stimulusId} was not found in quiz ${assignmentId}: ${error?.message ?? 'unknown error'}`);
+  }
+  if (stimulus?.entry_type !== 'Stimulus') {
+    throw new Error(
+      `Item ${stimulusId} in quiz ${assignmentId} is not a stimulus (its entry_type is `
+      + `${stimulus?.entry_type ?? 'missing'}), so questions can't be attached to it. list-new-quiz-items shows `
+      + `each item's entry_type.`
+    );
+  }
+  return stimulus;
+}
+
+/**
+ * Attach a question to a stimulus (or detach it with null) and read the result
+ * back through the public API, which is what students' quiz is built from.
+ * Returns a sentence for the tool's reply.
+ */
+async function setStimulus(
+  canvas: CanvasClient, quizApi: NewQuizzesLtiClient,
+  courseId: string, assignmentId: string, itemId: string, stimulusId: string | null,
+): Promise<string> {
+  await quizApi.quiz(courseId, assignmentId, 'patch', `/quiz_entries/${itemId}`, {
+    quiz_entry: { stimulus_quiz_entry_id: stimulusId },
+  });
+  canvas.invalidateNewQuiz(courseId, assignmentId);
+  const stored = String((await canvas.getNewQuizItem(courseId, assignmentId, itemId) as any)?.stimulus_quiz_entry_id ?? '');
+  const wanted = stimulusId ?? '';
+  if (stored !== wanted) {
+    return `WARNING — quiz-api accepted the change, but the public API reads item ${itemId}'s stimulus as `
+      + `"${stored}" rather than "${wanted}". Check the quiz in Canvas.`;
+  }
+  return stimulusId ? `Attached to stimulus ${stimulusId}.` : 'Detached from its stimulus.';
 }
 
 /**
@@ -208,8 +247,6 @@ function summariseItem(i: any): Record<string, any> {
     // Which bank this question is linked from, when it is linked from one.
     ...(i.entry?.bank_id ? { bank_id: i.entry.bank_id } : {}),
     // Present when this question hangs off a stimulus (reading passage).
-    // Read-only: Canvas will not accept this field on a write, so a
-    // question is attached to a stimulus in the Canvas UI only.
     ...(i.stimulus_quiz_entry_id ? { stimulus_quiz_entry_id: i.stimulus_quiz_entry_id } : {}),
   };
 }
@@ -249,7 +286,7 @@ function bankPoolNote(draws: any[]): string {
       + `Banks in the Canvas course navigation. ` + classic;
 }
 
-export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
+export function registerNewQuizTools(server: McpServer, canvas: CanvasClient, quizApi?: NewQuizzesLtiClient) {
   // Tool: list-new-quizzes
   server.tool(
     "list-new-quizzes",
@@ -534,12 +571,12 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
   // Tool: create-new-quiz-item
   server.tool(
     "create-new-quiz-item",
-    "Add a question to a New Quiz. Give the question text, the choices, and which choice is correct — answer IDs and scoring rules are generated for you. Supports choice, multi-answer, true-false, essay, numeric, matching, rich-fill-blank (fill in the blank), ordering, categorization, and hot-spot; use rawEntry for formula and file-upload. HOT SPOT: pass imageUrl plus exactly one of hotspotRect (rectangle), hotspotOval (ellipse) or hotspotPolygon — the same three shapes the Canvas editor offers. Coordinates are FRACTIONS of the image (0-1); pass imagePixelWidth and imagePixelHeight to give them in pixels instead, which is usually easier and is how to get placement right. The image can be a Canvas Files URL (upload it with upload-course-file first) - it must be published and student-visible, or it will render for you and 403 for them. FILL IN THE BLANK: mark each blank by putting backticks around the correct answer in the body, e.g. \"The capital of France is `Paris`.\" — one blank per backticked run. STIMULUS (shared reading passage with several questions hanging off it): Canvas allows NEITHER creating a stimulus nor attaching a question to one through its API — both must be done in the Canvas UI (Insert Content > Stimulus, then add the questions inside its block). Verified against a live instance. The association can be READ back here: list-new-quiz-items and get-new-quiz-item report stimulus_quiz_entry_id.",
+    "Add a question to a New Quiz. Give the question text, the choices, and which choice is correct — answer IDs and scoring rules are generated for you. Supports choice, multi-answer, true-false, essay, numeric, matching, rich-fill-blank (fill in the blank), ordering, categorization, and hot-spot; use rawEntry for formula and file-upload. HOT SPOT: pass imageUrl plus exactly one of hotspotRect (rectangle), hotspotOval (ellipse) or hotspotPolygon — the same three shapes the Canvas editor offers. Coordinates are FRACTIONS of the image (0-1); pass imagePixelWidth and imagePixelHeight to give them in pixels instead, which is usually easier and is how to get placement right. The image can be a Canvas Files URL (upload it with upload-course-file first) - it must be published and student-visible, or it will render for you and 403 for them. FILL IN THE BLANK: mark each blank by putting backticks around the correct answer in the body, e.g. \"The capital of France is `Paris`.\" — one blank per backticked run. STIMULUS (shared reading passage with several questions hanging off it): create the passage with create-new-quiz-stimulus, then add each question with stimulusQuizEntryId set to the stimulus's item ID; create them in order after the stimulus so they sit under it. This uses the private New Quizzes API and needs CANVAS_ENABLE_ITEM_BANKS on. list-new-quiz-items and get-new-quiz-item report the association as stimulus_quiz_entry_id.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The quiz's assignment ID"),
-      entryType: z.enum(['Item', 'Stimulus', 'Bank', 'BankEntry']).optional().describe("Item kind. Only 'Item' (the default) can be created through the API; the others exist so the value can be recognised when reading, and are refused here."),
-      stimulusQuizEntryId: z.string().optional().describe("NOT WRITABLE — Canvas accepts this and silently stores nothing, so it is refused here with the UI steps. Attaching a question to a stimulus can only be done in the Canvas UI."),
+      entryType: z.enum(['Item', 'Stimulus', 'Bank', 'BankEntry']).optional().describe("Item kind. Only 'Item' (the default) can be created here; for a stimulus use create-new-quiz-stimulus. The others exist so the value can be recognised when reading, and are refused."),
+      stimulusQuizEntryId: z.string().optional().describe("Attach the new question to this stimulus (its item ID from create-new-quiz-stimulus or list-new-quiz-items). Needs the private New Quizzes API (CANVAS_ENABLE_ITEM_BANKS)."),
       interactionType: z.enum(INTERACTION_TYPES).optional().describe("Question type. Omit only when supplying rawEntry."),
       body: z.string().optional().describe("The question text (HTML allowed)"),
       title: z.string().optional().describe("Optional short label for the question"),
@@ -635,15 +672,16 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
             `entry_type "${entryType}" cannot be created through the API — Canvas accepts only "Item" on this `
             + `endpoint and rejects the rest with an unexplained 400.`
             + (entryType === 'Stimulus'
-              ? ` A stimulus must be built in the Canvas UI (Insert Content > Stimulus), and its questions added `
-                + `inside its block there too — the attach is not writable through the API either. `
-                + `list-new-quiz-items then reads the association back.`
+              ? ` Use create-new-quiz-stimulus for a stimulus.`
               : ` Question banks are managed in the Canvas UI.`)
           );
         }
 
+        // Checked before the question exists, so a bad stimulus ID can't leave
+        // an unattached question behind.
         if (args.stimulusQuizEntryId !== undefined) {
-          throw new Error(stimulusAttachRefusal());
+          if (!quizApi) throw new Error(privateApiRequired('Attaching a question to a stimulus'));
+          await requireStimulus(canvas, args.courseId, args.assignmentId, args.stimulusQuizEntryId);
         }
 
         const item: any = {
@@ -654,7 +692,15 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
         if (args.position !== undefined) item.position = args.position;
 
         const created = await canvas.createNewQuizItem(args.courseId, args.assignmentId, item) as any;
-        const text = `Added ${entry.interaction_type_slug ?? 'item'} question (item ID ${created.id}, ${created.points_possible} pts) to quiz ${args.assignmentId}.`;
+        let text = `Added ${entry.interaction_type_slug ?? 'item'} question (item ID ${created.id}, ${created.points_possible} pts) to quiz ${args.assignmentId}.`;
+        if (args.stimulusQuizEntryId !== undefined) {
+          try {
+            text += ' ' + await setStimulus(canvas, quizApi!, args.courseId, args.assignmentId, String(created.id), args.stimulusQuizEntryId);
+          } catch (error: any) {
+            text += `\n\nWARNING — the question was created but NOT attached to stimulus ${args.stimulusQuizEntryId}: `
+              + `${error?.message ?? 'unknown error'}. Retry with update-new-quiz-item (itemId ${created.id}).`;
+          }
+        }
         return { content: [{ type: "text", text }] };
       } catch (error: any) {
         throw new Error(`Failed to create New Quiz item: ${error.message ?? 'Unknown error'}`);
@@ -672,14 +718,18 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
       itemId: z.string().describe("The item (question) ID"),
       pointsPossible: z.number().optional().describe("New point value"),
       position: z.number().optional().describe("New position in the quiz"),
-      stimulusQuizEntryId: z.string().optional().describe("NOT WRITABLE — refused here. Attaching a question to a stimulus can only be done in the Canvas UI."),
+      stimulusQuizEntryId: z.string().nullable().optional().describe("Attach the question to this stimulus (its item ID), or null to detach it. Needs the private New Quizzes API (CANVAS_ENABLE_ITEM_BANKS)."),
       rawEntry: jsonObjectParam("Complete replacement `entry` object").optional()
     },
     { idempotentHint: true },
     async (args: any) => {
       try {
-        if (args.stimulusQuizEntryId !== undefined) {
-          throw new Error(stimulusAttachRefusal(args.itemId));
+        const attach = args.stimulusQuizEntryId !== undefined;
+        if (attach) {
+          if (!quizApi) throw new Error(privateApiRequired('Attaching a question to a stimulus'));
+          if (args.stimulusQuizEntryId) {
+            await requireStimulus(canvas, args.courseId, args.assignmentId, args.stimulusQuizEntryId);
+          }
         }
 
         const item: any = {};
@@ -687,12 +737,21 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
         if (args.position !== undefined) item.position = args.position;
         if (args.rawEntry !== undefined) item.entry = args.rawEntry;
 
-        if (Object.keys(item).length === 0) {
+        if (Object.keys(item).length === 0 && !attach) {
           return { content: [{ type: "text", text: "No fields provided; nothing was changed." }] };
         }
 
-        const updated = await canvas.updateNewQuizItem(args.courseId, args.assignmentId, args.itemId, item) as any;
-        return { content: [{ type: "text", text: `Updated item ${updated.id} in quiz ${args.assignmentId}.` }] };
+        const lines: string[] = [];
+        if (Object.keys(item).length > 0) {
+          const updated = await canvas.updateNewQuizItem(args.courseId, args.assignmentId, args.itemId, item) as any;
+          lines.push(`Updated item ${updated.id} in quiz ${args.assignmentId}.`);
+        }
+        if (attach) {
+          lines.push(`Item ${args.itemId}: ` + await setStimulus(
+            canvas, quizApi!, args.courseId, args.assignmentId, args.itemId, args.stimulusQuizEntryId || null,
+          ));
+        }
+        return { content: [{ type: "text", text: lines.join(' ') }] };
       } catch (error: any) {
         throw new Error(`Failed to update New Quiz item: ${error.message ?? 'Unknown error'}`);
       }
@@ -825,6 +884,120 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient) {
         return { content: [{ type: "text", text: JSON.stringify(body) }] };
       } catch (error: any) {
         throw new Error(`Failed to get New Quiz report: ${error.message ?? 'Unknown error'}`);
+      }
+    }
+  );
+
+  // The stimulus tools only exist with the private API switched on: without it
+  // there is no way to do what they say, and a tool that always fails is worse
+  // than one that isn't listed.
+  if (!quizApi) return;
+
+  // Tool: create-new-quiz-stimulus
+  server.tool(
+    "create-new-quiz-stimulus",
+    "Add a stimulus to a New Quiz: a reading passage, image, source or data set that several questions share. Then add its questions with create-new-quiz-item, passing stimulusQuizEntryId set to the item ID this returns (or attach existing questions with update-new-quiz-item). Remove it with delete-new-quiz-item. Uses the private New Quizzes API, as the Canvas quiz editor does.",
+    {
+      courseId: z.string().describe("The ID of the course"),
+      assignmentId: z.string().describe("The quiz's assignment ID"),
+      title: z.string().min(1).describe("The stimulus's title, e.g. \"Source A: Federalist No. 10\""),
+      body: z.string().min(1).describe("The stimulus content as HTML: the passage, an <img>, a table"),
+      instructions: z.string().optional().describe("Instructions shown with the stimulus, e.g. \"Read the passage, then answer questions 1-4\""),
+      orientation: z.enum(['left', 'top']).default('left').describe("Where the stimulus sits relative to its questions: 'left' (side by side) or 'top' (above)"),
+      passage: z.boolean().default(false).describe("Treat the stimulus as a text passage"),
+      sourceUrl: z.string().optional().describe("Where the material came from; shown to teachers, not students"),
+      position: z.number().int().min(1).optional().describe("Position in the quiz; omit to add it at the end"),
+    },
+    { destructiveHint: false },
+    async (args: any) => {
+      try {
+        const stimulus: any = await quizApi.quiz(args.courseId, args.assignmentId, 'post', '/stimuli', {
+          stimulus: {
+            title: args.title,
+            body: args.body,
+            instructions: args.instructions ?? '',
+            orientation: args.orientation,
+            passage: args.passage,
+            source_url: args.sourceUrl ?? '',
+            stimulus_type: 'text',
+            parent_stimulus_id: null,
+          },
+        });
+        if (!stimulus?.id) throw new Error('quiz-api created no stimulus (no id in its response).');
+
+        const quizEntry: any = { entry_type: 'Stimulus', entry_id: stimulus.id, points_possible: 0, properties: {} };
+        if (args.position !== undefined) quizEntry.position = args.position;
+        const placed: any = await quizApi.quiz(args.courseId, args.assignmentId, 'post', '/quiz_entries', {
+          quiz_entry: quizEntry,
+        });
+        canvas.invalidateNewQuiz(args.courseId, args.assignmentId);
+
+        let check = '';
+        try {
+          const readBack: any = await canvas.getNewQuizItem(args.courseId, args.assignmentId, String(placed.id));
+          if (readBack?.entry_type !== 'Stimulus') {
+            check = `\n\nWARNING — the public API reads item ${placed.id} as ${readBack?.entry_type ?? 'nothing'}, not a stimulus.`;
+          }
+        } catch (error: any) {
+          check = `\n\nWARNING — the stimulus was created but could not be read back: ${error?.message ?? 'unknown error'}`;
+        }
+
+        return {
+          content: [{
+            type: "text",
+            text: `Added stimulus "${args.title}" to quiz ${args.assignmentId} as item ${placed.id}`
+              + `${placed.position !== undefined ? ` (position ${placed.position})` : ''}. Attach questions to it with `
+              + `stimulusQuizEntryId "${placed.id}".${check}`
+          }]
+        };
+      } catch (error: any) {
+        throw new Error(`Failed to create stimulus: ${error.message ?? 'Unknown error'}`);
+      }
+    }
+  );
+
+  // Tool: update-new-quiz-stimulus
+  server.tool(
+    "update-new-quiz-stimulus",
+    "Change a New Quiz stimulus's title, content, instructions, layout or source. Fields you leave out keep their current values. Uses the private New Quizzes API, as the Canvas quiz editor does.",
+    {
+      courseId: z.string().describe("The ID of the course"),
+      assignmentId: z.string().describe("The quiz's assignment ID"),
+      stimulusItemId: z.string().describe("The stimulus's item ID (from list-new-quiz-items or create-new-quiz-stimulus)"),
+      title: z.string().min(1).optional(),
+      body: z.string().min(1).optional().describe("New content as HTML"),
+      instructions: z.string().optional(),
+      orientation: z.enum(['left', 'top']).optional(),
+      sourceUrl: z.string().optional(),
+    },
+    { idempotentHint: true },
+    async (args: any) => {
+      try {
+        const current = await requireStimulus(canvas, args.courseId, args.assignmentId, args.stimulusItemId);
+        const entry = current.entry ?? {};
+        if (!entry.id) throw new Error(`Item ${args.stimulusItemId} has no stimulus record to edit.`);
+
+        // The editor always sends all five, so do the same and fill the gaps
+        // from what is stored rather than risk a blank being written.
+        const stimulus = {
+          title: args.title ?? entry.title,
+          body: args.body ?? entry.body,
+          instructions: args.instructions ?? entry.instructions ?? '',
+          orientation: args.orientation ?? entry.orientation,
+          source_url: args.sourceUrl ?? entry.source_url ?? '',
+        };
+        await quizApi.quiz(args.courseId, args.assignmentId, 'patch', `/stimuli/${entry.id}`, { stimulus });
+        canvas.invalidateNewQuiz(args.courseId, args.assignmentId);
+
+        const stored: any = (await canvas.getNewQuizItem(args.courseId, args.assignmentId, args.stimulusItemId) as any)?.entry ?? {};
+        const differs = (['title', 'body', 'instructions', 'orientation', 'source_url'] as const)
+          .filter(k => (stored[k] ?? '') !== (stimulus[k] ?? ''));
+        const check = differs.length > 0
+          ? `\n\nWARNING — the public API reads back different values for: ${differs.join(', ')}. Check the quiz in Canvas.`
+          : '';
+        return { content: [{ type: "text", text: `Updated stimulus ${args.stimulusItemId} in quiz ${args.assignmentId}.${check}` }] };
+      } catch (error: any) {
+        throw new Error(`Failed to update stimulus: ${error.message ?? 'Unknown error'}`);
       }
     }
   );

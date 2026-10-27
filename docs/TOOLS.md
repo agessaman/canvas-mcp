@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **134 tools** exposed by the Canvas MCP server, plus the **6 opt-in tools** for [New Quizzes item banks](#new-quizzes-item-banks-opt-in). For setup and usage, see the [README](../README.md).
+Full parameter reference for all **134 tools** exposed by the Canvas MCP server, plus the **8 opt-in tools** for [New Quizzes item banks](#new-quizzes-item-banks-opt-in). For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -947,7 +947,7 @@ Adds a question. Answer IDs and scoring rules are generated for you.
 - Optional parameters:
   - `title`: string, `pointsPossible`: number (default: 1), `position`: number
   - `entryType`: `Item` (default) | `Stimulus` | `Bank` | `BankEntry`
-  - `stimulusQuizEntryId`: string — attach this question to an existing stimulus
+  - `stimulusQuizEntryId`: string — attach this question to a stimulus (its item ID). Needs the private API switched on; see the stimulus note below
   - `choices`: string[] — for `choice` and `multi-answer`
   - `correctChoiceIndex`: number — 0-based, for `choice`
   - `correctChoiceIndexes`: number[] — 0-based, for `multi-answer`
@@ -965,16 +965,9 @@ Adds a question. Answer IDs and scoring rules are generated for you.
   - `feedback`: `{ neutral?, correct?, incorrect? }`
   - `rawEntry`: object — full `entry` payload for formula and file-upload
 
-> **Note on stimulus items — stimulus support is READ-ONLY.** Tested exhaustively against a live instance (2026-08-03) with a genuine UI-authored stimulus present. Neither half can be written:
+> **Note on stimulus items.** Canvas's public API can't create a stimulus or attach a question to one: entry type `Stimulus` gets a bare `400`, and `stimulus_quiz_entry_id` is accepted with a `200` and stored as `""` (tested four ways, 2026-08-03). The Canvas quiz editor does both on Instructure's private quiz service, and so does this server when `CANVAS_ENABLE_ITEM_BANKS` is on — see [create-new-quiz-stimulus](#create-new-quiz-stimulus). With it off, `stimulusQuizEntryId` is refused up front rather than forwarded, because forwarding it would report a question as attached while it stands alone on the page.
 >
-> - **Creating a stimulus is refused.** Sending an entry as `entry_type: "Item"` gives a descriptive `422` naming the question fields it wants; sending the *same* entry as `"Stimulus"` (or `"BankEntry"`) gives a bare `400` with a plain-text `Bad Request` body. The Stimulus request never reaches field validation, so no payload can succeed. The Canvas UI does it in two steps against a **different service** (`quiz-api-*.instructure.com/api/quizzes/:internal_id/stimuli`, then `/quiz_entries`), on an internal quiz ID the public API never exposes — which is why the public endpoint has no way to express it.
-> - **Attaching a question is refused.** `stimulus_quiz_entry_id` was rejected four ways — on create and on update, as JSON and as form-encoded params — using both of a stimulus's two IDs (its item/quiz_entry ID *and* its inner entry ID). Every attempt returned `200` and stored `""`. The field appears on the `QuizItem` response model but in neither the POST nor the PATCH parameter list.
->
-> Both are therefore **refused up front** rather than attempted: `create-new-quiz-item` and `update-new-quiz-item` reject `stimulusQuizEntryId`, and `create-new-quiz-item` rejects any `entryType` other than `Item`. Forwarding them would return a cheerful success for a question that stands alone on the page.
->
-> **Reading works and is the useful half.** `list-new-quiz-items` and `get-new-quiz-item` report `stimulus_quiz_entry_id`, so an attach made in the UI can be confirmed here. An attached question carries the stimulus's **item ID** (e.g. `"9307"`), not its inner entry ID.
->
-> The working path: in the Canvas UI choose **Insert Content > Stimulus**, build the passage, then add the questions inside its block. Then confirm with `list-new-quiz-items`.
+> Reading always works: `list-new-quiz-items` and `get-new-quiz-item` report `stimulus_quiz_entry_id`, the stimulus's **item ID** (e.g. `"9307"`).
 >
 > *(Do not "fix" this by switching the client to form encoding. It was tried: Rails parses `interaction_data[choices][0][id]` into a string-keyed **hash** rather than an array, and turns numbers into strings, so a form-encoded item is stored malformed — and a malformed item can break the entire quiz editor page, not just itself.)*
 
@@ -1005,6 +998,36 @@ Deletes a question from a New Quiz.
 - Required parameters:
   - `courseId`, `assignmentId`, `itemId`: string
 
+
+### create-new-quiz-stimulus
+*Opt-in: registered only with `CANVAS_ENABLE_ITEM_BANKS=true`, because it uses the private New Quizzes API.*
+
+Adds a stimulus — a passage, image, source or data set that several questions share. Then add its questions with `create-new-quiz-item` and `stimulusQuizEntryId` set to the item ID this returns, or attach existing ones with `update-new-quiz-item`.
+- Required parameters:
+  - `courseId`, `assignmentId`: string
+  - `title`: string
+  - `body`: string — HTML
+- Optional parameters:
+  - `instructions`: string
+  - `orientation`: `left` (default, side by side) | `top`
+  - `passage`: boolean (default: false)
+  - `sourceUrl`: string — shown to teachers, not students
+  - `position`: number — omit to add at the end
+- Works the way the quiz editor does: it replays the quiz's own LTI launch to get a token scoped to that quiz (`quiz.build`), creates the stimulus on quiz-api, places it in the quiz, then reads it back through the public API
+- Remove a stimulus with `delete-new-quiz-item`, like any other item. Delete its questions first if they should go too
+
+### update-new-quiz-stimulus
+*Opt-in, as above.*
+
+Changes a stimulus's title, content, instructions, layout or source. Fields left out keep their current values.
+- Required parameters:
+  - `courseId`, `assignmentId`: string
+  - `stimulusItemId`: string — the stimulus's item ID
+- Optional parameters:
+  - `title`, `body`, `instructions`, `sourceUrl`: string
+  - `orientation`: `left` | `top`
+
+`update-new-quiz-item` also takes `stimulusQuizEntryId` (opt-in): a stimulus's item ID to attach the question to, or `null` to detach it.
 ### get-new-quiz-report
 Generates a New Quiz report, polls the async job, then downloads and parses it. `item_analysis` gives per-question difficulty, discrimination and the class's spread across the answer choices; `student_analysis` gives each student's answer and score per question.
 - Required parameters:

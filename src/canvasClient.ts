@@ -1020,6 +1020,10 @@ export class CanvasClient {
   async deleteNewQuizItem(courseId: string, assignmentId: string, itemId: string) {
     return this.delete(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/items/${itemId}`);
   }
+  // For edits made through quiz-api (stimuli), which this client never sees.
+  invalidateNewQuiz(courseId: string, assignmentId: string): void {
+    this.cache.invalidatePrefix(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}`);
+  }
   async createNewQuizReport(courseId: string, assignmentId: string, reportType: string, format: string) {
     return this.post(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/reports`, {
       quiz_report: { report_type: reportType, format }

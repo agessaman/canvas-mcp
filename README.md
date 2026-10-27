@@ -61,7 +61,7 @@
 - **Prompts** — `grade-assignment` for a guided grading session; `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**134 tools** and **2 prompts** in total, plus **6 opt-in tools** for New Quizzes item banks (see [below](#new-quizzes-item-banks-opt-in)). See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**134 tools** and **2 prompts** in total, plus **8 opt-in tools** for New Quizzes item banks and stimuli (see [below](#new-quizzes-item-banks-opt-in)). See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -123,7 +123,7 @@ Set these environment variables (via `.env` file, MCP client config, or shell):
 |----------|----------|-------------|
 | `CANVAS_API_TOKEN` | Yes | Personal access token from Canvas |
 | `CANVAS_BASE_URL` | No | Your Canvas instance URL (default: `https://fhict.instructure.com`) |
-| `CANVAS_ENABLE_ITEM_BANKS` | No | Set to `true` to add the six New Quizzes item bank tools, which use a **private** Instructure API. Off by default — see [New Quizzes item banks](#new-quizzes-item-banks-opt-in) |
+| `CANVAS_ENABLE_ITEM_BANKS` | No | Set to `true` to add the six New Quizzes item bank tools and the two stimulus tools, which use a **private** Instructure API. Off by default — see [New Quizzes item banks](#new-quizzes-item-banks-opt-in) |
 
 See [.env.example](.env.example) for a template.
 
@@ -347,6 +347,8 @@ A course whose quizzes were imported from QTI usually has **both** kinds of bank
 ### New Quizzes item banks (opt-in)
 
 Six further tools — `list-item-banks`, `get-item-bank`, `list-item-bank-questions`, `create-item-bank-question`, `update-item-bank-question` and `delete-item-bank-question` — read and edit New Quizzes item banks. **They are off unless you switch them on**, with `CANVAS_ENABLE_ITEM_BANKS=true` or the "Enable New Quizzes item bank tools" checkbox in the desktop extension's settings. With the flag off they are not registered at all, so a stock install never contacts the hosts they use.
+
+The same switch adds `create-new-quiz-stimulus` and `update-new-quiz-stimulus`, and lets `create-new-quiz-item` and `update-new-quiz-item` attach questions to a stimulus (shared reading passages). Canvas's public API can't do either; these use the same private service the Canvas quiz editor does, through a launch scoped to the one quiz being edited.
 
 They are gated because **they do not use the Canvas API**. There is no Canvas endpoint for a New Quizzes item bank, public or otherwise: the banks live in a separate Instructure service that Canvas only enters through an LTI launch, and the Item Banks page in course navigation is an empty container Canvas hands that service's own URL to. These tools work by replaying that launch headlessly — Canvas signs it, the server never forges anything — and then calling the bank service directly. What that buys and what it costs:
 

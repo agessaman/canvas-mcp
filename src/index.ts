@@ -120,6 +120,12 @@ server.tool(
   }
 );
 
+// The private New Quizzes API client, when the operator opts in. Created up
+// front because the New Quiz tools use it for stimuli as well as item banks.
+if (config.enableItemBanks) {
+  itemBanks = new NewQuizzesLtiClient(canvas, config.baseUrl, config.apiToken);
+}
+
 // Register course-related tools
 registerCourseTools(server, canvas);
 registerStudentTools(server, canvas);
@@ -136,7 +142,7 @@ registerQuizResultTools(server, canvas);
 registerQuestionBankTools(server, canvas);
 registerEportfolioTools(server, canvas);
 registerTodoTools(server, canvas);
-registerNewQuizTools(server, canvas);
+registerNewQuizTools(server, canvas, itemBanks);
 registerGradeTools(server, canvas);
 registerConversationTools(server, canvas);
 registerFileTools(server, canvas);
@@ -155,10 +161,7 @@ registerAssignmentExtensionTools(server, canvas);
 // Instructure API rather than Canvas's. Off by default means a stock install
 // never touches those hosts, and the tool list stays honest about what it can
 // actually do: a tool that is present but always errors is worse than absent.
-if (config.enableItemBanks) {
-  itemBanks = new NewQuizzesLtiClient(canvas, config.baseUrl, config.apiToken);
-  registerNewQuizItemBankTools(server, itemBanks);
-}
+if (itemBanks) registerNewQuizItemBankTools(server, itemBanks);
 
 // Start the server
 async function startServer() {

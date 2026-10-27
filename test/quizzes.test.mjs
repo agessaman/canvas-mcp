@@ -103,17 +103,16 @@ test('a non-Item entryType is refused before Canvas sees it', async () => {
 
     assert.ok(result.isError);
     assert.match(canvas.textOf(result), /accepts only "Item"/);
-    assert.match(canvas.textOf(result), /Insert Content > Stimulus/);
+    assert.match(canvas.textOf(result), /create-new-quiz-stimulus/);
     // A request that cannot succeed should never be sent.
     assert.equal(canvas.requests.filter(r => r.method === 'POST').length, 0);
   });
 });
 
-// stimulus_quiz_entry_id is read-only in Canvas: a write is accepted with a 200
-// and stored as "". Proven live 2026-08-03 four ways — create and update, JSON
-// and form-encoded, with both of a stimulus's two IDs. A tool that forwarded it
-// would report a question as attached while it stands alone on the page.
-test('attaching a question to a stimulus is refused on create, not attempted', async () => {
+// stimulus_quiz_entry_id is read-only in the public API: a write is accepted
+// with a 200 and stored as "" (proven live 2026-08-03). Attaching goes through
+// the private API, so with that switched off it is refused, not forwarded.
+test('attaching a question to a stimulus is refused on create when the private API is off', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: '9320', entry_type: 'Item', stimulus_quiz_entry_id: '' }));
     const result = await canvas.callTool('create-new-quiz-item', {
@@ -123,13 +122,13 @@ test('attaching a question to a stimulus is refused on create, not attempted', a
     });
 
     assert.ok(result.isError);
-    assert.match(canvas.textOf(result), /read-only/);
+    assert.match(canvas.textOf(result), /CANVAS_ENABLE_ITEM_BANKS/);
     assert.match(canvas.textOf(result), /Canvas UI/);
     assert.equal(canvas.requests.filter(r => r.method === 'POST').length, 0);
   });
 });
 
-test('the same attach is refused on update, naming the item to move', async () => {
+test('the same attach is refused on update when the private API is off', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: '9310', stimulus_quiz_entry_id: '' }));
     const result = await canvas.callTool('update-new-quiz-item', {
@@ -138,7 +137,7 @@ test('the same attach is refused on update, naming the item to move', async () =
     });
 
     assert.ok(result.isError);
-    assert.match(canvas.textOf(result), /item 9310/);
+    assert.match(canvas.textOf(result), /CANVAS_ENABLE_ITEM_BANKS/);
     assert.equal(canvas.requests.filter(r => r.method === 'PATCH').length, 0);
   });
 });

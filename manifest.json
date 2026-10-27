@@ -49,8 +49,8 @@
     },
     "enable_item_banks": {
       "type": "boolean",
-      "title": "Enable New Quizzes item bank tools (uses a private Canvas API)",
-      "description": "Off by default. These six tools read and edit New Quizzes item banks through an undocumented Instructure service rather than the Canvas API, so they can break without notice. Turn on only if you need to work with item bank pools.",
+      "title": "Enable New Quizzes item bank and stimulus tools (uses a private Canvas API)",
+      "description": "Off by default. Adds tools that read and edit New Quizzes item banks and create stimuli (shared reading passages) through an undocumented Instructure service rather than the Canvas API, so they can break without notice.",
       "default": false,
       "required": false
     }
@@ -447,6 +447,14 @@
     {
       "name": "delete-new-quiz-item",
       "description": "Delete a question from a New Quiz"
+    },
+    {
+      "name": "create-new-quiz-stimulus",
+      "description": "Add a shared reading passage or source (stimulus) to a New Quiz. Opt-in; reaches a private Instructure API."
+    },
+    {
+      "name": "update-new-quiz-stimulus",
+      "description": "Edit a New Quiz stimulus's title, content or layout. Opt-in; reaches a private Instructure API."
     },
     {
       "name": "get-new-quiz-report",

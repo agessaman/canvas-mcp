@@ -54,13 +54,11 @@ test('a malformed JSON string is rejected with a readable message, not forwarded
   });
 });
 
-// Canvas accepts stimulus_quiz_entry_id, returns 200, and does not store it —
-// proven live four ways (create/update x JSON/form-encoded, both of a
-// stimulus's two IDs). Until 1.14.0 this server sent it anyway and warned
-// afterwards; it now refuses up front, because the only honest outcome of that
-// write is a question the teacher believes is attached and is not. The
-// assertion that matters is that NOTHING reaches Canvas.
-test('a stimulus attachment is refused rather than attempted', async () => {
+// Canvas's public API accepts stimulus_quiz_entry_id, returns 200, and does not
+// store it — proven live four ways. Until 1.14.0 this server sent it anyway and
+// warned afterwards. The attach now goes through the private API; with that
+// off, the assertion that matters is that NOTHING reaches Canvas.
+test('a stimulus attachment is refused rather than attempted when the private API is off', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: '9', points_possible: 1, stimulus_quiz_entry_id: '' }));
     const before = canvas.requests.length;
@@ -69,7 +67,7 @@ test('a stimulus attachment is refused rather than attempted', async () => {
       body: 'Discuss.', stimulusQuizEntryId: '9085',
     });
     assert.ok(result.isError);
-    assert.match(canvas.textOf(result), /read-only/);
+    assert.match(canvas.textOf(result), /private New Quizzes API/);
     assert.equal(canvas.requests.length, before, 'nothing should be sent to Canvas');
   });
 });

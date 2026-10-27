@@ -25,6 +25,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const COURSE = '18473';
 const TOOL_ID = 229;
+const QUIZ = '371872';
 
 const resolvesLocally = await new Promise(resolve => {
   dns.lookup('quiz-lti.localhost', err => resolve(!err));
@@ -100,13 +101,33 @@ async function withMockHosts(body, { overrides = {} } = {}) {
         ]);
       }
       if (url.pathname === '/login/session_token') {
-        return send(200, { session_url: `http://127.0.0.1:${port}/banks-redirect` });
+        const to = new URL(url.searchParams.get('return_to')).pathname;
+        return send(200, { session_url: `http://127.0.0.1:${port}/banks-redirect?to=${encodeURIComponent(to)}` });
       }
       if (url.pathname === '/banks-redirect') {
-        return send(302, {}, { Location: `/courses/${COURSE}/banks/${TOOL_ID}`, 'Set-Cookie': 'canvas_session=abc; Path=/; HttpOnly' });
+        return send(302, {}, { Location: url.searchParams.get('to'), 'Set-Cookie': 'canvas_session=abc; Path=/; HttpOnly' });
       }
-      if (url.pathname === `/courses/${COURSE}/banks/${TOOL_ID}`) {
+      // The banks page and a quiz's assignment page carry the same launch blob.
+      if (url.pathname === `/courses/${COURSE}/banks/${TOOL_ID}` || url.pathname === `/courses/${COURSE}/assignments/${QUIZ}`) {
         return send(200, banksPage(quizLti));
+      }
+      // --- Canvas public New Quizzes API, for the stimulus tools' checks and readbacks ---
+      const items = `/api/quiz/v1/courses/${COURSE}/quizzes/${QUIZ}/items`;
+      if (url.pathname === `${items}/10039` || url.pathname === `${items}/9307`) {
+        return send(200, {
+          id: url.pathname.split('/').pop(), entry_type: 'Stimulus', position: 7,
+          entry: { id: '208', title: 'Source A', body: '<p>Passage.</p>', instructions: '', orientation: 'left', source_url: '' },
+        });
+      }
+      if (url.pathname === `${items}/9305`) {
+        return send(200, { id: '9305', entry_type: 'Item', entry: { interaction_type_slug: 'essay' } });
+      }
+      if (url.pathname === `${items}/10040`) {
+        const patch = [...requests].reverse().find(r => r.method === 'PATCH' && r.path.endsWith('/quiz_entries/10040'));
+        return send(200, { id: '10040', entry_type: 'Item', stimulus_quiz_entry_id: patch?.body?.quiz_entry?.stimulus_quiz_entry_id ?? '' });
+      }
+      if (url.pathname === items && req.method === 'POST') {
+        return send(200, { id: '10040', points_possible: 1, entry_type: 'Item' });
       }
       if (url.pathname === `/api/v1/courses/${COURSE}`) {
         return send(200, { id: Number(COURSE), name: 'Sandbox', account: { id: 4, root_account_id: 1 } });
@@ -121,6 +142,7 @@ async function withMockHosts(body, { overrides = {} } = {}) {
           access_token: 'lti-access-token',
           launch_token: fakeJwt({ aud: ['quiz-lti'], exp: Math.floor(Date.now() / 1000) + 7200 }),
           item_banks_scope: { type: 'course', uuid: 'course-uuid', title: 'Sandbox' },
+          entry_path: { workflow: 'build', resourceId: 945 },
         });
       }
       if (url.pathname === '/api/sdk_tokens/banks.build') {
@@ -130,7 +152,27 @@ async function withMockHosts(body, { overrides = {} } = {}) {
         });
       }
 
+      if (url.pathname === '/api/assignments/945') {
+        return send(200, {
+          host: quizApi,
+          quiz_api_quiz_id: 926,
+          token: fakeJwt({ scope: 'quiz.build', resource_id: '926', exp: Math.floor(Date.now() / 1000) + 86400 }),
+        });
+      }
+
       // --- quiz-api ---
+      if (url.pathname === '/api/quizzes/926/stimuli' && req.method === 'POST') {
+        return send(201, { id: '208', ...record.body?.stimulus });
+      }
+      if (url.pathname === '/api/quizzes/926/quiz_entries' && req.method === 'POST') {
+        return send(201, { id: '10039', entry_type: 'Stimulus', position: 7 });
+      }
+      if (url.pathname === '/api/quizzes/926/quiz_entries/10040' && req.method === 'PATCH') {
+        return send(200, { id: '10040', stimulus_quiz_entry_id: record.body?.quiz_entry?.stimulus_quiz_entry_id });
+      }
+      if (url.pathname === '/api/quizzes/926/stimuli/208' && req.method === 'PATCH') {
+        return send(200, { id: '208', ...record.body?.stimulus });
+      }
       if (url.pathname === '/api/banks') {
         return send(200, [{ id: '136', title: 'Pre-Columbian America', entry_count: 3, item_entry_count: 3, shared_count: 0, permission: 'edit', archived: false }], { total: '290' });
       }
@@ -407,4 +449,81 @@ itemBankTest('the bank list reports the whole collection size, not just the page
   const { text } = await call('list-item-banks', { courseId: COURSE, perPage: 1 });
   assert.match(text, /1 of 290 bank\(s\)/);
   assert.match(text, /pass page 2 for more/);
+});
+
+// --- stimuli: the quiz.build launch and the editor's quiz-api calls ---
+
+itemBankTest('a stimulus is created on quiz-api with a token from the quiz\'s own launch', async ({ call, requests }) => {
+  const { text, isError } = await call('create-new-quiz-stimulus', {
+    courseId: COURSE, assignmentId: QUIZ, title: 'Source A', body: '<p>Passage.</p>',
+  });
+  assert.ok(!isError, text);
+  assert.match(text, /as item 10039/);
+
+  // The launch comes from the quiz's assignment page, not the banks page.
+  const session = requests.find(r => r.path === '/login/session_token');
+  assert.match(session.query.get('return_to'), new RegExp(`/courses/${COURSE}/assignments/${QUIZ}$`));
+  const exchange = requests.find(r => r.path === '/api/assignments/945');
+  assert.equal(exchange.query.get('scope'), 'quiz.build');
+  assert.ok(exchange.query.get('launch_token'), 'the launch token must be passed on');
+
+  const created = requests.find(r => r.method === 'POST' && r.path === '/api/quizzes/926/stimuli');
+  assert.equal(created.host, 'quiz-api.localhost');
+  assert.doesNotMatch(created.auth, /^Bearer /, 'quiz-api takes the raw token');
+  assert.equal(created.body.stimulus.title, 'Source A');
+  assert.equal(created.body.stimulus.orientation, 'left');
+
+  const placed = requests.find(r => r.method === 'POST' && r.path === '/api/quizzes/926/quiz_entries');
+  assert.deepEqual(
+    { type: placed.body.quiz_entry.entry_type, id: placed.body.quiz_entry.entry_id },
+    { type: 'Stimulus', id: '208' },
+  );
+});
+
+itemBankTest('a new question is attached to a stimulus after it is created, and read back', async ({ call, requests }) => {
+  const { text, isError } = await call('create-new-quiz-item', {
+    courseId: COURSE, assignmentId: QUIZ, interactionType: 'essay', body: 'Discuss the passage.',
+    stimulusQuizEntryId: '10039',
+  });
+  assert.ok(!isError, text);
+  assert.match(text, /Attached to stimulus 10039/);
+  assert.doesNotMatch(text, /WARNING/);
+
+  const order = requests.map(r => `${r.method} ${r.path}`);
+  const check = order.indexOf(`GET /api/quiz/v1/courses/${COURSE}/quizzes/${QUIZ}/items/10039`);
+  const create = order.indexOf(`POST /api/quiz/v1/courses/${COURSE}/quizzes/${QUIZ}/items`);
+  const attach = order.indexOf('PATCH /api/quizzes/926/quiz_entries/10040');
+  assert.ok(check >= 0 && check < create && create < attach, `expected check, create, attach; got ${order.join(', ')}`);
+  assert.equal(requests[attach].body.quiz_entry.stimulus_quiz_entry_id, '10039');
+});
+
+itemBankTest('attaching to something that is not a stimulus creates nothing', async ({ call, requests }) => {
+  const { text, isError } = await call('create-new-quiz-item', {
+    courseId: COURSE, assignmentId: QUIZ, interactionType: 'essay', body: 'Discuss.',
+    stimulusQuizEntryId: '9305',
+  });
+  assert.ok(isError);
+  assert.match(text, /is not a stimulus \(its entry_type is Item\)/);
+  assert.ok(!requests.some(r => r.method === 'POST' && r.path.endsWith('/items')));
+});
+
+itemBankTest('a question is detached from its stimulus with null', async ({ call, requests }) => {
+  const { text, isError } = await call('update-new-quiz-item', {
+    courseId: COURSE, assignmentId: QUIZ, itemId: '10040', stimulusQuizEntryId: null,
+  });
+  assert.ok(!isError, text);
+  assert.match(text, /Detached/);
+  const patch = requests.find(r => r.method === 'PATCH' && r.path === '/api/quizzes/926/quiz_entries/10040');
+  assert.equal(patch.body.quiz_entry.stimulus_quiz_entry_id, null);
+});
+
+itemBankTest('updating a stimulus resends the fields it is not changing', async ({ call, requests }) => {
+  const { text, isError } = await call('update-new-quiz-stimulus', {
+    courseId: COURSE, assignmentId: QUIZ, stimulusItemId: '10039', title: 'Source A (revised)',
+  });
+  assert.ok(!isError, text);
+  const patch = requests.find(r => r.method === 'PATCH' && r.path === '/api/quizzes/926/stimuli/208');
+  assert.equal(patch.body.stimulus.title, 'Source A (revised)');
+  assert.equal(patch.body.stimulus.body, '<p>Passage.</p>');
+  assert.equal(patch.body.stimulus.orientation, 'left');
 });

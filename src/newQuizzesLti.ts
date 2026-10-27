@@ -2,7 +2,9 @@ import axios from 'axios';
 import { CanvasClient } from './canvasClient.js';
 
 /**
- * New Quizzes item banks — the pools a New Quiz draws random questions from.
+ * New Quizzes item banks — the pools a New Quiz draws random questions from —
+ * and quiz edits the public API refuses (stimuli and attaching questions to
+ * them; see quizSession).
  *
  * THIS FILE TALKS TO A PRIVATE INSTRUCTURE API. Nothing here is documented or
  * versioned, and it is quarantined from CanvasClient for that reason: a break
@@ -57,6 +59,13 @@ interface BankSession {
   courseUuid: string;    // the launch context's uuid, for shared_banks queries
 }
 
+interface QuizSession {
+  quizApiBase: string;
+  token: string;
+  expiresAt: number;
+  quizId: string;        // the quiz's quiz-api id, not its Canvas assignment ID
+}
+
 interface ToolHosts {
   toolId: string;
   quizLtiBase: string;
@@ -65,6 +74,7 @@ interface ToolHosts {
 export class NewQuizzesLtiClient {
   private hosts = new Map<string, ToolHosts>();
   private sessions = new Map<string, BankSession>();
+  private quizSessions = new Map<string, QuizSession>();
   private interactionTypes?: Promise<any[]>;
 
   constructor(
@@ -100,20 +110,23 @@ export class NewQuizzesLtiClient {
     return resolved;
   }
 
-  // --- step 1: render the banks page as the user and lift Canvas's signed launch ---
+  // --- step 1: render a New Quizzes page as the user and lift Canvas's signed launch ---
+  //
+  // The banks page launches the item-bank workflow; a quiz's assignment page
+  // launches the build workflow for that one quiz. Same ENV.NEW_QUIZZES blob.
   //
   // Deliberately NOT routed through CanvasClient: a session_token is single-use,
   // and CanvasClient caches GETs. Serving a spent token from cache would fail in
   // a way that looks like a permissions problem.
-  private async signedLaunch(courseId: string, toolId: string): Promise<{ params: any; signature: string }> {
-    const returnTo = `${this.baseUrl}/courses/${courseId}/banks/${toolId}`;
+  private async signedLaunch(pagePath: string): Promise<{ params: any; signature: string }> {
+    const returnTo = `${this.baseUrl}${pagePath}`;
     const res = await axios.get(`${this.baseUrl}/login/session_token`, {
       params: { return_to: returnTo },
       headers: { Authorization: `Bearer ${this.apiToken}` },
     });
     const sessionUrl: string | undefined = res.data?.session_url;
     if (!sessionUrl) {
-      throw new Error('Canvas did not return a session_url for the item banks page.');
+      throw new Error('Canvas did not return a session_url for the New Quizzes page.');
     }
 
     // A small cookie jar: Canvas sets canvas_session on the way in, and the
@@ -132,7 +145,7 @@ export class NewQuizzesLtiClient {
     for (let hop = 0; hop < MAX_REDIRECTS; hop++) {
       if (new URL(url).origin !== canvasOrigin) {
         throw new Error(
-          `Opening the item banks page redirected off Canvas, to ${new URL(url).origin}. Refusing to follow it: `
+          `Opening the New Quizzes page redirected off Canvas, to ${new URL(url).origin}. Refusing to follow it: `
           + `the request carries a Canvas session cookie.`
         );
       }
@@ -147,12 +160,12 @@ export class NewQuizzesLtiClient {
       }
       if (page.status >= 300 && page.status < 400) {
         const location = page.headers.get('location');
-        if (!location) throw new Error(`Canvas redirected to nowhere while opening the item banks page (${page.status}).`);
+        if (!location) throw new Error(`Canvas redirected to nowhere while opening the New Quizzes page (${page.status}).`);
         url = new URL(location, url).toString();
         continue;
       }
       if (!page.ok) {
-        throw new Error(`Canvas returned ${page.status} for the item banks page (${url.split('?')[0]}).`);
+        throw new Error(`Canvas returned ${page.status} for the New Quizzes page (${url.split('?')[0]}).`);
       }
       html = await page.text();
       break;
@@ -164,13 +177,13 @@ export class NewQuizzesLtiClient {
     const match = html.match(/"NEW_QUIZZES":\s*(\{.*?"launchType":"[^"]*"\})/s);
     if (!match) {
       throw new Error(
-        'The Canvas item banks page did not carry a New Quizzes launch (ENV.NEW_QUIZZES). This is the private '
+        'The Canvas New Quizzes page did not carry a New Quizzes launch (ENV.NEW_QUIZZES). This is the private '
         + 'surface these tools depend on; Canvas may have changed it, or this account may not have New Quizzes enabled.'
       );
     }
     const parsed = JSON.parse(match[1]);
     if (!parsed?.params || !parsed?.signature) {
-      throw new Error('The New Quizzes launch on the item banks page was missing its params or signature.');
+      throw new Error('The New Quizzes launch on the New Quizzes page was missing its params or signature.');
     }
     return { params: parsed.params, signature: parsed.signature };
   }
@@ -187,14 +200,11 @@ export class NewQuizzesLtiClient {
     return String(id);
   }
 
-  // --- steps 1-4, cached per course ---
-  private async session(courseId: string, force = false): Promise<BankSession> {
-    const cached = this.sessions.get(courseId);
-    if (!force && cached && cached.expiresAt - EXPIRY_SKEW_MS > Date.now()) return cached;
-
-    const { toolId, quizLtiBase } = await this.resolveHosts(courseId);
+  // --- steps 1-3: the launch both workflows start from ---
+  private async nativeLaunch(courseId: string, pagePath: string): Promise<{ quizLtiBase: string; native: any }> {
+    const { quizLtiBase } = await this.resolveHosts(courseId);
     const [launch, rootId] = await Promise.all([
-      this.signedLaunch(courseId, toolId),
+      this.signedLaunch(pagePath),
       this.rootAccountId(courseId),
     ]);
 
@@ -215,35 +225,95 @@ export class NewQuizzesLtiClient {
       { headers: { Authorization: `Bearer ${jwt.data.token}`, 'Content-Type': 'application/json' } },
     ).catch((e: any) => { throw this.normalise(e, 'launching the New Quizzes tool'); });
 
+    return { quizLtiBase, native: native.data };
+  }
+
+  // Prefer the exp the token itself carries over anything assumed.
+  private tokenExpiry(token: string): number {
+    try {
+      const payload = JSON.parse(Buffer.from(String(token).split('.')[1], 'base64url').toString());
+      if (typeof payload?.exp === 'number') return payload.exp * 1000;
+    } catch { /* keep the conservative default */ }
+    return Date.now() + 60 * 60 * 1000;
+  }
+
+  // --- step 4 (banks): the banks.build token, cached per course ---
+  private async session(courseId: string, force = false): Promise<BankSession> {
+    const cached = this.sessions.get(courseId);
+    if (!force && cached && cached.expiresAt - EXPIRY_SKEW_MS > Date.now()) return cached;
+
+    const { toolId } = await this.resolveHosts(courseId);
+    const { quizLtiBase, native } = await this.nativeLaunch(courseId, `/courses/${courseId}/banks/${toolId}`);
+
     const sdk = await axios.get(`${quizLtiBase}/api/sdk_tokens/banks.build`, {
-      headers: { Authorization: `Bearer ${native.data.access_token}`, Accept: 'application/json' },
+      headers: { Authorization: `Bearer ${native.access_token}`, Accept: 'application/json' },
     }).catch((e: any) => { throw this.normalise(e, 'exchanging the launch for an item bank token'); });
 
     if (!sdk.data?.token || !sdk.data?.host) {
       throw new Error('The New Quizzes launch returned no item bank token; the private API may have changed.');
     }
 
-    // Prefer the exp the token itself carries over anything assumed.
-    let expiresAt = Date.now() + 60 * 60 * 1000;
-    try {
-      const payload = JSON.parse(Buffer.from(String(sdk.data.token).split('.')[1], 'base64url').toString());
-      if (typeof payload?.exp === 'number') expiresAt = payload.exp * 1000;
-    } catch { /* keep the conservative default */ }
-
     const session: BankSession = {
       quizApiBase: String(sdk.data.host).replace(/\/$/, ''),
       token: sdk.data.token,
-      expiresAt,
-      courseUuid: native.data?.item_banks_scope?.uuid ?? '',
+      expiresAt: this.tokenExpiry(sdk.data.token),
+      courseUuid: native?.item_banks_scope?.uuid ?? '',
     };
     this.sessions.set(courseId, session);
     return session;
   }
 
+  /**
+   * Step 4 (one quiz): the quiz.build token the quiz editor itself uses.
+   *
+   * The banks.build token cannot be re-scoped (quiz-lti answers InvalidScope),
+   * so this replays the launch from the quiz's own assignment page. That launch
+   * names the quiz's quiz-lti id (entry_path.resourceId); quiz-lti then hands
+   * back a token scoped to that quiz plus its quiz-api id, which differs from
+   * both the Canvas assignment ID and the quiz-lti one. quiz_entry IDs on
+   * quiz-api ARE the item IDs the public /api/quiz/v1 API reports.
+   *
+   * Verified live 2026-10-27 on assignment 371872 (quiz-lti 945, quiz-api 926).
+   */
+  private async quizSession(courseId: string, assignmentId: string, force = false): Promise<QuizSession> {
+    const key = `${courseId}:${assignmentId}`;
+    const cached = this.quizSessions.get(key);
+    if (!force && cached && cached.expiresAt - EXPIRY_SKEW_MS > Date.now()) return cached;
+
+    const { quizLtiBase, native } = await this.nativeLaunch(courseId, `/courses/${courseId}/assignments/${assignmentId}`);
+    const resourceId = native?.entry_path?.resourceId;
+    if (resourceId === undefined || resourceId === null) {
+      throw new Error(
+        `Assignment ${assignmentId} did not launch as a New Quiz (no quiz in the launch's entry_path). Check that `
+        + `it is a New Quiz in course ${courseId}, not a Classic quiz or an ordinary assignment.`
+      );
+    }
+
+    const res = await axios.get(`${quizLtiBase}/api/assignments/${resourceId}`, {
+      params: { scope: 'quiz.build', launch_token: native.launch_token },
+      headers: { Authorization: `Bearer ${native.access_token}`, Accept: 'application/json' },
+    }).catch((e: any) => { throw this.normalise(e, 'exchanging the launch for a quiz edit token'); });
+
+    const data = res.data;
+    if (!data?.token || !data?.host || data?.quiz_api_quiz_id == null) {
+      throw new Error('The New Quizzes launch returned no quiz edit token; the private API may have changed.');
+    }
+
+    const session: QuizSession = {
+      quizApiBase: String(data.host).replace(/\/$/, ''),
+      token: data.token,
+      expiresAt: this.tokenExpiry(data.token),
+      quizId: String(data.quiz_api_quiz_id),
+    };
+    this.quizSessions.set(key, session);
+    return session;
+  }
+
   /** Drop cached launches and tokens. Used by refresh-canvas-data. */
   clearSessions(): number {
-    const dropped = this.sessions.size;
+    const dropped = this.sessions.size + this.quizSessions.size;
     this.sessions.clear();
+    this.quizSessions.clear();
     this.hosts.clear();
     this.interactionTypes = undefined;
     return dropped;
@@ -255,14 +325,14 @@ export class NewQuizzesLtiClient {
   // but a token that is refused twice is a real failure and must surface as one
   // rather than becoming a relaunch loop against a private service.
   private async request<T>(
-    courseId: string,
+    sessionFor: (force: boolean) => Promise<{ quizApiBase: string; token: string }>,
     method: 'get' | 'post' | 'patch' | 'delete',
     path: string,
     body?: any,
     params?: any,
   ): Promise<{ data: T; headers: any }> {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const session = await this.session(courseId, attempt > 0);
+      const session = await sessionFor(attempt > 0);
       try {
         const res = await axios.request({
           method,
@@ -283,23 +353,23 @@ export class NewQuizzesLtiClient {
       }
     }
     /* c8 ignore next */
-    throw new Error('Unreachable: item bank request retry exhausted');
+    throw new Error('Unreachable: quiz-api request retry exhausted');
   }
 
   async get<T>(courseId: string, path: string, params?: any): Promise<T> {
-    return (await this.request<T>(courseId, 'get', path, undefined, params)).data;
+    return (await this.request<T>(force => this.session(courseId, force), 'get', path, undefined, params)).data;
   }
 
   async post<T>(courseId: string, path: string, body: any): Promise<T> {
-    return (await this.request<T>(courseId, 'post', path, body)).data;
+    return (await this.request<T>(force => this.session(courseId, force), 'post', path, body)).data;
   }
 
   async patch<T>(courseId: string, path: string, body: any): Promise<T> {
-    return (await this.request<T>(courseId, 'patch', path, body)).data;
+    return (await this.request<T>(force => this.session(courseId, force), 'patch', path, body)).data;
   }
 
   async delete<T>(courseId: string, path: string): Promise<T> {
-    return (await this.request<T>(courseId, 'delete', path)).data;
+    return (await this.request<T>(force => this.session(courseId, force), 'delete', path)).data;
   }
 
   /**
@@ -308,9 +378,31 @@ export class NewQuizzesLtiClient {
    * whether there is more without walking every page.
    */
   async getPage<T>(courseId: string, path: string, params?: any): Promise<{ items: T[]; total?: number }> {
-    const { data, headers } = await this.request<T[]>(courseId, 'get', path, undefined, params);
+    const { data, headers } = await this.request<T[]>(force => this.session(courseId, force), 'get', path, undefined, params);
     const total = Number(headers?.total);
     return { items: data, total: Number.isFinite(total) ? total : undefined };
+  }
+
+  /**
+   * A request against one quiz on quiz-api, with the quiz.build token for it.
+   * `subpath` is relative to /api/quizzes/:quizApiId, e.g. "/quiz_entries".
+   */
+  async quiz<T>(
+    courseId: string,
+    assignmentId: string,
+    method: 'get' | 'post' | 'patch' | 'delete',
+    subpath: string,
+    body?: any,
+  ): Promise<T> {
+    // The quiz-api id is fixed for the quiz, so a re-minted token doesn't move it.
+    const { quizId } = await this.quizSession(courseId, assignmentId);
+    const { data } = await this.request<T>(
+      force => this.quizSession(courseId, assignmentId, force),
+      method,
+      `/api/quizzes/${quizId}${subpath}`,
+      body,
+    );
+    return data;
   }
 
   /**
@@ -330,7 +422,7 @@ export class NewQuizzesLtiClient {
   }
 
   /**
-   * Error messages say "New Quizzes item bank API (private)" on purpose: when
+   * Error messages say "New Quizzes private API" on purpose: when
    * this breaks, the reader needs to know immediately that they are looking at
    * an undocumented surface Instructure can change without notice, not at a bug
    * in their own call.
@@ -348,7 +440,7 @@ export class NewQuizzesLtiClient {
     } else if (error instanceof Error) {
       detail = error.message;
     }
-    const prefix = `New Quizzes item bank API (private) ${status ?? 'error'} while ${where}`;
+    const prefix = `New Quizzes private API ${status ?? 'error'} while ${where}`;
     return new Error(detail ? `${prefix}: ${detail.slice(0, 800)}` : prefix);
   }
 }

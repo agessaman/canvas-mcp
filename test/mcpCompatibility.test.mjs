@@ -74,6 +74,7 @@ test('the stdio server exposes its tools to a vendor-neutral MCP client', async 
   }
 });
 
+// Everything that reaches the private New Quizzes API: item banks, and stimuli.
 const ITEM_BANK_TOOLS = [
   'list-item-banks',
   'get-item-bank',
@@ -81,6 +82,8 @@ const ITEM_BANK_TOOLS = [
   'create-item-bank-question',
   'update-item-bank-question',
   'delete-item-bank-question',
+  'create-new-quiz-stimulus',
+  'update-new-quiz-stimulus',
 ];
 
 test('the item bank tools are absent unless the operator opts in', async () => {
@@ -120,7 +123,7 @@ test('the item bank tools are absent unless the operator opts in', async () => {
   for (const name of ITEM_BANK_TOOLS) {
     assert.ok(on.has(name), `${name} is missing with the flag on`);
   }
-  assert.equal(on.size - off.size, ITEM_BANK_TOOLS.length, 'the flag should add exactly the item bank tools');
+  assert.equal(on.size - off.size, ITEM_BANK_TOOLS.length, 'the flag should add exactly the private-API tools');
 
   // A value that is not a recognised truthy spelling must leave them off.
   const bogus = await listWithFlag('maybe');
