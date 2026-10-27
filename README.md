@@ -36,8 +36,9 @@
 
 - **Courses** — list active courses, post announcements
 - **Assignments** — create, update, delete assignments and assignment groups; bulk date updates
-- **Submissions** — grade work, post feedback, download submission files
-- **Rubrics** — view rubrics, analyze statistics, attach rubrics to assignments
+- **Grading** — grading packets (instructions, rubric IDs, linked handouts, queue), student work as text and images (PDF, Word, photos, scans, OCR on macOS), validated rubric grading, feedback only with teacher approval
+- **Rubrics** — create and edit rubrics, align criteria to outcomes, analyze statistics, attach rubrics to assignments
+- **Outcomes** — create, edit, organise, and link learning outcomes (standards)
 - **Students** — enrollment lists with privacy-first anonymization
 - **Sections** — list sections and section-filtered submissions
 - **Modules** — full module and module-item CRUD
@@ -46,10 +47,10 @@
 - **Quizzes** — full quiz, question, and question-group CRUD
 - **Quiz results** — per-student answers, item analysis, report generation, and regrading
 - **ePortfolios** — list and read student ePortfolios
-- **Prompts** — `analyze-rubric-statistics` for multi-assignment rubric visualizations
+- **Prompts** — `grade-assignment` for a guided grading session; `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**69 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**80 tools** and **1 prompt** in total. See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -213,6 +214,10 @@ Show rubric statistics for assignment 67890 in course 12345
 ```
 
 ```
+Help me grade assignment 67890 in course 12345
+```
+
+```
 List all folders and files in the Files section of course 12345
 ```
 
@@ -269,9 +274,11 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | Students | 1 | `list-students` |
 | Assignments | 5 | `list-assignments`, `get-assignment`, `create-assignment`, `update-assignment`, `delete-assignment` |
 | Assignment Groups | 3 | `list-assignment-groups`, `create-assignment-group`, `bulk-update-assignment-dates` |
-| Submissions | 6 | `list-assignment-submissions`, `grade-submission`, `post-submission-comment`, `get-submission-documents`, `get-submission-file-info`, `download-submission-file` |
+| Grading | 1 | `get-grading-packet` |
+| Submissions | 7 | `list-assignment-submissions`, `grade-submission`, `post-submission-comment`, `get-submission-content`, `get-submission-documents`, `get-submission-file-info`, `download-submission-file` |
 | Sections | 2 | `list-sections`, `list-section-submissions` |
-| Rubrics | 4 | `list-rubrics`, `get-rubric-statistics`, `list-rubric-assessments`, `attach-rubric-to-assignment` |
+| Rubrics | 8 | `list-rubrics`, `get-rubric`, `create-rubric`, `update-rubric`, `set-rubric-criterion-outcome`, `get-rubric-statistics`, `list-rubric-assessments`, `attach-rubric-to-assignment` |
+| Outcomes | 7 | `list-outcomes`, `get-outcome`, `create-outcome`, `update-outcome`, `create-outcome-group`, `link-outcome`, `unlink-outcome` |
 | Modules | 10 | `list-modules`, `list-module-items`, `toggle-module-publish`, `create-module`, `update-module`, `delete-module`, `get-module-item`, `create-module-item`, `update-module-item`, `delete-module-item` |
 | Files | 3 | `list-folders`, `list-files`, `list-folder-contents` |
 | Pages | 9 | `list-pages`, `get-page-content`, `update-page-content`, `list-page-revisions`, `revert-page-revision`, `patch-page-content`, `apply-page-changes`, `generate-styleguide`, `get-styleguide` |
@@ -282,6 +289,15 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 **Full parameter reference:** [docs/TOOLS.md](docs/TOOLS.md)
 
 ## Available Prompts
+
+### grade-assignment
+
+Guided grading session for one assignment, done with the teacher.
+
+- Required: `course` (name or ID), `assignment` (name or ID)
+- Starts with `get-grading-packet`, then asks once whether materials are missing, whether resubmissions are accepted, and whether feedback is wanted (off by default)
+- Calibrates on two students, then works through the queue in batches with per-criterion evidence
+- Writes grades and feedback only after the teacher approves them
 
 ### analyze-rubric-statistics
 

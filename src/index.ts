@@ -20,6 +20,8 @@ import { registerQuizTools } from "./tools/quizzes.js";
 import { registerQuizResultTools } from "./tools/quizResults.js";
 import { registerEportfolioTools } from './tools/eportfolios.js';
 import { registerFileTools } from './tools/files.js';
+import { registerOutcomeTools } from './tools/outcomes.js';
+import { registerGradingTools } from './tools/grading.js';
 // Load environment variables
 dotenv.config();
 
@@ -59,6 +61,8 @@ registerQuizTools(server, canvas);
 registerQuizResultTools(server, canvas);
 registerEportfolioTools(server, canvas);
 registerFileTools(server, canvas);
+registerOutcomeTools(server, canvas);
+registerGradingTools(server, canvas);
 // Start the server
 async function startServer() {
   try {

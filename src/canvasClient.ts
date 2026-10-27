@@ -305,6 +305,69 @@ export class CanvasClient {
   async attachRubricToAssignment(courseId: string, assignmentId: string, rubricId: string) {
     return this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}`, {}, { rubric_id: rubricId });
   }
+  async getRubric(courseId: string, rubricId: string) {
+    return this.get(`/api/v1/courses/${courseId}/rubrics/${rubricId}`, { include: ['associations'] });
+  }
+  async createRubric(courseId: string, data: any) {
+    const result = await this.post(`/api/v1/courses/${courseId}/rubrics`, data);
+    this.invalidateRubricDependents(courseId);
+    return result;
+  }
+  async updateRubric(courseId: string, rubricId: string, data: any) {
+    const result = await this.put(`/api/v1/courses/${courseId}/rubrics/${rubricId}`, data);
+    this.invalidateRubricDependents(courseId);
+    return result;
+  }
+  // Assignments embed their rubric, and an update may fork the rubric into a
+  // new ID, so the per-URL invalidation in put/post isn't enough here.
+  private invalidateRubricDependents(courseId: string): void {
+    this.cache.invalidatePrefix(`/api/v1/courses/${courseId}/rubrics`);
+    this.cache.invalidatePrefix(`/api/v1/courses/${courseId}/assignments`);
+  }
+
+  // --- Outcomes ---
+  async getRootOutcomeGroup(courseId: string) {
+    return this.get(`/api/v1/courses/${courseId}/root_outcome_group`);
+  }
+  async listOutcomeGroups(courseId: string) {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/outcome_groups`);
+  }
+  async listOutcomeGroupLinks(courseId: string) {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/outcome_group_links`, { outcome_style: 'full' });
+  }
+  async createOutcomeGroup(courseId: string, parentGroupId: string, data: any) {
+    const result = await this.post(`/api/v1/courses/${courseId}/outcome_groups/${parentGroupId}/subgroups`, data);
+    this.invalidateOutcomeLists(courseId);
+    return result;
+  }
+  async createOutcome(courseId: string, groupId: string, data: any) {
+    const result = await this.post(`/api/v1/courses/${courseId}/outcome_groups/${groupId}/outcomes`, data);
+    this.invalidateOutcomeLists(courseId);
+    return result;
+  }
+  async linkOutcome(courseId: string, groupId: string, outcomeId: string) {
+    const result = await this.put(`/api/v1/courses/${courseId}/outcome_groups/${groupId}/outcomes/${outcomeId}`);
+    this.invalidateOutcomeLists(courseId);
+    return result;
+  }
+  async unlinkOutcome(courseId: string, groupId: string, outcomeId: string) {
+    const result = await this.delete(`/api/v1/courses/${courseId}/outcome_groups/${groupId}/outcomes/${outcomeId}`);
+    this.invalidateOutcomeLists(courseId);
+    return result;
+  }
+  async getOutcome(outcomeId: string) {
+    return this.get(`/api/v1/outcomes/${outcomeId}`);
+  }
+  async updateOutcome(courseId: string, outcomeId: string, data: any) {
+    const result = await this.put(`/api/v1/outcomes/${outcomeId}`, data);
+    this.invalidateOutcomeLists(courseId);
+    return result;
+  }
+  // Outcomes live at /api/v1/outcomes/:id but appear inside the course's
+  // group and link listings, which put/post's parent invalidation won't reach.
+  private invalidateOutcomeLists(courseId: string): void {
+    this.cache.invalidatePrefix(`/api/v1/courses/${courseId}/outcome_group`);
+  }
 
   // --- Students ---
   async listStudents(courseId: string, params: any = {}, options: { anonymous?: boolean } = {}) {
@@ -365,6 +428,27 @@ export class CanvasClient {
         data: response.data,
         contentType: response.headers['content-type'] || fileInfo['content-type'] || 'application/octet-stream',
         filename: fileInfo.filename || `file_${fileId}`
+      };
+    } catch (error: any) {
+      this.handleError(error);
+    }
+  }
+
+  // Raw (un-anonymized) submission with every attempt, so callers can scrub
+  // the student's real name out of extracted document text themselves.
+  async getSubmissionWithHistory(courseId: string, assignmentId: string, userId: string) {
+    return this.get<any>(`/api/v1/courses/${courseId}/assignments/${assignmentId}/submissions/${userId}`, {
+      include: ['submission_history', 'submission_comments', 'user'],
+    });
+  }
+
+  // Download a Canvas file URL (e.g. an attachment's `url`) as bytes
+  async downloadUrl(fileUrl: string): Promise<{ data: Buffer; contentType: string }> {
+    try {
+      const response = await this.axios.get(fileUrl, { responseType: 'arraybuffer', maxRedirects: 5 });
+      return {
+        data: Buffer.from(response.data),
+        contentType: response.headers['content-type'] || 'application/octet-stream',
       };
     } catch (error: any) {
       this.handleError(error);

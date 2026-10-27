@@ -24,6 +24,66 @@ export interface Rubric {
   description?: string;
 }
 
+export interface RubricRating {
+  id?: string;
+  description: string;
+  long_description?: string;
+  points: number;
+}
+
+// One entry of a rubric's `data` array as returned by the Rubrics API
+export interface RubricCriterion {
+  id: string;
+  description: string;
+  long_description?: string;
+  points: number;
+  criterion_use_range?: boolean;
+  learning_outcome_id?: string | number;
+  mastery_points?: number;
+  ignore_for_scoring?: boolean;
+  ratings: RubricRating[];
+}
+
+export interface OutcomeRating {
+  description: string;
+  points: number;
+}
+
+export interface Outcome {
+  id: number;
+  title: string;
+  display_name?: string;
+  description?: string;
+  vendor_guid?: string;
+  context_type?: string;
+  context_id?: number;
+  points_possible?: number;
+  mastery_points?: number;
+  calculation_method?: string;
+  calculation_int?: number;
+  ratings?: OutcomeRating[];
+  // Set when an account or course mastery scale overrides the outcome's own
+  // ratings and calculation (only present on course-scoped "full" listings)
+  proficiency_context_type?: string;
+  proficiency_context_id?: string;
+  can_edit?: boolean;
+  assessed?: boolean;
+}
+
+export interface OutcomeGroup {
+  id: number;
+  title: string;
+  description?: string;
+  parent_outcome_group?: { id: number; title: string };
+}
+
+export interface OutcomeLink {
+  outcome_group: OutcomeGroup;
+  outcome: Outcome;
+  assessed?: boolean;
+  can_unlink?: boolean;
+}
+
 export interface RubricStat {
   id: string;
   description: string;

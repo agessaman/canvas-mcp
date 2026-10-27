@@ -1,6 +1,6 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **63 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **80 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
 
 ## Courses
 
@@ -91,14 +91,35 @@ Updates due/unlock/lock dates for multiple assignments in one call.
 
 ## Submissions
 
+### get-grading-packet
+Starting point for grading an assignment. Read-only.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+- Optional parameters:
+  - `userId`: string. Also include this student's work, in the same format as `get-submission-content`.
+  - `includeMaterials`: boolean (default: true). Reads up to 5 Canvas files linked in the assignment description (handouts, sources). Other links are listed but not fetched.
+  - `anonymous`: boolean (default: true)
+- Returns:
+  - Grading instructions the model follows: check for missing materials such as paper sources or handouts, ask once whether resubmissions are accepted ("Revise ..." vs "Next time ..."), keep feedback off by default, get the teacher's approval before writing any grade or feedback, and keep feedback brief, actionable, direct and supportive
+  - The assignment's settings, including `allowed_attempts` and `post_manually`
+  - The rubric, with the `criterionId` and `ratingId` values `grade-submission` needs
+  - Submission counts, and a queue of students needing grading (oldest submission first, including resubmissions made after grading)
+  - The assignment description as text, plus the linked materials
+
 ### grade-submission
-Writes a score, grade, rubric assessment, or comment for a student's submission.
+Writes a score, grade, rubric assessment, or comment for a student's submission. The tool's instructions tell the model to call it only after the teacher approves, and to include comment text only when the teacher has approved those exact words.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
   - `userId`: string
 - Optional parameters:
-  - `posted_grade`, `score`, `rubric_assessment`, `comment`
+  - `posted_grade`: string. Points, percentage, letter grade, or complete/incomplete.
+  - `score`: number. Shorthand for a points `posted_grade`.
+  - `rubric`: array of `{ criterionId, ratingId?, points?, comments? }`. This is checked against the assignment's rubric (unknown IDs, out-of-range points, and points that don't match the chosen rating are rejected) before anything is written.
+  - `rubric_assessment`: raw Canvas object (unvalidated; use `rubric` instead)
+  - `comment`: string
+- Returns the resulting score and grade, plus the rubric total. It also notes any criteria left unscored, and points out when the rubric isn't set to calculate the grade.
 
 ### list-assignment-submissions
 Gets all student submissions for a specific assignment.
@@ -109,6 +130,30 @@ Gets all student submissions for a specific assignment.
   - `anonymous`: boolean (default: true) — whether to anonymize student names/emails
 - Returns submission details, grades, and comments
 - **Privacy**: Student data is anonymized by default
+
+### get-submission-content
+Reads a student's submitted work in a form the model can grade from.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - `userId`: string
+- Optional parameters:
+  - `attempt`: number | `"all"` (default: latest attempt)
+  - `renderPdfPages`: `"auto"` | `"always"` | `"never"` (default: `"auto"`, which renders only pages with no text layer, such as scans and handwriting)
+  - `maxPdfPagesToRender`: number (default: 10, per file)
+  - `ocr`: boolean (default: true). On macOS, runs Apple Vision OCR on scanned PDF pages and photos.
+  - `maxImages`: number (default: 15, per response)
+  - `maxCharsPerFile`: number (default: 60000)
+  - `maxFileMB`: number (default: 25)
+  - `anonymous`: boolean (default: true)
+- Returns a JSON summary (attempts, per-file extraction status, comments, warnings) followed by the content itself:
+  - PDF, Word (`.docx`), HTML and text/code files come back as extracted text
+  - Photos come back as images, downscaled to 1568px
+  - Text-entry and discussion submissions are converted from HTML to plain text
+  - Links, recordings, LTI and annotation submissions are reported in notes
+- **Privacy**: With `anonymous`, the student's name is replaced by their pseudonym in filenames, document text and comments. This is best effort: names inside images are not removed.
+- **macOS**: PDF text comes from Apple's PDFKit, which rejoins wrapped lines into paragraphs. Scanned pages and photos also get Vision OCR text next to the image, and iPhone HEIC photos are converted with `sips`. All three use built-in system tools through `osascript`. Other platforms use pdf.js and return images only. The first OCR call after a reboot loads Vision's models and can take up to a minute.
+- **Optional dependency**: rendering scanned PDF pages and resizing photos uses `@napi-rs/canvas`. Without it, text extraction still works and the response says what was skipped.
 
 ### get-submission-documents
 Retrieves a student's submission with attachment metadata and optional file content.
@@ -171,6 +216,58 @@ Lists all rubrics for a specific course.
   - `courseId`: string
 - Returns rubric titles, IDs, and descriptions
 
+### get-rubric
+Gets a rubric's criteria, ratings, outcome alignments, and associations as JSON.
+- Required parameters:
+  - `courseId`: string
+  - `rubricId`: string
+- The returned `criteria` array can be edited and passed back to `update-rubric`
+
+### create-rubric
+Creates a rubric, optionally aligning criteria to outcomes and attaching it to an assignment.
+- Required parameters:
+  - `courseId`: string
+  - `title`: string
+  - `criteria`: array of criterion objects (see below)
+- Optional parameters:
+  - `freeFormCriterionComments`: boolean
+  - `assignmentId`: string — attach to this assignment; otherwise the rubric is saved to the course's rubric list
+  - `useForGrading`: boolean (default: false) — sets the assignment's points to the rubric total
+  - `hideScoreTotal`: boolean
+- Aligned outcomes must already be in the course (see `link-outcome`), and each outcome can be aligned to only one criterion per rubric
+
+Criterion objects (used by `create-rubric` and `update-rubric`, and returned by `get-rubric`):
+- `id`: string — existing criterion ID; keep it when editing so existing assessments stay attached
+- `description`: string — optional when `learningOutcomeId` is set (defaults to the outcome title)
+- `longDescription`: string
+- `learningOutcomeId`: string | null — align the criterion to a course outcome
+- `masteryPoints`: number — defaults to the outcome's mastery points
+- `useForScoring`: boolean (default: true) — for outcome-aligned criteria
+- `useRange`: boolean
+- `ratings`: array of `{ id?, description, longDescription?, points }`, highest first — optional when `learningOutcomeId` is set (defaults to the outcome's scale)
+
+### update-rubric
+Updates a rubric's title, comment setting, or criteria.
+- Required parameters:
+  - `courseId`: string
+  - `rubricId`: string
+- Optional parameters:
+  - `title`: string
+  - `freeFormCriterionComments`: boolean
+  - `criteria`: array of criterion objects — replaces the whole list; start from `get-rubric`
+- If the rubric is shared or already assessed, Canvas may save the edit as a new rubric; the response says so and gives the new ID
+
+### set-rubric-criterion-outcome
+Aligns one rubric criterion to a learning outcome, or removes the alignment, leaving the rest of the rubric unchanged.
+- Required parameters:
+  - `courseId`: string
+  - `rubricId`: string
+  - `criterionId`: string — from `get-rubric`
+  - `outcomeId`: string | null — null removes the alignment
+- Optional parameters:
+  - `useOutcomeRatings`: boolean (default: true) — replace the criterion's title, ratings, and mastery points with the outcome's
+  - `useForScoring`: boolean (default: true)
+
 ### get-rubric-statistics
 Gets statistics for rubric assessments on an assignment.
 - Required parameters:
@@ -195,6 +292,69 @@ Attaches an existing rubric to an assignment.
   - `courseId`: string
   - `assignmentId`: string
   - `rubricId`: string
+
+## Outcomes
+
+Account-level outcomes can't be edited from a course. When the account uses account-level mastery scales, the mastery scale and calculation come from the account: `masteryPoints`, `ratings`, `calculationMethod`, and `calculationInt` are ignored by `create-outcome` (the response says so) and rejected by `update-outcome`.
+
+### list-outcomes
+Lists every outcome in a course, grouped by outcome group, with group and outcome IDs.
+- Required parameters:
+  - `courseId`: string
+
+### get-outcome
+Gets an outcome's description, mastery points, rating scale, and calculation method as they apply in a course.
+- Required parameters:
+  - `courseId`: string — Canvas only reports the rating scale in a course's context
+  - `outcomeId`: string
+
+### create-outcome
+Creates a learning outcome in a course outcome group.
+- Required parameters:
+  - `courseId`: string
+  - `title`: string
+- Optional parameters:
+  - `groupId`: string — defaults to the course's root group
+  - `displayName`: string
+  - `description`: string
+  - `vendorGuid`: string — e.g. a standard code
+  - `masteryPoints`: number
+  - `ratings`: array of `{ description, points }`, highest first
+  - `calculationMethod`: `decaying_average` | `standard_decaying_average` | `n_mastery` | `latest` | `highest` | `average`
+  - `calculationInt`: number
+
+### update-outcome
+Updates an outcome; only the fields provided change.
+- Required parameters:
+  - `courseId`: string
+  - `outcomeId`: string
+- Optional parameters: same fields as `create-outcome` (except `groupId`)
+- Canvas may refuse scale changes once students have been assessed
+
+### create-outcome-group
+Creates an outcome group (folder).
+- Required parameters:
+  - `courseId`: string
+  - `title`: string
+- Optional parameters:
+  - `parentGroupId`: string — defaults to the course's root group
+  - `description`: string
+  - `vendorGuid`: string
+
+### link-outcome
+Adds an existing outcome (e.g. account- or state-level) to a course outcome group.
+- Required parameters:
+  - `courseId`: string
+  - `outcomeId`: string
+- Optional parameters:
+  - `groupId`: string — defaults to the course's root group
+
+### unlink-outcome
+Removes an outcome from a course outcome group. If it was the outcome's last link anywhere, the outcome is deleted; Canvas refuses that when the outcome is aligned to content.
+- Required parameters:
+  - `courseId`: string
+  - `groupId`: string
+  - `outcomeId`: string
 
 ## Modules
 
