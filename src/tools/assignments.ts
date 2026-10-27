@@ -2,6 +2,19 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 
+/**
+ * Say what the attempt limit ended up as.
+ *
+ * Canvas stores "unlimited" as -1, which reads as a bug if it is printed raw
+ * and is invisible if it is omitted — and it is the setting that decides
+ * whether extend-assignment-attempts does anything at all.
+ */
+function attemptsNote(a: any): string {
+  const allowed = Number(a?.allowed_attempts ?? -1);
+  if (!Number.isFinite(allowed) || allowed <= 0) return ', attempts=unlimited';
+  return `, attempts=${allowed}`;
+}
+
 export function registerAssignmentTools(server: McpServer, canvas: CanvasClient) {
   // Tool: list-assignments
   server.tool(
@@ -105,7 +118,7 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
   // Tool: get-assignment
   server.tool(
     "get-assignment",
-    "Fetch metadata for a single assignment (due date, points, rubric, submission types, etc).",
+    "Fetch a single assignment, including its description — the HTML body students read — along with due date, points, rubric, submission types, and the rest of its settings.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment")
@@ -127,7 +140,20 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
           workflow_state: a.workflow_state,
           assignment_group_id: a.assignment_group_id,
           has_rubric: !!(a.rubric_id || a.rubric),
+          // Settable through create/update-assignment and load-bearing for
+          // extend-assignment-attempts, so it has to be readable too — a
+          // setting you can write and not see is how you end up granting an
+          // accommodation that does nothing. Canvas encodes unlimited as -1.
+          allowed_attempts: Number(a.allowed_attempts ?? -1) > 0 ? a.allowed_attempts : 'unlimited',
           position: a.position,
+          // The body students actually read. Canvas returns it on the assignment
+          // and this summary used to drop it, which left the description writable
+          // through create/update-assignment and never readable — so editing
+          // existing instructions meant overwriting them blind. Last in the object
+          // so a long body does not push the dates and points out of view. Null
+          // rather than absent when empty: an absent field reads as "this server
+          // cannot see it", which is the confusion that cost us this bug.
+          description: a.description ?? null,
         };
         return {
           content: [{ type: "text", text: JSON.stringify(summary) }]
@@ -148,13 +174,20 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
     {
       courseId: z.string().describe("The ID of the course"),
       name: z.string().optional(),
-      description: z.string().optional(),
+      description: z.string().optional().describe(
+        "The assignment body, as HTML — this is what students see under the title."
+      ),
       due_at: z.string().optional(),
       points_possible: z.number().optional(),
       submission_types: z.array(z.string()).optional(),
       published: z.boolean().optional(),
       grading_type: z.string().optional(),
       assignment_group_id: z.number().optional(),
+      allowed_attempts: z.number().int().optional().describe(
+        "How many times a student may submit. Canvas's default is unlimited, which it stores as -1; pass -1 to "
+        + "restore that. Setting a limit here is what makes extend-assignment-attempts meaningful — extra attempts "
+        + "on an unlimited assignment change nothing."
+      ),
     },
     { destructiveHint: false },
     async (args: any) => {
@@ -162,7 +195,7 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
       try {
         const a = await canvas.createAssignment(courseId, { assignment: fields }) as any;
         return {
-          content: [{ type: "text", text: `Assignment created: id=${a.id}, name="${a.name}", points=${a.points_possible}, published=${a.published}` }]
+          content: [{ type: "text", text: `Assignment created: id=${a.id}, name="${a.name}", points=${a.points_possible}, published=${a.published}${attemptsNote(a)}` }]
         };
       } catch (error: any) {
         if (error instanceof Error) {
@@ -181,13 +214,22 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment"),
       name: z.string().optional(),
-      description: z.string().optional(),
+      description: z.string().optional().describe(
+        "The assignment body, as HTML. Canvas replaces the whole body with what you send, so read the "
+        + "current one with get-assignment first and edit that — sending a fresh body discards whatever "
+        + "was there."
+      ),
       due_at: z.string().optional(),
       points_possible: z.number().optional(),
       submission_types: z.array(z.string()).optional(),
       published: z.boolean().optional(),
       grading_type: z.string().optional(),
       assignment_group_id: z.number().optional(),
+      allowed_attempts: z.number().int().optional().describe(
+        "How many times a student may submit. Canvas's default is unlimited, which it stores as -1; pass -1 to "
+        + "restore that. Setting a limit here is what makes extend-assignment-attempts meaningful — extra attempts "
+        + "on an unlimited assignment change nothing."
+      ),
     },
     { idempotentHint: true },
     async (args: any) => {
@@ -195,7 +237,7 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
       try {
         const a = await canvas.updateAssignment(courseId, assignmentId, { assignment: fields }) as any;
         return {
-          content: [{ type: "text", text: `Assignment updated: id=${a.id}, name="${a.name}", points=${a.points_possible}, published=${a.published}` }]
+          content: [{ type: "text", text: `Assignment updated: id=${a.id}, name="${a.name}", points=${a.points_possible}, published=${a.published}${attemptsNote(a)}` }]
         };
       } catch (error: any) {
         if (error instanceof Error) {
@@ -226,6 +268,88 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
           throw new Error(`Failed to delete assignment: ${error.message}`);
         }
         throw new Error('Failed to delete assignment: Unknown error');
+      }
+    }
+  );
+
+  // Tool: duplicate-assignment
+  //
+  // Canvas names the copy "<original> Copy" and leaves it unpublished, which is
+  // the right default — a duplicate is a draft of next week's version. The
+  // optional rename and due date save the follow-up call that always comes next,
+  // but only when Canvas finished the copy synchronously: New Quizzes duplicate
+  // asynchronously, and editing an assignment mid-duplication is a race.
+  server.tool(
+    "duplicate-assignment",
+    "Copy an assignment within a course — the starting point for next week's version of a recurring task. The copy is named \"<original> Copy\" and arrives unpublished. Works for New Quizzes too; the quiz engine is detected rather than asked for. Optionally rename the copy and give it a due date in the same call.",
+    {
+      courseId: z.string().describe("The ID of the course"),
+      assignmentId: z.string().describe("The assignment to copy (a New Quiz's ID is its assignment ID)"),
+      newName: z.string().optional().describe("Rename the copy instead of leaving it as \"<original> Copy\""),
+      dueAt: z.string().optional().describe("Give the copy a due date (ISO 8601). Without one it inherits the original's."),
+      publish: z.boolean().default(false).describe("Publish the copy immediately. Off by default: a duplicate is usually a draft.")
+    },
+    { destructiveHint: false },
+    async ({ courseId, assignmentId, newName, dueAt, publish = false }: any) => {
+      try {
+        // A New Quiz needs result_type=Quiz for Canvas to serialize the copy
+        // correctly. Detect it rather than making the caller know which engine
+        // backs the assignment.
+        const original: any = await canvas.getAssignment(courseId, assignmentId);
+        const isNewQuiz = !!original?.is_quiz_lti_assignment;
+
+        const copy: any = await canvas.duplicateAssignment(
+          courseId,
+          assignmentId,
+          isNewQuiz ? { result_type: 'Quiz' } : {}
+        );
+
+        if (!copy?.id) {
+          throw new Error(`Canvas returned no assignment for the copy: ${JSON.stringify(copy).slice(0, 300)}`);
+        }
+
+        // Canvas reports an in-flight copy as workflow_state 'duplicating' and
+        // finishes it in the background. Editing it now would race that.
+        const stillCopying = copy.workflow_state === 'duplicating';
+        const wantsEdit = newName !== undefined || dueAt !== undefined || publish;
+
+        let edited: any = null;
+        if (wantsEdit && !stillCopying) {
+          const changes: any = {};
+          if (newName !== undefined) changes.name = newName;
+          if (dueAt !== undefined) changes.due_at = dueAt;
+          if (publish) changes.published = true;
+          edited = await canvas.updateAssignment(courseId, String(copy.id), { assignment: changes });
+        }
+
+        const finalState = edited ?? copy;
+        const pendingNote = stillCopying
+          ? `\n\nCanvas is still building this copy (workflow_state "duplicating") and finishes it in the background`
+            + (wantsEdit
+              ? `, so the rename, due date and publish were NOT applied — editing an assignment mid-duplication races `
+                + `Canvas's own write. Check it with get-assignment, then apply them with update-assignment.`
+              : `. Check it with get-assignment in a moment.`)
+          : '';
+
+        return {
+          content: [{
+            type: "text",
+            text: `Duplicated "${original?.name ?? assignmentId}"${isNewQuiz ? ' (a New Quiz)' : ''} in course ${courseId}.\n`
+              + `${JSON.stringify({
+                id: finalState.id,
+                name: finalState.name,
+                due_at: finalState.due_at ?? null,
+                points_possible: finalState.points_possible,
+                published: !!finalState.published,
+              }, null, 2)}`
+              + pendingNote
+              + (!stillCopying && !finalState.published
+                ? `\n\nThe copy is unpublished, so students cannot see it yet.`
+                : '')
+          }]
+        };
+      } catch (error: any) {
+        throw new Error(`Failed to duplicate assignment: ${error.message ?? 'Unknown error'}`);
       }
     }
   );

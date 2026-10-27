@@ -2,14 +2,37 @@ import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { DataAnonymizer } from './anonymizer.js';
 import { SimpleCache } from './cache.js';
 
-// URL fragments whose responses must never be cached (grade/submission data)
-const UNCACHED_PATTERNS = ['/submissions', '/statistics', '/reports', '/events', '/quiz_submissions'];
+// URL fragments whose responses must never be cached (live grade, roster-state,
+// inbox, and grading-queue data — all of which change under the instructor's feet)
+//
+// /content_migrations is here because a migration record is polled, not read:
+// the cache serves any entry without a network call for its first 60 seconds,
+// which is exactly the cadence someone watching a course copy uses. Observed
+// live — two consecutive status checks returned an identical workflow_state
+// while the copy was demonstrably progressing. A status that can be a minute
+// stale is a status you cannot act on.
+//
+// The quiz-result endpoints are live for the same reason: /statistics and
+// /events change with every attempt a student submits, and a quiz report is
+// polled until its file appears, exactly like a migration. /quiz_submissions
+// covers the per-attempt paths that do not also contain /submissions.
+const UNCACHED_PATTERNS = [
+  '/submissions', '/enrollments', '/conversations', '/todo', '/progress', '/content_migrations',
+  '/statistics', '/reports', '/events', '/quiz_submissions',
+];
+
+// Safety bound on Link-header following, so a malformed or self-referential
+// `next` link can't loop indefinitely. At per_page=100 this is 50k records.
+const MAX_PAGES = 500;
 
 export class CanvasClient {
   private axios: AxiosInstance;
   private cache = new SimpleCache();
 
+  private baseUrl: string;
+
   constructor(baseUrl: string, apiToken: string) {
+    this.baseUrl = baseUrl;
     this.axios = axios.create({
       baseURL: baseUrl,
       headers: { Authorization: `Bearer ${apiToken}` }
@@ -23,6 +46,14 @@ export class CanvasClient {
   private cacheKey(url: string, params: any): string {
     const sorted = Object.keys(params).sort().reduce((acc: any, k) => { acc[k] = params[k]; return acc; }, {});
     return `${url}\0${JSON.stringify(sorted)}`;
+  }
+
+  /**
+   * Drop every cached read. See SimpleCache.clear() for why this is needed:
+   * write-side invalidation cannot know about edits made outside this session.
+   */
+  clearCache(): number {
+    return this.cache.clear();
   }
 
   private invalidateForWrite(url: string): void {
@@ -95,6 +126,18 @@ export class CanvasClient {
     }
   }
 
+  // Generic PATCH with error handling and cache invalidation
+  // (the New Quizzes API uses PATCH where the v1 API uses PUT)
+  async patch<T>(url: string, data: any = {}, params: any = {}): Promise<T> {
+    try {
+      const response = await this.axios.patch(url, data, { params });
+      this.invalidateForWrite(url);
+      return response.data;
+    } catch (error: any) {
+      this.handleError(error);
+    }
+  }
+
   // Generic DELETE with error handling and cache invalidation
   async delete<T>(url: string, params: any = {}): Promise<T> {
     try {
@@ -129,32 +172,51 @@ export class CanvasClient {
     }
     const results: T[] = [];
     const per_page = params.per_page || 100;
-    let page = 1;
-    while (true) {
-      const response = await this.axios.get(url, { params: { ...params, page, per_page } });
-      const data: T[] = response.data;
-      if (!Array.isArray(data) || data.length === 0) break;
-      results.push(...data);
-      const linkHeader = response.headers['link'] as string | undefined;
-      if (!linkHeader || !this.parseLinkHeader(linkHeader).next) break;
-      page++;
+    // Follow the Link header's `next` URL rather than incrementing page=N.
+    // Not all Canvas collections are numerically paginated: bookmark-paginated
+    // endpoints such as /courses/:id/students/submissions reject a page number
+    // outright with "Invalid page; please restart iteration and follow `next`
+    // links". Following `next` is correct for both styles.
+    //
+    // Errors must route through handleError like every other verb, or a failed
+    // paginated call surfaces as a bare "Request failed with status code 400"
+    // with no indication of which request failed or why.
+    try {
+      let response = await this.axios.get(url, { params: { ...params, per_page } });
+      // Bounded so a malformed or self-referential Link header can't spin forever.
+      for (let hop = 0; hop < MAX_PAGES; hop++) {
+        const data: T[] = response.data;
+        if (!Array.isArray(data) || data.length === 0) break;
+        results.push(...data);
+        const linkHeader = response.headers['link'] as string | undefined;
+        const next = linkHeader ? this.parseLinkHeader(linkHeader).next : undefined;
+        if (!next) break;
+        // `next` is an absolute URL and already carries its own query string,
+        // so it is requested verbatim — axios bypasses baseURL for absolute URLs.
+        response = await this.axios.get(next);
+      }
+    } catch (error: any) {
+      this.handleError(error);
     }
     if (cacheable) this.cache.set(key, results);
     return results;
   }
 
   // Several quiz endpoints wrap their payload in a JSON-API-ish envelope
-  // ({ "quiz_submissions": [...] }) rather than returning a bare array, which
-  // fetchAllPages would discard. This merges every top-level array across all
-  // pages, keyed by envelope key, deduping by id.
+  // ({ "quiz_submissions": [...], "users": [...] }) rather than returning a bare
+  // array, which fetchAllPages would discard. This merges every top-level array
+  // across all pages, keyed by envelope key, deduping by id.
+  //
+  // Pages are followed by the Link header's `next` URL for the same reason
+  // fetchAllPages does it, and bounded by MAX_PAGES. Not cached: every caller
+  // reads live quiz-attempt data that UNCACHED_PATTERNS excludes anyway.
   async fetchAllPagesEnvelope(url: string, params: any = {}): Promise<Record<string, any[]>> {
     const merged: Record<string, any[]> = {};
     const seen: Record<string, Set<any>> = {};
     const per_page = params.per_page || 100;
-    let page = 1;
     try {
-      while (true) {
-        const response = await this.axios.get(url, { params: { ...params, page, per_page } });
+      let response = await this.axios.get(url, { params: { ...params, per_page } });
+      for (let hop = 0; hop < MAX_PAGES; hop++) {
         const body = response.data;
         if (!body || typeof body !== 'object') break;
 
@@ -176,8 +238,9 @@ export class CanvasClient {
         if (!addedAny) break;
 
         const linkHeader = response.headers['link'] as string | undefined;
-        if (!linkHeader || !this.parseLinkHeader(linkHeader).next) break;
-        page++;
+        const next = linkHeader ? this.parseLinkHeader(linkHeader).next : undefined;
+        if (!next) break;
+        response = await this.axios.get(next);
       }
     } catch (error: any) {
       this.handleError(error);
@@ -194,19 +257,42 @@ export class CanvasClient {
   }
 
   // Fetch a Canvas-hosted file (e.g. a generated quiz report) as text.
+  // The bearer token only goes along when the URL is this Canvas instance, the
+  // same rule uploadCourseFile follows for a Location header. A leading BOM is
+  // dropped so the first CSV column name compares cleanly.
   async downloadText(fileUrl: string): Promise<string> {
     try {
-      const response = await this.axios.get(fileUrl, { responseType: 'text', maxRedirects: 5 });
-      return typeof response.data === 'string' ? response.data : String(response.data);
+      const absolute = new URL(fileUrl, this.baseUrl).toString();
+      const client = this.isSameHostAsCanvas(absolute) ? this.axios : axios;
+      const response = await client.get(absolute, { responseType: 'text', maxRedirects: 5 });
+      const text = typeof response.data === 'string' ? response.data : String(response.data);
+      return text.replace(/^\uFEFF/, '');
     } catch (error: any) {
       this.handleError(error);
     }
   }
 
-  // Centralized error handler
+  // Centralized error handler.
+  // Canvas puts the useful detail in several different shapes depending on the
+  // endpoint, and a bare "Request failed with status code 400" is undebuggable,
+  // so surface the status, the path, and whatever body came back.
   private handleError(error: any): never {
-    if (error.response?.data?.errors) {
-      throw new Error(JSON.stringify(error.response.data.errors));
+    const status = error.response?.status;
+    const data = error.response?.data;
+    const method = error.config?.method?.toUpperCase();
+    const url = error.config?.url;
+    const where = method && url ? ` on ${method} ${url}` : '';
+
+    if (data !== undefined && data !== null && data !== '') {
+      let detail: string;
+      if (data.errors) detail = JSON.stringify(data.errors);
+      else if (data.message) detail = String(data.message);
+      else if (typeof data === 'string') detail = data;
+      else detail = JSON.stringify(data);
+      throw new Error(`Canvas API ${status ?? 'error'}${where}: ${detail.slice(0, 800)}`);
+    }
+    if (status) {
+      throw new Error(`Canvas API ${status}${where} (no response body)`);
     }
     if (error instanceof Error) {
       throw new Error(error.message);
@@ -216,8 +302,45 @@ export class CanvasClient {
 
   // --- Courses ---
   async listCourses(params: any = {}) {
-    return this.get('/api/v1/courses', params);
+    return this.fetchAllPages<any>('/api/v1/courses', params);
   }
+  // Works for unpublished courses too, which never appear in the course list
+  // under the default filters.
+  async getCourse(courseId: string, params: any = {}) {
+    return this.get(`/api/v1/courses/${courseId}`, params);
+  }
+  // Course attributes: syllabus, settings, and publish state all live here.
+  // The syllabus is a course attribute, NOT a wiki page, so the page tools
+  // cannot reach it — and unlike a page it has no revision history.
+  async updateCourse(courseId: string, data: any) {
+    return this.put(`/api/v1/courses/${courseId}`, { course: data });
+  }
+  // --- Content migrations (course copy) ---
+  // Asynchronous: the POST returns a migration whose workflow_state is still
+  // pre_processing, plus a progress_url to watch.
+  async createContentMigration(courseId: string, data: any) {
+    return this.post(`/api/v1/courses/${courseId}/content_migrations`, data);
+  }
+  async getContentMigration(courseId: string, migrationId: string) {
+    return this.get(`/api/v1/courses/${courseId}/content_migrations/${migrationId}`);
+  }
+  async listContentMigrations(courseId: string) {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/content_migrations`, { per_page: 100 });
+  }
+  // What Canvas could not bring across. A migration can complete and still have
+  // dropped content, and this is the only place that is recorded.
+  async listMigrationIssues(courseId: string, migrationId: string) {
+    return this.fetchAllPages<any>(
+      `/api/v1/courses/${courseId}/content_migrations/${migrationId}/migration_issues`,
+      { per_page: 100 }
+    );
+  }
+  // progress_url is absolute; axios bypasses baseURL for absolute URLs, so it
+  // can be requested verbatim rather than picked apart for an ID.
+  async getProgressByUrl(progressUrl: string) {
+    return this.get(progressUrl);
+  }
+
   async postAnnouncement(courseId: string, data: any) {
     return this.post(`/api/v1/courses/${courseId}/discussion_topics`, data);
   }
@@ -227,14 +350,191 @@ export class CanvasClient {
     const data = await this.get(`/api/v1/courses/${courseId}/assignments`, params) as any[];
     return options.anonymous !== false ? DataAnonymizer.anonymizeAssignments(data) : data;
   }
-  async getAssignment(courseId: string, assignmentId: string) {
-    return this.get(`/api/v1/courses/${courseId}/assignments/${assignmentId}`);
+  async getAssignment(courseId: string, assignmentId: string, params: any = {}) {
+    return this.get(`/api/v1/courses/${courseId}/assignments/${assignmentId}`, params);
   }
+  // Assignment overrides — differentiated due dates. A New Quiz is backed by an
+  // assignment, so its overrides live here too, not under /quizzes.
+  async listAssignmentOverrides(courseId: string, assignmentId: string) {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides`);
+  }
+  async createAssignmentOverride(courseId: string, assignmentId: string, data: any) {
+    const result = await this.post(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides`, { assignment_override: data });
+    this.invalidateAssignments(courseId);
+    return result;
+  }
+  async updateAssignmentOverride(courseId: string, assignmentId: string, overrideId: string, data: any) {
+    const result = await this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides/${overrideId}`, { assignment_override: data });
+    this.invalidateAssignments(courseId);
+    return result;
+  }
+  async deleteAssignmentOverride(courseId: string, assignmentId: string, overrideId: string) {
+    const result = await this.delete(`/api/v1/courses/${courseId}/assignments/${assignmentId}/overrides/${overrideId}`);
+    this.invalidateAssignments(courseId);
+    return result;
+  }
+
+  // An override moves a due date, so the cached ASSIGNMENTS LISTING is now
+  // wrong — and invalidateForWrite stops one level short of it. Writing to
+  // /courses/:id/assignments/:aid/overrides invalidates that path and climbs to
+  // /courses/:id/assignments/:aid, but the listing is cached under the shorter
+  // /courses/:id/assignments, which is not a prefix of either.
+  //
+  // Found live 2026-08-04, and the diagnosis took two tries. The submissions
+  // themselves are never cached (/submissions is in UNCACHED_PATTERNS), so
+  // Canvas's freshly recomputed `missing` flag came through immediately while
+  // list-missing-submissions joined its due dates from the stale listing
+  // (see grades.ts). The result was a row reading `status: missing` against a
+  // due date two weeks in the FUTURE — self-contradictory, and worse than a
+  // plainly stale row because it reads as a Canvas bug rather than a cache
+  // one. Two caches of differing lifetimes feeding one report will disagree;
+  // the uncached half is what makes the stale half visible.
+
+  // --- Late policy ---
+  //
+  // One row per course, and the verb depends on whether it exists yet: POST to
+  // create, PATCH to update, and a course with no policy 404s on GET. Callers
+  // should not have to know which case they are in, so setLatePolicy is told.
+  async getLatePolicy(courseId: string) {
+    return this.get(`/api/v1/courses/${courseId}/late_policy`);
+  }
+  async setLatePolicy(courseId: string, data: any, exists: boolean) {
+    const url = `/api/v1/courses/${courseId}/late_policy`;
+    const result = exists ? await this.patch(url, data) : await this.post(url, data);
+    // The policy changes what grades COME OUT of the gradebook, so anything
+    // cached that carries a score is now suspect.
+    this.cache.invalidatePrefix(`/api/v1/courses/${courseId}/assignments`);
+    return result;
+  }
+
+  // --- Assignment extensions ---
+  //
+  // Extra ATTEMPTS on an assignment. Same wrapped-array shape as Classic quiz
+  // extensions, and a different endpoint from the quiz one — an assignment's
+  // attempt limit is not a quiz's.
+  async setAssignmentExtensions(courseId: string, assignmentId: string, extensions: any[]) {
+    const result = await this.post(
+      `/api/v1/courses/${courseId}/assignments/${assignmentId}/extensions`,
+      { assignment_extensions: extensions }
+    );
+    this.invalidateAssignments(courseId);
+    return result;
+  }
+
+  // --- Quiz time extensions / accommodations ---
+  //
+  // Extra *minutes* on a timed quiz is not a date override, and the two quiz
+  // engines express it through completely different endpoints and payloads:
+  // Classic posts a quiz_extensions array under /api/v1, New Quizzes posts a
+  // bare array of accommodations under /api/quiz/v1.
+  async setQuizExtensions(courseId: string, quizId: string, extensions: any[]) {
+    return this.post(`/api/v1/courses/${courseId}/quizzes/${quizId}/extensions`, { quiz_extensions: extensions });
+  }
+  // The body here is a bare JSON array, not an object with a wrapper key —
+  // unlike every other write on this server.
+  async setNewQuizAccommodations(courseId: string, assignmentId: string, accommodations: any[]) {
+    return this.post(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/accommodations`, accommodations);
+  }
+  async setCourseQuizAccommodations(courseId: string, accommodations: any[]) {
+    return this.post(`/api/quiz/v1/courses/${courseId}/accommodations`, accommodations);
+  }
+  // Classic quiz submissions carry the granted extra_time/extra_attempts, which
+  // is the only way to read back who already has an extension. New Quizzes has
+  // no equivalent — its accommodations API is write-only.
+  //
+  // The response is an envelope ({ quiz_submissions, users?, ... }), so it goes
+  // through fetchAllPagesEnvelope: a plain get() read only the first page, and
+  // Canvas's default page is 10, so an extension held by the eleventh student
+  // onward was reported as absent.
+  async listQuizSubmissions(courseId: string, quizId: string, params: any = {}) {
+    return this.fetchAllPagesEnvelope(`/api/v1/courses/${courseId}/quizzes/${quizId}/submissions`, params);
+  }
+  async getClassicQuiz(courseId: string, quizId: string) {
+    return this.get(`/api/v1/courses/${courseId}/quizzes/${quizId}`);
+  }
+
+  /**
+   * Work out which quiz engine an ID belongs to, by probing both.
+   *
+   * Both are probed rather than one, because a Classic quiz ID and a New Quiz's
+   * assignment ID come from different tables and can collide: the same number
+   * can name a real quiz under each engine, and posting an extension to the
+   * wrong one would silently extend the wrong quiz. The caller decides what to
+   * do when both answer.
+   *
+   * Failures are swallowed so a 404 reads as "not this engine", but both
+   * failures are kept: when neither answers, the underlying error (a 401 on a
+   * bad token looks nothing like a missing quiz) is what the caller needs.
+   */
+  async probeQuizEngines(courseId: string, quizId: string): Promise<{
+    classic: any | null;
+    newQuiz: any | null;
+    errors: { classic?: string; newQuiz?: string };
+  }> {
+    const [classicResult, newResult] = await Promise.allSettled([
+      this.getClassicQuiz(courseId, quizId),
+      this.getNewQuiz(courseId, quizId),
+    ]);
+    const errors: { classic?: string; newQuiz?: string } = {};
+    if (classicResult.status === 'rejected') errors.classic = classicResult.reason?.message ?? String(classicResult.reason);
+    if (newResult.status === 'rejected') errors.newQuiz = newResult.reason?.message ?? String(newResult.reason);
+    return {
+      classic: classicResult.status === 'fulfilled' ? classicResult.value : null,
+      newQuiz: newResult.status === 'fulfilled' ? newResult.value : null,
+      errors,
+    };
+  }
+
+  // Student enrollments in one section. Extensions are per-student in both
+  // engines — Canvas has no section-level extension — so a section-wide
+  // accommodation has to be expanded to user IDs here.
+  async listSectionEnrollments(sectionId: string, params: any = {}) {
+    return this.fetchAllPages<any>(`/api/v1/sections/${sectionId}/enrollments`, params);
+  }
+
   async createAssignment(courseId: string, data: any) {
     return this.post(`/api/v1/courses/${courseId}/assignments`, data);
   }
   async updateAssignment(courseId: string, assignmentId: string, data: any) {
     return this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}`, data);
+  }
+  // result_type=Quiz asks Canvas to serialize the copy as a quiz, which it needs
+  // for New Quizzes. Duplication can also be asynchronous: the copy comes back
+  // with workflow_state 'duplicating' and finishes later.
+  async duplicateAssignment(courseId: string, assignmentId: string, params: any = {}) {
+    return this.post(`/api/v1/courses/${courseId}/assignments/${assignmentId}/duplicate`, {}, params);
+  }
+
+  // --- Calendar events ---
+  async listCalendarEvents(params: any = {}) {
+    return this.fetchAllPages<any>('/api/v1/calendar_events', params);
+  }
+  async createCalendarEvent(data: any) {
+    const created = await this.post('/api/v1/calendar_events', data);
+    this.invalidateCalendarListings();
+    return created;
+  }
+  async updateCalendarEvent(eventId: string, data: any, params: any = {}) {
+    const updated = await this.put(`/api/v1/calendar_events/${eventId}`, data, params);
+    this.invalidateCalendarListings();
+    return updated;
+  }
+  async deleteCalendarEvent(eventId: string, params: any = {}) {
+    const deleted = await this.delete(`/api/v1/calendar_events/${eventId}`, params);
+    this.invalidateCalendarListings();
+    return deleted;
+  }
+
+  /**
+   * An event is written at /calendar_events/:id but listed at
+   * /calendar_events — and the parent of the write path is exactly the case
+   * invalidateForWrite refuses to touch, since climbing there would be too
+   * broad for most collections. Without this, editing or deleting an event
+   * leaves the listing showing it unchanged, which is indistinguishable from
+   * Canvas having ignored the write. Same failure the file tools hit.
+   */
+  private invalidateCalendarListings(): void {
+    this.cache.invalidateContaining('/calendar_events');
   }
 
   // --- Assignment Groups ---
@@ -243,6 +543,13 @@ export class CanvasClient {
   }
   async createAssignmentGroup(courseId: string, data: any) {
     return this.post(`/api/v1/courses/${courseId}/assignment_groups`, data);
+  }
+  // Flat parameters, like create — no assignment_group[...] wrapper. Group
+  // weights are shown on every assignment listing, so drop those too.
+  async updateAssignmentGroup(courseId: string, groupId: string, data: any) {
+    const result = await this.put(`/api/v1/courses/${courseId}/assignment_groups/${groupId}`, data);
+    this.invalidateAssignments(courseId);
+    return result;
   }
 
   // --- Modules ---
@@ -302,17 +609,80 @@ export class CanvasClient {
     const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/assignments/${assignmentId}/submissions`, params);
     return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions(data) : data;
   }
-  async attachRubricToAssignment(courseId: string, assignmentId: string, rubricId: string) {
-    return this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}`, {}, { rubric_id: rubricId });
+  /**
+   * A rubric write lands on the ASSIGNMENT as well as the rubric.
+   *
+   * Attaching is written at /courses/:id/rubric_associations but read at
+   * /courses/:id/assignments/:id, and creating or editing a rubric that drives
+   * a grade rewrites that assignment's points_possible. invalidateForWrite
+   * cannot bridge either gap: the only common ancestor is /courses/:id, which
+   * it deliberately refuses to climb to.
+   *
+   * Without this, attaching a rubric and then checking it read has_rubric:
+   * false straight out of the cache — a stale read that is indistinguishable
+   * from Canvas having ignored the write, and which made the tool's own
+   * verification warn about an attachment that had in fact worked. Third time
+   * this pattern has bitten this server (files 1.6.2, calendar 1.10.0).
+   */
+  private invalidateAssignments(courseId: string): void {
+    this.cache.invalidatePrefix(`/api/v1/courses/${courseId}/assignments`);
   }
-  async getRubric(courseId: string, rubricId: string) {
-    return this.get(`/api/v1/courses/${courseId}/rubrics/${rubricId}`, { include: ['associations'] });
+
+  // Attaching a rubric means creating a RubricAssociation, not setting a field
+  // on the assignment. This used to PUT /assignments/:id with an empty body and
+  // a rubric_id query param, which Canvas rejects outright:
+  //
+  //   400 [{"message":"assignment is missing"}]
+  //
+  // — the assignment update wants an assignment[...] body, and `rubric_id` is
+  // not an assignment attribute in any case, so there was no body that would
+  // have made that route work. POST /rubric_associations is the real endpoint.
+  // Verified live 2026-08-03. `purpose: grading` is what puts the rubric on the
+  // assignment for marking rather than merely bookmarking it in the course.
+  async attachRubricToAssignment(courseId: string, assignmentId: string, rubricId: string, useForGrading?: boolean) {
+    const association: any = {
+      rubric_id: rubricId,
+      association_id: assignmentId,
+      association_type: 'Assignment',
+      purpose: 'grading',
+    };
+    // Same "1"/"0" encoding hazard as the rubric booleans.
+    if (useForGrading !== undefined) association.use_for_grading = useForGrading ? '1' : '0';
+    const result = await this.post(`/api/v1/courses/${courseId}/rubric_associations`, { rubric_association: association });
+    this.invalidateAssignments(courseId);
+    return result;
   }
+  // GET /courses/:id/rubrics/:id.
+  //
+  // Do NOT send `style` here. Reading the serializer suggested it gates whether
+  // the `criteria` key is emitted at all, so this used to send style=full
+  // unconditionally — and live Canvas rejects that outright:
+  //
+  //   400 {"style":[{"message":"invalid parameters. Style parameter passed
+  //        without requesting assessments"}]}
+  //
+  // The validation runs before the serializer, so the parameter is only legal
+  // alongside include[]=assessments. Sending it made this endpoint 400 on every
+  // rubric in the course — which also broke the readback that create-rubric and
+  // update-rubric depend on. Verified live on gfalls.instructure.com 2026-08-03:
+  // without it the rubric comes back with its criteria under `data`, which is
+  // always serialized. If assessments are ever added here, `style` becomes legal
+  // again, but only in that company.
+  async getRubric(courseId: string, rubricId: string, params: any = {}) {
+    return this.get(`/api/v1/courses/${courseId}/rubrics/${rubricId}`, params);
+  }
+  // POST /courses/:id/rubrics. Note this route is served by the non-API rubrics
+  // controller, which answers with { rubric, rubric_association } rather than a
+  // bare Rubric — and which renders { error: true, messages: [...] } under a 200
+  // when validation fails. Callers must inspect the body, not the status.
   async createRubric(courseId: string, data: any) {
     const result = await this.post(`/api/v1/courses/${courseId}/rubrics`, data);
+    // A rubric that drives a grade rewrites its assignment's points_possible.
     this.invalidateRubricDependents(courseId);
     return result;
   }
+  // PUT /courses/:id/rubrics/:id — same controller action as create, with the
+  // same non-standard response shape and the same 200-on-failure behaviour.
   async updateRubric(courseId: string, rubricId: string, data: any) {
     const result = await this.put(`/api/v1/courses/${courseId}/rubrics/${rubricId}`, data);
     this.invalidateRubricDependents(courseId);
@@ -407,6 +777,134 @@ export class CanvasClient {
     return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions([data])[0] : data;
   }
 
+  /**
+   * Upload a file into a course. Canvas does not accept file bytes on a normal
+   * API call — this is a three-step handshake, and two steps of it are easy to
+   * get subtly wrong:
+   *
+   *   1. POST the metadata to Canvas, which answers with an upload_url and a
+   *      bag of upload_params.
+   *   2. POST the bytes as multipart/form-data to that upload_url. The URL
+   *      usually points at S3 or inst-fs, NOT at Canvas, so the Canvas bearer
+   *      token must not be attached — hence a bare axios client here. The
+   *      upload_params must also be written before the file field; S3 ignores
+   *      form fields that arrive after the file content.
+   *   3. The upload answers either 201 with the file object, or a redirect that
+   *      has to be followed to finalize. Redirect-following is disabled so the
+   *      Location can be inspected before anything is sent to it.
+   */
+  async uploadCourseFile(
+    courseId: string,
+    file: {
+      name: string;
+      size: number;
+      contentType: string;
+      parentFolderPath?: string;
+      parentFolderId?: string;
+      onDuplicate?: 'overwrite' | 'rename';
+    },
+    contents: Buffer | Uint8Array
+  ): Promise<any> {
+    const metadata: Record<string, any> = {
+      name: file.name,
+      size: file.size,
+      content_type: file.contentType,
+      on_duplicate: file.onDuplicate ?? 'rename',
+    };
+    // parent_folder_id and parent_folder_path are mutually exclusive; sending
+    // both makes Canvas reject the request outright.
+    if (file.parentFolderId) metadata.parent_folder_id = file.parentFolderId;
+    else metadata.parent_folder_path = file.parentFolderPath ?? '/';
+
+    const init: any = await this.post(`/api/v1/courses/${courseId}/files`, metadata);
+    if (!init?.upload_url) {
+      throw new Error(
+        `Canvas did not return an upload_url for "${file.name}"; got ${JSON.stringify(init).slice(0, 300)}`
+      );
+    }
+
+    const form = new FormData();
+    for (const [key, value] of Object.entries(init.upload_params ?? {})) {
+      form.append(key, String(value));
+    }
+    form.append('file', new Blob([contents], { type: file.contentType }), file.name);
+
+    let uploaded;
+    try {
+      uploaded = await axios.post(init.upload_url, form, {
+        maxRedirects: 0,
+        validateStatus: status => status < 400,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      });
+    } catch (error: any) {
+      this.handleError(error);
+    }
+
+    // 201 means the store already created the file and handed it back.
+    if (uploaded.status === 201 && uploaded.data?.id) {
+      this.invalidateFileListings();
+      return uploaded.data;
+    }
+
+    const location = uploaded.headers?.location;
+    if (!location) {
+      this.invalidateFileListings();
+      return uploaded.data;
+    }
+
+    // The confirmation step goes back to Canvas and needs the bearer token, but
+    // only send it if the redirect really is pointing at this Canvas instance —
+    // never hand the token to whatever host a Location header names.
+    const confirmed = this.isSameHostAsCanvas(location)
+      ? await this.axios.get(location)
+      : await axios.get(location);
+    this.invalidateFileListings();
+    return confirmed.data;
+  }
+
+  private isSameHostAsCanvas(url: string): boolean {
+    try {
+      return new URL(url).host === new URL(this.baseUrl).host;
+    } catch {
+      return false;
+    }
+  }
+
+  async listCourseFiles(courseId: string, params: any = {}): Promise<any[]> {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/files`, params);
+  }
+
+  /**
+   * Files in one folder. This needs its own endpoint: /courses/:id/files takes
+   * no folder_id, and passing one is silently ignored rather than rejected —
+   * you get every file in the course back and nothing says the filter was
+   * dropped. Confirmed live against course 18473.
+   */
+  async listFolderFiles(folderId: string, params: any = {}): Promise<any[]> {
+    return this.fetchAllPages<any>(`/api/v1/folders/${folderId}/files`, params);
+  }
+
+  async listCourseFolders(courseId: string): Promise<any[]> {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/folders`);
+  }
+
+  async updateFile(fileId: string, payload: any): Promise<any> {
+    const updated = await this.put(`/api/v1/files/${fileId}`, payload);
+    this.invalidateFileListings();
+    return updated;
+  }
+
+  /**
+   * A file is written at /files/:id but listed under /courses/:id/files and
+   * /folders/:id/files, so the usual prefix invalidation misses both listings.
+   * Observed live: publishing a file and immediately listing its folder still
+   * reported the old state, which reads as the write having failed.
+   */
+  private invalidateFileListings(): void {
+    this.cache.invalidateContaining('/files');
+  }
+
   async getFileInfo(fileId: string): Promise<any> {
     return this.get(`/api/v1/files/${fileId}`);
   }
@@ -455,6 +953,82 @@ export class CanvasClient {
     }
   }
 
+  // --- Instructor to-do / grading queue ---
+  async listTodo(params: any = {}) {
+    return this.get('/api/v1/users/self/todo', params);
+  }
+  async getTodoItemCount(params: any = {}) {
+    return this.get('/api/v1/users/self/todo_item_count', params);
+  }
+
+  // --- Grades & intervention ---
+  async listCourseEnrollments(courseId: string, params: any = {}, options: { anonymous?: boolean } = {}) {
+    const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/enrollments`, params);
+    if (options.anonymous !== true) return data;
+    return data.map(e => (e.user ? { ...e, user: DataAnonymizer.anonymizeUser(e.user) } : e));
+  }
+  // Submissions across every assignment in one call (student_ids[]=all).
+  async listCourseStudentSubmissions(courseId: string, params: any = {}, options: { anonymous?: boolean } = {}) {
+    const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/students/submissions`, params);
+    return options.anonymous === true ? DataAnonymizer.anonymizeSubmissions(data) : data;
+  }
+  async getStudentSummaries(courseId: string, params: any = {}) {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/analytics/student_summaries`, params);
+  }
+
+  // --- Conversations (read-only by design) ---
+  // Single page by design: the inbox can be very long and the caller slices to
+  // a limit anyway, so walking every page would be wasted requests.
+  async listConversations(params: any = {}) {
+    return this.get<any[]>('/api/v1/conversations', params);
+  }
+  async getConversation(conversationId: string, params: any = {}) {
+    return this.get(`/api/v1/conversations/${conversationId}`, params);
+  }
+  async getConversationsUnreadCount() {
+    return this.get('/api/v1/conversations/unread_count');
+  }
+
+  // --- New Quizzes (separate API root from Classic Quizzes) ---
+  async listNewQuizzes(courseId: string) {
+    return this.fetchAllPages<any>(`/api/quiz/v1/courses/${courseId}/quizzes`, { per_page: 100 });
+  }
+  async getNewQuiz(courseId: string, assignmentId: string) {
+    return this.get(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}`);
+  }
+  async createNewQuiz(courseId: string, quiz: any) {
+    return this.post(`/api/quiz/v1/courses/${courseId}/quizzes`, { quiz });
+  }
+  async updateNewQuiz(courseId: string, assignmentId: string, quiz: any) {
+    return this.patch(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}`, { quiz });
+  }
+  async deleteNewQuiz(courseId: string, assignmentId: string) {
+    return this.delete(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}`);
+  }
+  async listNewQuizItems(courseId: string, assignmentId: string) {
+    return this.fetchAllPages<any>(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/items`, { per_page: 100 });
+  }
+  async getNewQuizItem(courseId: string, assignmentId: string, itemId: string) {
+    return this.get(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/items/${itemId}`);
+  }
+  async createNewQuizItem(courseId: string, assignmentId: string, item: any) {
+    return this.post(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/items`, { item });
+  }
+  async updateNewQuizItem(courseId: string, assignmentId: string, itemId: string, item: any) {
+    return this.patch(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/items/${itemId}`, { item });
+  }
+  async deleteNewQuizItem(courseId: string, assignmentId: string, itemId: string) {
+    return this.delete(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/items/${itemId}`);
+  }
+  async createNewQuizReport(courseId: string, assignmentId: string, reportType: string, format: string) {
+    return this.post(`/api/quiz/v1/courses/${courseId}/quizzes/${assignmentId}/reports`, {
+      quiz_report: { report_type: reportType, format }
+    });
+  }
+  async getProgress(progressId: string) {
+    return this.get(`/api/v1/progress/${progressId}`);
+  }
+
   // Get submission documents with file download capability
   async getSubmissionDocuments(courseId: string, assignmentId: string, userId: string, options: { 
     downloadFiles?: boolean; 
@@ -500,34 +1074,5 @@ export class CanvasClient {
     } catch (error: any) {
       this.handleError(error);
     }
-  }
-
-  // --- Course Files & Folders (Files section) ---
-  async listCourseFolders(courseId: string, params: any = {}) {
-    return this.fetchAllPages(`/api/v1/courses/${courseId}/folders`, { per_page: 100, ...params });
-  }
-
-  async listFolderFolders(folderId: string, params: any = {}) {
-    return this.fetchAllPages(`/api/v1/folders/${folderId}/folders`, { per_page: 100, ...params });
-  }
-
-  async getFolder(courseId: string, folderId: string = 'root') {
-    return this.get(`/api/v1/courses/${courseId}/folders/${folderId}`);
-  }
-
-  async resolveFolderPath(courseId: string, path?: string) {
-    const trimmed = (path || '').replace(/^\/+|\/+$/g, '');
-    const suffix = trimmed
-      ? `/${trimmed.split('/').map(encodeURIComponent).join('/')}`
-      : '';
-    return this.get(`/api/v1/courses/${courseId}/folders/by_path${suffix}`);
-  }
-
-  async listCourseFiles(courseId: string, params: any = {}) {
-    return this.fetchAllPages(`/api/v1/courses/${courseId}/files`, { per_page: 100, ...params });
-  }
-
-  async listFolderFiles(folderId: string, params: any = {}) {
-    return this.fetchAllPages(`/api/v1/folders/${folderId}/files`, { per_page: 100, ...params });
   }
 } 

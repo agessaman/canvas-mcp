@@ -1,6 +1,6 @@
 {
   "name": "@r-huijts/canvas-mcp",
-  "version": "1.5.1",
+  "version": "1.21.1",
   "description": "MCP server for Canvas LMS — courses, assignments, grading, pages, rubrics, and more",
   "author": "R.Huijts",
   "license": "MIT",
@@ -21,8 +21,11 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "prepublishOnly": "npm run build",
-    "pack-extension": "npm run build && npx @anthropic-ai/dxt pack",
-    "build-extension": "npm run build && npm run pack-extension"
+    "pack-extension": "mcpb pack",
+    "verify-bundle": "node scripts/verify-bundle.mjs",
+    "build-extension": "npm run build && npm run pack-extension",
+    "test:mcp-compat": "npm run build && node --test test/mcpCompatibility.test.mjs",
+    "test": "npm run build && node --test 'test/**/*.test.mjs'"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -33,7 +36,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@anthropic-ai/dxt": "^0.1.0",
+    "@anthropic-ai/mcpb": "^2.1.2",
     "@types/node": "^20.17.10",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"

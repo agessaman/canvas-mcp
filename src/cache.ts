@@ -44,9 +44,40 @@ export class SimpleCache {
     return Date.now() < entry.freshUntil;
   }
 
+  /**
+   * Drop everything. This exists because a cached read is indistinguishable
+   * from a resource that does not exist, and nothing on the write side can
+   * help when the edit was made *outside* this session — in the Canvas UI, by
+   * a co-teacher, or by Canvas itself finishing a background job.
+   *
+   * Found the hard way: a question attached to a stimulus in the Canvas UI kept
+   * not appearing in a cached item listing, and was nearly recorded as "the API
+   * does not expose attached questions". It had been there the whole time.
+   *
+   * Returns how many entries were dropped, so a caller can say something
+   * truthful about what it did rather than claiming a refresh it cannot see.
+   */
+  clear(): number {
+    const dropped = this.store.size;
+    this.store.clear();
+    return dropped;
+  }
+
   invalidatePrefix(prefix: string): void {
     for (const key of this.store.keys()) {
       if (key.startsWith(prefix)) this.store.delete(key);
+    }
+  }
+
+  /**
+   * Drop every entry whose URL contains `fragment`, for resources that are
+   * listed under a different path than they are written to. A file is written
+   * at /files/:id but listed under /courses/:id/files and /folders/:id/files,
+   * so prefix invalidation alone leaves those listings stale.
+   */
+  invalidateContaining(fragment: string): void {
+    for (const key of this.store.keys()) {
+      if (key.includes(fragment)) this.store.delete(key);
     }
   }
 }

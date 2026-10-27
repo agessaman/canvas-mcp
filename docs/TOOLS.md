@@ -1,13 +1,27 @@
 # Canvas MCP Tool Reference
 
-Full parameter reference for all **80 tools** exposed by the Canvas MCP server. For setup and usage, see the [README](../README.md).
+Full parameter reference for all **134 tools** exposed by the Canvas MCP server, plus the **6 opt-in tools** for [New Quizzes item banks](#new-quizzes-item-banks-opt-in). For setup and usage, see the [README](../README.md).
 
 ## Courses
 
 ### list-courses
-Lists all active courses for the authenticated user.
+Lists the authenticated user's courses. Defaults to published, currently-active courses.
 - No required parameters
-- Returns course names, IDs, and term information
+- Optional parameters:
+  - `includeUnpublished`: boolean (default: false) — include course shells you're still building
+  - `includeConcluded`: boolean (default: false) — include past-term courses
+  - `searchTerm`: string — case-insensitive filter on course name or code
+  - `enrollmentType`: `teacher` | `ta` | `student` | `designer` | `observer`
+- Returns course names, IDs, codes, term information, and published status
+- Canvas has no server-side search on this endpoint, so `searchTerm` filters client-side
+
+### get-course
+Fetches a single course by ID, including unpublished courses that don't appear in `list-courses`.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `includeSyllabus`: boolean (default: false)
+- Useful when you have a course ID from a Canvas URL but the course isn't published
 
 ### post-announcement
 Posts an announcement to a specific course.
@@ -24,8 +38,9 @@ Gets a complete list of students enrolled in a course.
   - `courseId`: string
 - Optional parameters:
   - `includeEmail`: boolean (default: false)
+  - `includeInactive`: boolean (default: false) — include inactive/concluded enrollments
   - `anonymous`: boolean (default: true) — whether to anonymize student names/emails
-- Returns student names, IDs, and optional email addresses
+- Returns student names, IDs, enrollment status, and optional email addresses
 - **Privacy**: Student data is anonymized by default (use "with actual names" to override)
 
 ## Assignments
@@ -42,11 +57,12 @@ Gets all assignments in a course with submission status.
 - **Privacy**: Student submission data is anonymized by default
 
 ### get-assignment
-Fetches metadata for a single assignment.
+Fetches a single assignment, body included.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
-- Returns due date, points, grading type, submission types, rubric presence, and publish state
+- Returns `description` — the HTML body students read, `null` when the assignment has none — plus due date, points, grading type, submission types, rubric presence, attempt limit, and publish state
+- Read the body here before changing it with `update-assignment`, which replaces it wholesale
 
 ### create-assignment
 Creates a new assignment in a course.
@@ -61,12 +77,25 @@ Updates an existing assignment.
   - `courseId`: string
   - `assignmentId`: string
 - Optional parameters: same as `create-assignment`
+- `description` replaces the entire body rather than merging into it, so fetch the current one with `get-assignment` and edit that
 
 ### delete-assignment
 Deletes (archives) an assignment from a course.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
+
+### duplicate-assignment
+Copies an assignment within a course — the starting point for next week's version of a recurring task.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string (a New Quiz's ID is its assignment ID)
+- Optional parameters:
+  - `newName`: string — rename the copy instead of leaving it as "<original> Copy"
+  - `dueAt`: string (ISO 8601) — otherwise it inherits the original's due date
+  - `publish`: boolean (default: false) — a duplicate is usually a draft
+- Works for New Quizzes: the tool reads the assignment first and adds `result_type=Quiz` when it is quiz-LTI backed, so the caller does not have to know which engine is involved
+- Canvas sometimes duplicates **asynchronously**, returning the copy with `workflow_state: "duplicating"`. When that happens the rename, due date and publish are skipped rather than applied — editing an assignment mid-duplication races Canvas's own write — and the tool says so.
 
 ## Assignment Groups
 
@@ -215,50 +244,58 @@ Lists all rubrics for a specific course.
 - Required parameters:
   - `courseId`: string
 - Returns rubric titles, IDs, and descriptions
+- Does **not** return criteria — use `get-rubric` for those
 
 ### get-rubric
-Gets a rubric's criteria, ratings, outcome alignments, and associations as JSON.
+Reads one rubric in full: every criterion, its ratings, and the points on each. Use this before grading against a rubric — it returns the criterion IDs that `grade-submission`'s `rubric_assessment` must be keyed by.
 - Required parameters:
   - `courseId`: string
   - `rubricId`: string
-- The returned `criteria` array can be edited and passed back to `update-rubric`
+- Returns title, points possible, free-form comment setting, and each criterion with its ratings, points, IDs and any outcome alignment
+- Canvas resolves this endpoint through the rubric's association with the course, so a rubric belonging to another course or to the account is reported as unreadable here rather than as missing
 
 ### create-rubric
-Creates a rubric, optionally aligning criteria to outcomes and attaching it to an assignment.
+Creates a rubric, either as a reusable course-level rubric or attached to a single assignment for grading.
 - Required parameters:
   - `courseId`: string
   - `title`: string
-  - `criteria`: array of criterion objects (see below)
+  - `criteria`: list of criterion objects (see below). Canvas's own indexed-hash spelling (`{"0": {...}}`) and a JSON string containing either shape are both accepted.
 - Optional parameters:
-  - `freeFormCriterionComments`: boolean
-  - `assignmentId`: string — attach to this assignment; otherwise the rubric is saved to the course's rubric list
-  - `useForGrading`: boolean (default: false) — sets the assignment's points to the rubric total
-  - `hideScoreTotal`: boolean
+  - `assignmentId`: string — attach to this assignment for grading; omit for a course-level rubric
+  - `useForGrading`: boolean — let rubric scores drive the grade (requires `assignmentId`)
+  - `keepAssignmentPoints`: boolean — stop Canvas rewriting the assignment's `points_possible` to the rubric total (only meaningful with `useForGrading`)
+  - `freeFormComments`: boolean — let graders type their own comment per criterion
+- Canvas derives each criterion's points from its highest rating and the rubric total from the criteria; a `points` value that disagrees is refused rather than silently replaced
 - Aligned outcomes must already be in the course (see `link-outcome`), and each outcome can be aligned to only one criterion per rubric
+- Re-reads the rubric after writing and warns if what Canvas stored differs from what was sent, or if the new rubric cannot be read back at all
 
-Criterion objects (used by `create-rubric` and `update-rubric`, and returned by `get-rubric`):
-- `id`: string — existing criterion ID; keep it when editing so existing assessments stay attached
-- `description`: string — optional when `learningOutcomeId` is set (defaults to the outcome title)
+Criterion objects (used by `create-rubric` and `update-rubric`):
+- `description`: string — the criterion's name; optional when `learningOutcomeId` is set (defaults to the outcome title)
+- `ratings`: list of `{ description, points, longDescription?, id? }` — optional when `learningOutcomeId` is set (defaults to the outcome's scale)
 - `longDescription`: string
-- `learningOutcomeId`: string | null — align the criterion to a course outcome
+- `id`: string — existing criterion ID; keep it when editing so existing assessments stay attached
+- `criterionUseRange`: boolean — let graders pick any score between two ratings
+- `points`: number — optional cross-check against the highest rating
+- `learningOutcomeId`: string | null — align the criterion to a course outcome (from `list-outcomes`)
 - `masteryPoints`: number — defaults to the outcome's mastery points
-- `useForScoring`: boolean (default: true) — for outcome-aligned criteria
-- `useRange`: boolean
-- `ratings`: array of `{ id?, description, longDescription?, points }`, highest first — optional when `learningOutcomeId` is set (defaults to the outcome's scale)
+- `useForScoring`: boolean (default: true) — whether an outcome-aligned criterion counts toward the score
 
 ### update-rubric
-Updates a rubric's title, comment setting, or criteria.
+Changes an existing rubric's title, criteria or comment style.
 - Required parameters:
   - `courseId`: string
   - `rubricId`: string
 - Optional parameters:
-  - `title`: string
-  - `freeFormCriterionComments`: boolean
-  - `criteria`: array of criterion objects — replaces the whole list; start from `get-rubric`
-- If the rubric is shared or already assessed, Canvas may save the edit as a new rubric; the response says so and gives the new ID
+  - `title`: string — omit to keep the current one
+  - `criteria`: same shape as `create-rubric` — **replaces** every existing criterion; omit to leave them alone
+  - `freeFormComments`: boolean
+  - `keepAssignmentPoints`: boolean — stop Canvas rewriting the points of assignments this rubric grades
+- Canvas's rubric update is a full replace, not a patch: an omitted title renames the rubric and omitted criteria delete every one. This tool reads the rubric first and re-sends whatever it is not changing, outcome alignments included, and refuses to write at all if that read fails
+- Keep each criterion's existing `id` (from `get-rubric`) on rows you are keeping, or grading already done against them stops lining up
+- Warns if Canvas clones the rubric instead of editing it, which it does when the rubric is in use in more than one place
 
 ### set-rubric-criterion-outcome
-Aligns one rubric criterion to a learning outcome, or removes the alignment, leaving the rest of the rubric unchanged.
+Aligns one rubric criterion to a learning outcome, or removes the alignment, leaving the rest of the rubric unchanged. Runs through `update-rubric`, with the same checks and warnings.
 - Required parameters:
   - `courseId`: string
   - `rubricId`: string
@@ -267,6 +304,7 @@ Aligns one rubric criterion to a learning outcome, or removes the alignment, lea
 - Optional parameters:
   - `useOutcomeRatings`: boolean (default: true) — replace the criterion's title, ratings, and mastery points with the outcome's
   - `useForScoring`: boolean (default: true)
+  - `keepAssignmentPoints`: boolean
 
 ### get-rubric-statistics
 Gets statistics for rubric assessments on an assignment.
@@ -449,37 +487,6 @@ Removes an item from a module.
   - `itemId`: string
 - Returns confirmation of deletion
 
-## Files
-
-### list-folders
-Lists folders in a course Files section.
-- Required parameters:
-  - `courseId`: string
-- Optional parameters:
-  - `folderId`: string — if set, list only immediate subfolders of that folder
-- Without `folderId`, returns the full folder tree with IDs, file/folder counts, and hidden/locked flags
-- With `folderId`, returns only the children of that folder
-
-### list-files
-Lists files in a course Files section.
-- Required parameters:
-  - `courseId`: string
-- Optional parameters:
-  - `folderId`: string — if set, list only files in that folder
-  - `searchTerm`: string — partial filename match
-  - `contentTypes`: string[] — filter by content type, e.g. `["image"]` or `["application/pdf"]`
-- Without `folderId`, returns all course files with folder paths
-- Returns display name, file ID, folder path, content type, and size
-
-### list-folder-contents
-Browses one folder like the Canvas Files UI (subfolders and files together).
-- Required parameters:
-  - `courseId`: string
-- Optional parameters:
-  - `folderId`: string — folder ID; use `"root"` or omit for the course Files root
-  - `path`: string — path relative to course files (e.g. `Workshops/Slides`); overrides `folderId` when set
-- Returns folder metadata plus immediate subfolders and files
-
 ## Pages
 
 ### list-pages
@@ -503,6 +510,8 @@ Updates (or creates) a page by URL slug.
 - Optional parameters:
   - `title`: string
   - `body`: string (HTML)
+  - `published`: boolean — whether students can see the page
+  - `notifyOfUpdate`: boolean — notify the class that the page changed
   - `editingRoles`: string (comma-separated roles)
 - Returns confirmation and updated page info
 
@@ -573,7 +582,15 @@ Creates a new quiz in a course.
   - `due_at`: string (ISO 8601 format)
   - `points_possible`: number
   - `published`: boolean
+  - `time_limit`: number — minutes a student gets once they start, or `0` for no time limit. This is the clock, not the due date. Extra time from `extend-quiz-time` is added on top of it and does nothing without it.
+  - `allowed_attempts`: number — how many times a student may take the quiz; `1` is Canvas's default, `-1` is unlimited
+  - `access_code`: string — password required to start the quiz; `''` removes it
+  - `one_question_at_a_time`: boolean — one question per page
+  - `cant_go_back`: boolean — prevent returning to an answered question. **Requires `one_question_at_a_time`**; Canvas stores it either way and silently ignores it otherwise, so it is refused rather than sent when the pairing is missing
+  - `one_time_results`: boolean — students see their results only once, right after submitting
+  - `shuffle_answers`: boolean — randomize answer order per student
 - Returns the newly created quiz object
+- `create-quiz` and `update-quiz` take **exactly the same** settings, asserted by a test — a setting you can only choose at creation is one you would have to delete a quiz to fix
 
 ### update-quiz
 Updates an existing quiz.
@@ -582,6 +599,8 @@ Updates an existing quiz.
   - `quizId`: string
 - Optional parameters: same as `create-quiz`
 - Returns the updated quiz object
+- `cant_go_back: true` is accepted when the quiz **already** has `one_question_at_a_time` on — the tool reads the quiz to check, rather than judging on the call's arguments alone
+- An omitted setting is never sent, so a rename cannot strip a quiz's clock or password
 
 ### delete-quiz
 Deletes a quiz.
@@ -672,7 +691,9 @@ Deletes a quiz question group.
   - `groupId`: string
 - Returns confirmation of deletion
 
-## Quiz Results
+## Quiz Results (Classic)
+
+Reading and regrading what students actually did on a **Classic** quiz. None of these reach New Quizzes, whose IDs live in a separate space — a New Quiz's ID passed here can name an unrelated Classic quiz. For a New Quiz, use `get-new-quiz-report`, or `list-assignment-submissions` with its assignment ID.
 
 ### list-quiz-submissions
 Lists every student's quiz attempt with score, timing, and state. The starting point for quiz analysis.
@@ -680,8 +701,9 @@ Lists every student's quiz attempt with score, timing, and state. The starting p
   - `courseId`: string
   - `quizId`: string
 - Optional parameters:
-  - `anonymous`: boolean (default: true) — replace student identity with a stable pseudonym
-- Returns a class-level score summary plus per-attempt `score`, `kept_score`, `time_spent`, `workflow_state`, and `fudge_points`
+  - `anonymous`: boolean (default: true) — replace student identity with a stable pseudonym; `false` shows real names
+- Returns a class-level score summary plus per-attempt `score`, `kept_score`, `time_spent`, `workflow_state`, `extra_time`, `extra_attempts` and `fudge_points`
+- A student granted an extension before starting appears with `workflow_state: settings_only`. That row holds the extension and no attempt, so it is listed but not counted in the summary.
 - **Privacy**: Student data is anonymized by default
 
 ### get-quiz-statistics
@@ -691,11 +713,11 @@ Aggregate item analysis for a quiz.
   - `quizId`: string
 - Optional parameters:
   - `allVersions`: boolean (default: false) — include every attempt rather than the most recent per student
-- Returns per-question response distribution across answer choices, `difficulty_index`, `alpha`, and point-biserial correlation per distractor, plus class mean/stdev/percentiles
+- Returns per-question response distribution across answer choices, `difficulty_index`, `alpha`, and point-biserial correlation per distractor, plus class mean/high/low/stdev
 - Aggregate only — contains no per-student data
 
 ### get-quiz-submission-answers
-One student's actual answer to every question, joined against question text and the correct answer.
+One student's actual answer to every question, joined against the question text and the correct answer.
 - Required parameters:
   - `courseId`: string
   - `quizId`: string
@@ -704,11 +726,12 @@ One student's actual answer to every question, joined against question text and 
   - `attempt`: number (default: most recent)
   - `anonymous`: boolean (default: true)
 - Returns per-question `given_answer`, `correct_answers`, `points_earned`, and `correct`
+- Questions are joined as that attempt was shown them, not as the quiz reads today. That matters for a question group drawing from a bank, whose drawn questions are not in the quiz's own question list, and for a quiz edited after the student took it.
 - Requires a graded quiz (`quiz_type: assignment` or `graded_survey`); practice quizzes have no backing assignment
 - **Privacy**: Student data is anonymized by default
 
 ### get-quiz-report
-Generates (or reuses) a Canvas quiz report and returns its parsed contents. Polls until generation completes, up to 90 seconds.
+Generates (or reuses) a Canvas quiz report and returns its parsed contents.
 - Required parameters:
   - `courseId`: string
   - `quizId`: string
@@ -716,10 +739,12 @@ Generates (or reuses) a Canvas quiz report and returns its parsed contents. Poll
   - `reportType`: `"student_analysis"` | `"item_analysis"` (default: `student_analysis`)
   - `allVersions`: boolean (default: false)
   - `format`: `"summary"` | `"full"` (default: `summary`) — `full` returns every cell of the answer matrix and can be large
-  - `regenerate`: boolean (default: false) — force a fresh report instead of reusing an existing one
+  - `regenerate`: boolean (default: false) — ask for a new report; Canvas still returns the existing one if no submissions have arrived since
+  - `waitSeconds`: number, 0–50 (default: 30) — how long to wait on a report that is still generating
   - `anonymous`: boolean (default: true)
 - `student_analysis` gives the whole-class student x question answer matrix; `item_analysis` gives per-question difficulty and discrimination
-- If generation exceeds 90 seconds the tool returns a message; call it again to pick up the finished file
+- In `full` format each question's points column is keyed `"<question id>: points"`. Canvas heads every one of them with the question's points possible, so the raw headers repeat.
+- If the report is not ready within `waitSeconds`, the tool says so; calling it again with the same arguments picks up the same report rather than starting another. A report Canvas fails to generate is reported as an error, not as still generating.
 - **Privacy**: Names are pseudonymized and SIS/section columns are blanked by default
 
 ### get-quiz-submission-events
@@ -731,6 +756,7 @@ The event trail for a single quiz attempt.
 - Optional parameters:
   - `attempt`: number (default: most recent)
 - Returns answer-change history and page focus/blur events, with a `page_left_count` summary
+- Canvas records these only while the course has **Quiz Log Auditing** enabled, and only from when it was turned on. An empty log is not evidence that the student stayed on the page.
 
 ### update-quiz-submission-score
 Regrades a quiz attempt.
@@ -740,9 +766,40 @@ Regrades a quiz attempt.
   - `submissionId`: string — the quiz submission ID, not the user ID
   - `attempt`: number
 - Optional parameters (at least one required):
-  - `fudgePoints`: number — points added to or subtracted from the total
+  - `fudgePoints`: number — **sets** the attempt's fudge points (added to its total, or subtracted if negative), replacing any already there
   - `questions`: object keyed by question ID, e.g. `{ "1234": { "score": 2, "comment": "Accepted alternative phrasing" } }`
 - Returns the updated score, kept score, and fudge points
+
+## Question Banks (Classic)
+
+The `AssessmentQuestionBank` store — the pools a **Classic** quiz draws random questions from. A Classic quiz's question group (`list-quiz-question-groups`) names one by `assessment_question_bank_id`; these tools say what is inside it.
+
+> **New Quizzes item banks are a different store and are NOT reachable here — or anywhere in the Canvas API.** They are held by a separate Instructure service (AMS), which Canvas reaches only through an LTI launch: `ItemBanksController#show` renders an empty `<div id="ams_container">` and hands the browser that service's own `api_url` from `Services::Ams`. Probed live 2026-09-17 — `/api/quiz/v1/banks`, `/banks/:id/entries`, `/item_banks`, `/courses/:id/banks` and the `/api/v1` spellings of each all return Canvas's 404 page. See `list-new-quiz-items` for what a New Quiz *does* report about its banks.
+>
+> A course whose quizzes were imported from QTI often has **both**: Classic banks from the import, and New Quizzes banks the importer built alongside them. The two have separate ID spaces and do not cross-reference, so a Classic bank with a matching title is not the pool a New Quiz is drawing from.
+
+> **Read-only, by Canvas's limit rather than by choice.** `config/routes.rb` exposes three GETs under `/api/v1` and nothing else. Creating a bank or adding a question to one exists only on the non-API HTML routes the Canvas UI posts to with a session cookie, where a Bearer token is not accepted.
+
+### list-question-banks
+Lists Classic question banks in a course or account, with question counts.
+- Required parameters (exactly one):
+  - `courseId`: string, or `accountId`: string — giving both, or neither, is refused rather than guessed at
+- Returns `id`, `title`, `question_count`, `context`, `updated_at` per bank
+
+### get-question-bank
+Fetches a single Classic question bank.
+- Required parameters:
+  - `bankId`: string
+- Returns the full `AssessmentQuestionBank` object
+
+### list-question-bank-questions
+Lists the questions inside a Classic bank — the actual pool.
+- Required parameters:
+  - `bankId`: string
+- Optional parameters:
+  - `full`: boolean (default: false) — include answer keys and feedback
+- Canvas returns the answer key whether or not it is asked for (verified live 2026-09-17), so `full` controls what is **shown**, not what is fetched.
+- A bank question is a **template**: a quiz that pulls it holds its own copy, so editing the bank does not change quizzes already built from it.
 
 ## ePortfolios
 
@@ -763,3 +820,689 @@ Lists all pages in an ePortfolio.
 - Required parameters:
   - `eportfolioId`: string
 - Returns page ID, eportfolio_id, position, name, content, and timestamps
+
+## Grading Queue
+
+### list-grading-todo
+The instructor's grading queue across all courses — every assignment with submissions waiting to be graded.
+- No required parameters
+- Optional parameters:
+  - `courseIds`: string[] — restrict to these courses
+  - `includeUngradedQuizzes`: boolean (default: true)
+  - `minNeedsGrading`: number (default: 1)
+- Returns course, assignment, `needs_grading_count`, due date, and Canvas URL, sorted by backlog size
+
+### get-todo-counts
+Fast count of submissions needing grading, without listing them.
+- No parameters
+- Returns `needs_grading_count` and `assignments_needing_submitting`
+
+## Grades & Intervention
+
+### get-course-grades
+Current grade for every student in a course, sorted lowest first.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `belowScore`: number — only students under this percentage
+  - `includeInactive`: boolean (default: false) — include inactive/concluded enrollments
+  - `limit`: number (default: 0 = all) — return only the N lowest-scoring students
+  - `anonymous`: boolean (default: **false**)
+- Returns current/final score and grade, points, `unposted_current_score`, `last_activity_at`, and enrollment `state`
+
+### list-missing-submissions
+Every missing (and optionally late) submission in a course, grouped by student.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `includeLate`: boolean (default: false)
+  - `studentIds`: string[]
+  - `includeInactive`: boolean (default: false) — include inactive/concluded enrollments
+  - `anonymous`: boolean (default: **false**)
+- Returns per-student missing/late counts, enrollment `state`, and the specific assignments, sorted by most outstanding
+
+### get-student-engagement
+Per-student page views, participations, and on-time/late/missing breakdown from Canvas Analytics.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `limit`: number (default: 0 = all) — return only the N least-engaged students
+  - `includeInactive`: boolean (default: false) — include inactive/concluded enrollments
+  - `anonymous`: boolean (default: **false**)
+- Returns engagement rows with enrollment `state`, sorted least-engaged first
+- Requires Analytics to be enabled by your Canvas admin
+
+> **Enrollment status is consistent across the roster tools.** `list-students`, `get-course-grades`, `list-missing-submissions`, and `get-student-engagement` all default to currently-enrolled students only (`active` + `invited`), all accept `includeInactive` to widen to `inactive` + `completed`, and all label each row with its enrollment state. The default matters for intervention work: a student who dropped the course should not appear on an outreach list.
+
+## New Quizzes
+
+New Quizzes use a separate API root (`/api/quiz/v1`) from Classic Quizzes. A New Quiz's ID **is** its assignment ID — pass it to `list-assignment-submissions` and `grade-submission` to grade essay responses.
+
+### list-new-quizzes
+Lists New Quizzes in a course.
+- Required parameters:
+  - `courseId`: string
+
+### get-new-quiz
+Fetches a single New Quiz including its settings.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+
+### create-new-quiz
+Creates a New Quiz. Returns the assignment ID used to add questions.
+- Required parameters:
+  - `courseId`: string
+  - `title`: string
+- Optional parameters:
+  - `instructions`, `assignmentGroupId`, `dueAt`, `unlockAt`, `lockAt`: string
+  - `pointsPossible`, `timeLimitMinutes`, `maxAttempts`: number
+  - `gradingType`: `points` | `percent` | `letter_grade` | `gpa_scale` | `pass_fail`
+  - `shuffleQuestions`, `shuffleAnswers`: boolean
+  - `quizSettings`: object — raw `quiz_settings` escape hatch
+
+### update-new-quiz
+Updates an existing New Quiz. Only the fields you pass change.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+
+### delete-new-quiz
+Deletes a New Quiz and its underlying assignment.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+
+### list-new-quiz-items
+Lists questions in a New Quiz, including the ones backed by item banks.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+- Optional parameters:
+  - `full`: boolean (default: false) — include answer keys
+
+A New Quiz item has one of four `entry_type`s, and two of them involve a bank. They are not the same thing, and until 1.21.0 both were run through a summary shaped for a plain question — which reads `entry.interaction_type_slug`, `entry.title` and `entry.item_body`, fields neither of them has at that level. Both rendered as a row of nulls, so a test built from banks looked empty. Shapes captured live 2026-09-17:
+
+| `entry_type` | What it is | Reported as |
+| --- | --- | --- |
+| `Item` | An ordinary question | `type`, `title`, `item_body` |
+| `Stimulus` | A shared reading passage | as above; see the stimulus note below |
+| `Bank` | **A random draw.** One item stands for the whole draw | `bank_id`, `bank_title`, `draws_questions` (from `properties.sample_num`), `pool_size` |
+| `BankEntry` | **One question that lives in a bank**, linked into the quiz | the question, unwrapped from one extra level of nesting, plus `bank_id` |
+
+A `BankEntry` carries its whole question, answer key included — nothing about it is unreadable, so it is shown like any other question. A `Bank` does not: which questions a student sees is decided at attempt time, and the pool is in the AMS service. When a quiz contains draws, the answer ends with a note naming each one (`item 9624 draws 8 of 12 from bank 290 (...)`) and saying where the pool can be opened. The note fires for draws only.
+
+### get-new-quiz-item
+Fetches one question with its full payload and answer key.
+- Required parameters:
+  - `courseId`, `assignmentId`, `itemId`: string
+
+### create-new-quiz-item
+Adds a question. Answer IDs and scoring rules are generated for you.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - `interactionType`: `choice` | `multi-answer` | `true-false` | `essay` | `numeric` | `matching` | `rich-fill-blank` | `ordering` | `categorization` | `hot-spot` (unless using `rawEntry`)
+  - `body`: string (unless using `rawEntry`)
+- Optional parameters:
+  - `title`: string, `pointsPossible`: number (default: 1), `position`: number
+  - `entryType`: `Item` (default) | `Stimulus` | `Bank` | `BankEntry`
+  - `stimulusQuizEntryId`: string — attach this question to an existing stimulus
+  - `choices`: string[] — for `choice` and `multi-answer`
+  - `correctChoiceIndex`: number — 0-based, for `choice`
+  - `correctChoiceIndexes`: number[] — 0-based, for `multi-answer`
+  - `partialCredit`: boolean — `multi-answer` scoring (default: all-or-nothing)
+  - `correctBoolean`: boolean — for `true-false`
+  - `numericAnswer`, `numericMargin`: number; `numericMarginType`: `absolute` | `percent`
+  - `gradingNotes`: string — for `essay`
+  - `matchPairs`: `{ left, right }[]` — correct pairings, for `matching`
+  - `distractors`: string[] — extra unmatched answer options, for `matching`
+  - `imageUrl`: string — for `hot-spot`, the image students click on
+  - `imagePixelWidth`, `imagePixelHeight`: number — the image's pixel size; give both to specify the hotspot in pixels
+  - `hotspotRect`: `{ x, y, width, height }` — for `hot-spot`, the correct region as a rectangle
+  - `hotspotOval`: `{ x, y, width, height }` — for `hot-spot`, the correct region as an ellipse, given by its bounding box
+  - `hotspotPolygon`: `{ x, y }[]` — for `hot-spot`, the correct region as 3+ points
+  - `feedback`: `{ neutral?, correct?, incorrect? }`
+  - `rawEntry`: object — full `entry` payload for formula and file-upload
+
+> **Note on stimulus items — stimulus support is READ-ONLY.** Tested exhaustively against a live instance (2026-08-03) with a genuine UI-authored stimulus present. Neither half can be written:
+>
+> - **Creating a stimulus is refused.** Sending an entry as `entry_type: "Item"` gives a descriptive `422` naming the question fields it wants; sending the *same* entry as `"Stimulus"` (or `"BankEntry"`) gives a bare `400` with a plain-text `Bad Request` body. The Stimulus request never reaches field validation, so no payload can succeed. The Canvas UI does it in two steps against a **different service** (`quiz-api-*.instructure.com/api/quizzes/:internal_id/stimuli`, then `/quiz_entries`), on an internal quiz ID the public API never exposes — which is why the public endpoint has no way to express it.
+> - **Attaching a question is refused.** `stimulus_quiz_entry_id` was rejected four ways — on create and on update, as JSON and as form-encoded params — using both of a stimulus's two IDs (its item/quiz_entry ID *and* its inner entry ID). Every attempt returned `200` and stored `""`. The field appears on the `QuizItem` response model but in neither the POST nor the PATCH parameter list.
+>
+> Both are therefore **refused up front** rather than attempted: `create-new-quiz-item` and `update-new-quiz-item` reject `stimulusQuizEntryId`, and `create-new-quiz-item` rejects any `entryType` other than `Item`. Forwarding them would return a cheerful success for a question that stands alone on the page.
+>
+> **Reading works and is the useful half.** `list-new-quiz-items` and `get-new-quiz-item` report `stimulus_quiz_entry_id`, so an attach made in the UI can be confirmed here. An attached question carries the stimulus's **item ID** (e.g. `"9307"`), not its inner entry ID.
+>
+> The working path: in the Canvas UI choose **Insert Content > Stimulus**, build the passage, then add the questions inside its block. Then confirm with `list-new-quiz-items`.
+>
+> *(Do not "fix" this by switching the client to form encoding. It was tried: Rails parses `interaction_data[choices][0][id]` into a string-keyed **hash** rather than an array, and turns numbers into strings, so a form-encoded item is stored malformed — and a malformed item can break the entire quiz editor page, not just itself.)*
+
+> **Note on `hot-spot`:** the shape came from a UI-authored exemplar and was confirmed rendering in the Canvas editor (2026-08-04).
+>
+> - **Coordinates are measured from the top-left and stored as fractions of the image between 0 and 1.** Pass `imagePixelWidth` and `imagePixelHeight` (both, or neither) to give them in **pixels** instead and have them converted. Prefer this: every hotspot in the first live round rendered perfectly and sat in the wrong place, because fractions had been estimated by eye. Pixel positions can be read off any image viewer; fractions cannot be guessed.
+> - A coordinate landing outside the image is refused either way. Canvas stores it happily and puts the hotspot where no answer can ever be correct — silent, and visible only to the student sitting the quiz.
+> - The three shapes match the three tools in the Canvas editor and are mutually exclusive. `hotspotRect` writes `type: "square"` (the editor calls it *rectangle* in the UI and stores `square`), `hotspotOval` writes `"oval"`, `hotspotPolygon` writes `"polygon"`.
+> - **A square or oval is stored as two points — opposite corners of its bounding box — not as an outline.** The oval's two corners come back from the editor in whatever order they were dragged, which reads convincingly as `[center, radii]`; it is not. Checking the numbers against a known landmark in the same image is what settled it, and under the wrong reading the hotspot would have been silently misplaced.
+> - **The image can be an ordinary Canvas Files URL** (verified live), so `upload-course-file` then `create-new-quiz-item` automates the whole flow. The New Quizzes S3 `item_media` bucket is just where the UI puts its own uploads, not a requirement.
+> - The image is fetched by the student's browser, so it **must be published and student-visible**. An unpublished or link-only file renders for a teacher and fails for students — see `set-file-availability`.
+> - Only one hotspot region per item is supported; `hotspots_count` is always 1. Multiple regions are untested.
+
+> **Note on `matching`:** the builder copies the shape the Canvas editor itself writes, captured from a UI-authored exemplar, after a version derived from the published appendix stored cleanly and then **broke the entire quiz page** in the UI (one bad item takes down the whole quiz, not just itself). If you hand-roll a matching item via `rawEntry`, match these exactly: `interaction_data.answers` are plain strings (distractors included); `interaction_data.questions` are `{ id, item_body }` where `item_body` is raw text, *not* `<p>`-wrapped, and `id` is a short numeric string like `"52556"`, not a UUID; `scoring_data.value` is a **map of question id → answer text**; `scoring_data.edit_data` is required (`{ matches: [{ answer_body, question_id, question_body }], distractors: [] }`) because the editor builds its match rows from it; and `scoring_algorithm` is `PartialDeep` or `DeepEquals`. There is no `answer_type: "match_string"` — the UI writes none.
+>
+> *(An earlier version of this note said `scoring_data.value` must be an array of `"questionId:answerId"` strings. That was wrong: the map is correct, and the `property '#/value/0' of type object did not match` error that prompted it came from sending an array of objects. Corrected 2026-08-03.)*
+
+### update-new-quiz-item
+Updates a question's points, position, or full content.
+- Required parameters:
+  - `courseId`, `assignmentId`, `itemId`: string
+- Optional parameters:
+  - `pointsPossible`, `position`: number
+  - `rawEntry`: object — complete replacement entry
+
+### delete-new-quiz-item
+Deletes a question from a New Quiz.
+- Required parameters:
+  - `courseId`, `assignmentId`, `itemId`: string
+
+### get-new-quiz-report
+Generates a New Quiz report, polls the async job, then downloads and parses it. `item_analysis` gives per-question difficulty, discrimination and the class's spread across the answer choices; `student_analysis` gives each student's answer and score per question.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+- Optional parameters:
+  - `reportType`: `item_analysis` (default) | `student_analysis`
+  - `format`: `summary` (default) | `full` — `full` adds every student's per-question responses
+  - `waitSeconds`: number (default: 30, max 50)
+  - `progressId`: string — resume the job from a call that returned before the report was ready
+  - `anonymous`: boolean (default: true) — `student_analysis` only
+
+Notes:
+- Generation is asynchronous. If the report is not ready within `waitSeconds`, the tool returns the progress ID; call it again with `progressId` to pick up **the same** job. Calling without one queues another report.
+- Canvas signs the report download for a single use, so a report is read on the call that finds it finished. If the download fails, generate a fresh report (call without `progressId`).
+
+## Conversations (read-only)
+
+These tools **read** the Canvas inbox only. Sending is deliberately not exposed — student messages deserve human-written replies.
+
+### list-conversations
+Lists inbox messages with participants, subject, preview, and read state.
+- No required parameters
+- Optional parameters:
+  - `scope`: `inbox` (default) | `unread` | `starred` | `archived` | `sent`
+  - `courseId`: string
+  - `limit`: number (default: 25)
+
+### get-conversation
+Reads the full message thread of one conversation.
+- Required parameters:
+  - `conversationId`: string
+- Optional parameters:
+  - `markAsRead`: boolean (default: false) — leaves your inbox untouched unless set
+
+### get-unread-message-count
+Returns the number of unread inbox conversations.
+- No parameters
+
+## Course Settings & Syllabus
+
+### get-syllabus
+Reads a course's syllabus. The syllabus is a course attribute (`course[syllabus_body]`), not a wiki page, so it never appears in `list-pages` and `get-page-content` cannot reach it.
+- Required parameters:
+  - `courseId`: string
+
+### update-syllabus
+Writes the course syllabus. Takes HTML.
+- Required parameters:
+  - `courseId`: string
+  - `body`: string — HTML, rendered as-is by Canvas
+- Optional parameters:
+  - `mode`: `replace` (default) | `append` | `prepend`
+  - `backup`: boolean (default: true) — copy the outgoing syllabus to an unpublished page before replacing it
+- **The syllabus has no revision history of its own.** Wiki pages do, so a replace first copies the outgoing text to an unpublished page called **"Syllabus - Backup"** (`syllabus-backup`), which borrows that history: every backup is another revision of the same page, reachable with `list-page-revisions` and `revert-page-revision`.
+- The backup is written *before* the overwrite, and a failed backup aborts the replacement — a backup that silently failed is worse than none, since the caller would believe the old text is recoverable
+- If Canvas returns the backup page as published, the replacement is aborted rather than leave students looking at an outdated syllabus
+- `append`/`prepend` destroy nothing, so they skip the backup
+- Confirms the write from Canvas's own response rather than assuming a 200 means saved
+
+### update-course-settings
+Changes a course's name, landing page, dates, and visibility.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `name`, `courseCode`: string
+  - `defaultView`: `feed` | `wiki` | `modules` | `assignments` | `syllabus` — the page students land on
+  - `isPublic`: boolean — visible to the public, including logged-out visitors
+  - `publicSyllabus`: boolean — expose only the syllabus
+  - `startAt`, `endAt`: string (ISO 8601)
+  - `timeZone`: string — IANA zone, e.g. `America/Los_Angeles`
+- Reports each field against what Canvas echoed back, and warns when a setting did not take — Canvas ignores settings it will not accept without erroring
+- `defaultView: 'wiki'` shows the front page; with no front page set, students land on an error. Set one with `set-front-page`.
+
+### set-course-publish-state
+Publishes, unpublishes, or concludes a course.
+- Required parameters:
+  - `courseId`: string
+  - `state`: `published` | `unpublished` | `concluded`
+- Maps to `course[event]`: `offer`, `claim`, `conclude`
+- **Cannot delete a course.** `course[event]` also accepts `delete`, which removes the course and every enrollment in it; it is deliberately not exposed, and a test asserts no tool reaches it.
+- Canvas refuses to unpublish a course once students have submitted work, and signals that by leaving the state unchanged rather than by erroring — the tool checks `workflow_state` and warns
+
+### set-front-page
+Marks a page as the course's front page.
+- Required parameters:
+  - `courseId`: string
+  - `pageUrl`: string — the page's URL slug, from `list-pages`
+- Optional parameters:
+  - `makeLandingPage`: boolean (default: false) — also set the course to open on it
+- An unpublished page cannot be a front page; Canvas declines quietly, so the tool raises it as an error
+
+## Calendar
+
+### list-calendar-events
+Lists a course's calendar events — meetings, exams, office hours; anything dated that is not an assignment.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `startDate`, `endDate`: string (ISO 8601 date) — default today through 60 days out
+  - `allEvents`: boolean (default: false) — ignore the date range entirely
+  - `includeAssignments`: boolean (default: false) — also include assignment due dates, which Canvas serves as a separate event type (a second request)
+
+### create-calendar-event
+Puts an event on a course calendar, optionally as a recurring series.
+- Required parameters:
+  - `courseId`: string
+  - `title`: string
+  - `startAt`: string (ISO 8601)
+- Optional parameters:
+  - `endAt`: string (ISO 8601)
+  - `description`: string — HTML
+  - `locationName`: string — a room or a meeting link
+  - `allDay`: boolean (default: false)
+  - `repeatCount`: integer 0–200 — how many *additional* copies; 9 gives 10 events
+  - `repeatFrequency`: `daily` | `weekly` | `monthly` — required with `repeatCount`
+  - `repeatInterval`: integer — gap in units of the frequency; 2 with `weekly` is fortnightly
+- **Calendar events have no draft state.** In a published course, students see the event as soon as it exists.
+- `repeatCount` and `repeatFrequency` are refused unless both are present: a count with no frequency has no rhythm, and a frequency with no count silently creates a single event
+- Canvas interprets a bare date in the *course's* time zone, so a stored start that differs from the one requested is reported rather than passed over
+
+### update-calendar-event
+Moves or edits an event.
+- Required parameters:
+  - `eventId`: string
+- Optional parameters:
+  - `title`, `startAt`, `endAt`, `description`, `locationName`
+  - `which`: `one` (default) | `all` | `following` — for a recurring series, whether this touches one occurrence, the whole series, or this one and every later one
+- Defaults to a single occurrence, so a series is never rewritten by accident
+- Diffs what Canvas stored against what was asked for and warns on a mismatch
+
+### delete-calendar-event
+Removes an event.
+- Required parameters:
+  - `eventId`: string
+- Optional parameters:
+  - `which`: `one` (default) | `all` | `following`
+  - `cancelReason`: string — shown to students who had it on their calendar
+- `which: 'all'` deletes an entire recurring series and cannot be undone from here
+
+## Course Copy
+
+### copy-course-content
+Copies an entire course into another — last term's assignments, pages, modules, quizzes and files into this term's shell.
+- Required parameters:
+  - `sourceCourseId`: string — the course to copy FROM
+  - `destinationCourseId`: string — the course to copy INTO
+- Optional parameters:
+  - `allowExistingContent`: boolean (default: false) — proceed even though the destination is not empty
+  - `shiftDates`: boolean (default: false) — move dates onto the new term's calendar
+  - `oldStartDate`, `newStartDate`: string (ISO 8601) — **required** when `shiftDates` is on
+  - `oldEndDate`, `newEndDate`: string (ISO 8601) — supply these too and the term is scaled, not just offset
+  - `daySubstitutions`: object — remap weekdays, e.g. `{"1":"2"}` moves Monday's items to Tuesday (0=Sunday…6=Saturday)
+  - `removeDates`: boolean (default: false) — strip all dates instead of shifting them; mutually exclusive with `shiftDates`
+- **A copy adds to the destination rather than replacing it, and Canvas cannot undo one.** A non-empty destination is refused, naming what is already there, unless `allowExistingContent` is set.
+- Copying a course into itself is refused
+- `shiftDates` without both start dates is refused: Canvas would otherwise accept it and the copy would arrive carrying last term's due dates
+- **Canvas keeps every item on its original day of the week**, rounding the shift to whole weeks rather than applying the literal offset between your two dates. Verified live: a 358-day request was applied as 357 (51 weeks), so a Friday assignment stayed on a Friday. Usually what a class schedule wants, but content can land a few days either side of the dates you name.
+- Undated content stays undated; times of day are preserved exactly
+- Asynchronous. Returns a migration ID; the copy keeps running in the background for minutes on a full course.
+
+### get-content-migration
+Checks how a copy is going and what it did or did not bring across.
+- Required parameters:
+  - `courseId`: string — the course being copied INTO
+  - `migrationId`: string
+- While running, reports the completion percentage from the migration's linked progress record
+- **Once finished, reports Canvas's migration issues.** A migration can report `completed` and still have dropped content; that is recorded nowhere else.
+- A migration parked in `waiting_for_select` is called out — selective import is not supported here and must be finished in the Canvas UI
+
+### list-content-migrations
+Lists the copies and imports run into a course, newest first.
+- Required parameters:
+  - `courseId`: string
+- Useful for finding a migration ID, or checking whether a shell has already been copied into before copying again
+
+## Files
+
+### upload-course-file
+Uploads a local file into a course's Files area via Canvas's three-step upload handshake.
+- Required parameters:
+  - `courseId`: string
+  - `filePath`: string — absolute path to the file on this machine
+- Optional parameters:
+  - `fileName`: string — name to store it under (defaults to the local file name)
+  - `folderPath`: string — destination folder path, e.g. `/Handouts` (defaults to the course root)
+  - `folderId`: string — destination folder by ID; takes precedence over `folderPath`
+  - `onDuplicate`: `rename` (default) | `overwrite` — `overwrite` cannot be undone
+  - `contentType`: string — MIME type override; guessed from the extension when omitted
+- Canvas renames rather than overwrites by default, so the tool reports the name the file actually landed under
+- Whether an upload arrives published or unpublished varies by instance — check with `list-course-files`
+
+### set-file-availability
+Publishes, unpublishes, or hides a course file behind a link.
+- Required parameters:
+  - `fileId`: string (from `list-course-files`)
+  - `state`: `published` | `unpublished` | `link-only`
+- Optional parameters:
+  - `availableFrom`: string (ISO 8601) — only meaningful with `published`
+  - `availableUntil`: string (ISO 8601) — only meaningful with `published`
+
+### list-course-files
+Lists files in a course, or in one folder.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `searchTerm`: string — Canvas requires at least 3 characters
+  - `folderId`: string — lists that folder only
+- `folderId` uses a different Canvas endpoint: `/courses/:id/files` silently ignores a folder filter and returns the whole course
+
+### get-course-file
+Fetches a file from a course's Files area so it can be looked at — the read-only counterpart to `upload-course-file`.
+- Required parameters:
+  - `fileId`: string (from `list-course-files`)
+- Optional parameters:
+  - `saveToPath`: string — absolute path to write the file to. Returns a summary instead of the file; use for large images
+- **Reports an image's pixel dimensions**, read straight from the file header (PNG, JPEG and GIF). This is what hot-spot authoring needs: pass them to `create-new-quiz-item` as `imagePixelWidth` / `imagePixelHeight` and give the hotspot in pixels
+- Returns the image itself, so a hotspot can be placed against the actual picture rather than a description of it. Placing one on an unseen image is how a well-formed hotspot ends up over the wrong part of the picture
+- A file whose header cannot be read says so, rather than reporting a plausible guess
+- Non-image files are summarised rather than dumped as base64; use `saveToPath` to get the bytes
+- **A page Canvas creates is UNPUBLISHED**, so it is invisible to students while looking perfectly normal to a teacher. Pass `published: true` for anything students are meant to read. The tool warns when a write leaves a page unpublished, unless `published: false` was explicit
+- **Canvas derives a new page's slug from its TITLE, not from `pageUrl`.** Creating `mcp-publish-probe` with the title "MCP Publish Probe (throwaway)" stored it at `mcp-publish-probe-throwaway`, and reading back the requested slug 404s. The tool reports the stored slug and says so when the two differ
+- `notifyOfUpdate` sends a real notification to the class. It is never sent unless asked for
+- **Adds a page-end spacer.** Canvas puts its Previous/Next module controls flush against the body — `div#module_navigation_target` has no spacing above it and `div#wiki_page_show` none below — so a page whose last element has no bottom margin ends hard against them. A `div.mcp-page-end` of fixed height is appended. Idempotent: the marker survives Canvas's sanitizer (verified live), so a read-edit-write round trip does not stack them up. Turn it off with `pageEndSpacing: false`
+- A fixed height is used rather than a margin, because a margin on the last child can collapse away
+- **These parameters are flat**, not wrapped in `assignment_group[...]` the way assignments and quizzes are. Sending the wrapper made Canvas ignore every field, return 200, and create a default group called "Assignments" — fixed in 1.19.2
+- The tool re-reads what Canvas stored and warns if the name, weight or position differ from what was asked
+- **`rules` is not accepted on create** — Canvas takes it only on update. Use `update-assignment-group`
+
+---
+
+### update-assignment-group
+Renames an assignment group, changes its weight or position, or sets its grading rules.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentGroupId`: string (from `list-assignment-groups`)
+- Optional parameters:
+  - `name`, `position`, `group_weight`, `sis_source_id`, `integration_data`
+  - `rules`: object — `{"drop_lowest": 1}`, `{"drop_highest": 1}`, `{"never_drop": [assignmentId, ...]}`. Pass `{}` to clear
+- **Rules can only be set here.** Canvas's create endpoint accepts no rules at all
+- Canvas is asymmetric about rules: it **returns** them as an object but **takes** them as a newline-separated `key:value` string, with `never_drop` repeated per assignment. The object form is serialised for you
+- Verified live 2026-08-05: `drop_lowest`, `drop_highest` and clearing with `{}` all work
+- **`never_drop` returns a bare 500 on this instance**, with the assignment published or not, alone or beside a drop rule. The other rules use the identical serialiser and work, so the encoding is not the cause. Set never-drop exemptions in the Canvas UI instead; the tool explains this rather than passing the 500 along, and warns that any drop rules in the same call did not land
+- The tool re-reads the group and reports what Canvas actually stored — a wrong guess is loud, not silent
+- Omitting `rules` leaves existing rules untouched; an unrecognised rule key is refused rather than silently dropped
+- Only the fields you pass are changed; an update with no fields is refused
+
+
+---
+
+### list-course-folders
+Lists a course's file folders with their IDs and paths.
+- Required parameters:
+  - `courseId`: string
+
+## Overrides & Accommodations
+
+### list-assignment-overrides
+Shows the differentiated due dates on an assignment or New Quiz — who has different dates from the rest of the class.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string (a New Quiz's ID is its assignment ID)
+- Reports the base due date from `include[]=all_dates`, not the assignment's own `due_at`, which Canvas returns relative to the requesting user
+- Warns when "only visible to overrides" is on, since students outside every override then cannot see the assignment at all
+
+### create-assignment-override
+Gives specific students or a whole section different dates.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - Exactly one of `studentIds` (string array) or `sectionId` (string)
+  - At least one of `dueAt`, `unlockAt`, `lockAt` (ISO 8601)
+- Optional parameters:
+  - `title`: string — required by Canvas for student-targeted overrides; defaulted if omitted. Canvas overwrites the title of a section override with the section's own name.
+- Reads back what Canvas stored and warns about anything that did not land, including students Canvas dropped
+
+### update-assignment-override
+Changes the dates or membership of an existing override.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - `overrideId`: string
+- Optional parameters:
+  - `studentIds`: string array — replaces the whole list; students left out lose the override
+  - `title`, `dueAt`, `unlockAt`, `lockAt`
+
+### delete-assignment-override
+Removes an override, returning its students or section to the base dates.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - `overrideId`: string
+
+### extend-due-date
+Gives named students a later due date — the everyday accommodation.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - `studentIds`: string array
+  - `dueAt`: string (ISO 8601)
+- Optional parameters:
+  - `title`: string — label for a newly created override (default: "Extended deadline")
+- Reuses an override that already covers exactly those students instead of stacking a second one
+- Refuses when a matching override also covers students who were not named, rather than moving their deadline as a side effect
+- Moves the due date only; for extra minutes on a timed quiz see `extend-quiz-time`
+
+## Quiz Time Extensions
+
+### extend-quiz-time
+Gives students extra **minutes** on a timed quiz — the clock accommodation, as opposed to the later deadline `extend-due-date` grants. Works with both quiz engines.
+- Required parameters:
+  - `courseId`: string
+  - `quizId`: string — a Classic quiz ID, or a New Quiz's assignment ID
+  - Exactly one of `studentIds` (string array) or `sectionId` (string)
+  - `extraMinutes`: integer 0–10080 (Canvas's own ceiling, one week)
+- Optional parameters:
+  - `extraAttempts`: integer — extra attempts beyond the quiz's limit. **This is the only way to grant a quiz retake**; `extend-assignment-attempts` is refused by Canvas on a quiz's assignment. `0` removes the grant
+  - `reduceChoices`: boolean — **New Quizzes only**: removes one wrong answer from multiple-choice questions with 4+ options
+  - `manuallyUnlocked`: boolean — **Classic Quizzes only**: lets these students take the quiz while it is locked for everyone else
+  - `engine`: `classic` | `new` — only needed when the ID is ambiguous
+- `extraMinutes` is absolute *for this quiz*: calling again replaces that grant rather than adding to it, and `0` removes it (verified on both engines)
+- **On New Quizzes it does not replace a student's course-wide accommodation — the two add together.** Verified in the UI: a course-wide 45 plus a per-quiz 30 reads as `+1 hr 15 min`. Neither value is readable through the API, so the tool states this on every grant rather than detecting it.
+- The engine is detected by probing both APIs. Their ID spaces are independent, so an ID that names a quiz under each is refused as ambiguous rather than guessed
+- An option belonging to the other engine is refused rather than sent, because Canvas ignores unsupported parameters silently
+- Warns when the quiz has no time limit, where extra minutes change nothing
+- A `sectionId` is expanded to its currently-enrolled students, since Canvas has no section-level extension. That is a snapshot: students added later do not inherit it.
+- **New Quizzes only accepts a per-quiz accommodation for students who have already opened that quiz.** To grant extra time *before* an exam, use `set-course-quiz-accommodations`, which has no such restriction. Classic Quizzes does not restrict this. Canvas reports the refusal as a 404 it documents as a missing course or assignment; the tool translates it.
+
+### list-quiz-extensions
+Shows who already has extra time or attempts on a quiz.
+- Required parameters:
+  - `courseId`: string
+  - `quizId`: string
+- Optional parameters:
+  - `engine`: `classic` | `new` — only needed when the ID is ambiguous
+- **Classic Quizzes only.** Canvas's New Quizzes accommodations API is write-only; for a New Quiz this says so rather than returning an empty list that would read as "nobody has an accommodation"
+- Classic extensions live on a student's quiz submission, so a student who has never opened the quiz and has no extension does not appear at all
+
+### set-course-quiz-accommodations
+Gives students extra time on **every** New Quiz in a course — the standing IEP/504 accommodation rather than a per-quiz grant.
+- Required parameters:
+  - `courseId`: string
+  - Exactly one of `studentIds` (string array) or `sectionId` (string)
+  - `extraMinutes`: integer 0–10080
+- Optional parameters:
+  - `reduceChoices`: boolean
+  - `applyToInProgressSessions`: boolean — also applies to attempts that are open right now
+- **New Quizzes only.** Classic Quizzes has no course-level equivalent; those need `extend-quiz-time` per quiz.
+- This is also the **only** way to grant New Quizzes extra time before a student has opened the quiz — verified working where a per-quiz grant on the same student and course was refused, and confirmed in the Canvas UI: the granted minutes show on the Moderate page of a quiz the student had never opened
+- Canvas rejects the whole batch if any one user ID is unknown to the New Quizzes service, so nobody receives the accommodation rather than most people
+
+---
+
+### extend-assignment-attempts
+Gives students extra **attempts** at an assignment — another try, for a retake or a technical failure.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+  - Exactly one of `studentIds` (string array) or `sectionId` (string)
+  - `extraAttempts`: integer 0–100
+- Absolute, not a top-up: calling it again replaces the grant, and `0` removes it
+- **Only meaningful when the assignment limits attempts.** Canvas's default is unlimited (`allowed_attempts: -1`), where the grant is accepted, answers 200, and changes nothing — the tool reads the assignment and warns rather than reporting a granted accommodation
+- Verified per student by re-reading the submission, which is where Canvas records `extra_attempts` — the write's own response does not say
+- A `sectionId` is expanded to its currently-enrolled students, and that expansion is a snapshot: students added later get nothing
+- Not a deadline and not a clock — see `extend-due-date` and `extend-quiz-time`
+- **Does not work on a quiz.** Canvas only accepts extra attempts on `online_upload`, `online_url` or `online_text_entry` submissions, and refuses a quiz's assignment outright. Grant a quiz retake with `extend-quiz-time`'s `extraAttempts` instead — the two are spelled almost identically and live on different endpoints
+
+---
+
+### get-late-policy
+Reads the course's policy for missing and late work.
+- Required parameters:
+  - `courseId`: string
+- A course with no policy is reported as that state rather than as an error
+- Renders the missing-submission setting as the **grade the student receives**, matching the Canvas UI, not the deduction the API stores
+
+---
+
+### set-late-policy
+Sets the course's missing/late work policy, creating it if the course has none.
+- Required parameters:
+  - `courseId`: string
+- Optional parameters:
+  - `missingSubmissionGrade`: number 0–100 — the grade missing work automatically receives, as a percentage of the assignment's points (`0` means a zero)
+  - `applyMissingPolicy`: boolean — only needed to turn the missing policy **off**
+  - `lateDeductionPercent`: number 0–100 — deducted per late interval
+  - `lateDeductionInterval`: `"day"` or `"hour"`
+  - `lateMinimumPercent`: number 0–100 — floor below which late deductions stop
+  - `applyLatePolicy`: boolean — only needed to turn the late policy **off**
+- **The API field is a deduction; this parameter is the resulting grade.** `missingSubmissionGrade: 0` is sent as `missing_submission_deduction: 100`. Passing the UI's number to the raw API would invert the policy silently
+- **A percentage without its `_enabled` flag is stored and ignored by Canvas**, so setting any percentage turns the matching policy on. A percentage combined with an explicit `false` switch is refused as a contradiction rather than resolved
+- `lateDeductionInterval` alone is refused — it only says how often a deduction that is not happening would accrue
+- **Changes grades across the entire course, including work already submitted.** Scores students have already seen can change
+- Verified by re-reading the policy, not from the write's response
+
+---
+
+## New Quizzes Item Banks (opt-in)
+
+**These six tools are not registered unless `CANVAS_ENABLE_ITEM_BANKS=true`** (or the extension's "Enable New Quizzes item bank tools" checkbox is ticked). With the flag off they do not appear in the tool list and the server never contacts the hosts they use.
+
+> **They do not use the Canvas API.** There is no Canvas endpoint for a New Quizzes item bank. The banks are held by a separate Instructure service that Canvas enters only through an LTI launch, and these tools work by replaying that launch headlessly: Canvas issues a short-lived web session, signs the launch itself, and the resulting token is exchanged for one the bank service accepts. Nothing is forged, but nothing here is documented either — Instructure can change or withdraw it without notice. Every error from these tools names the private API so a break is not mistaken for a bad call.
+>
+> The session cookie and the minted tokens are held in memory only, never written to disk or logged. `CANVAS_API_TOKEN` is never sent to any host but Canvas. The bank service's region is read from the installed Quizzes 2 tool rather than assumed, though only one instance has been verified.
+
+Two things to know before using them:
+
+- **The bank list is scoped to you, not to the course.** `courseId` supplies the launch context the service requires; it does not filter anything. Launching from two different courses returns the same banks. Narrow with `search` instead.
+- **A question has two IDs.** `entryId` is its membership in a bank — what `delete-item-bank-question` takes. `itemId` is the question itself — what `update-item-bank-question` takes. `list-item-bank-questions` reports both, labelled. Passing one where the other belongs returns a 404 from a service whose errors are not written for you.
+
+Classic question banks are a **different store** with a separate ID space; see [Question Banks (Classic)](#question-banks-classic). A course whose quizzes came from a QTI import usually has both.
+
+### list-item-banks
+Lists the New Quizzes item banks visible to the account the token belongs to.
+- Required parameters:
+  - `courseId`: string — the launch context, **not** a filter
+- Optional parameters:
+  - `search`: string — server-side substring match on the bank title
+  - `page`: number (default: 1)
+  - `perPage`: number (default: 50)
+- Returns `id`, `title`, `question_count`, `shared_with_count`, `permission`, `archived`, `last_used`, `updated_at` per bank, and the size of the whole collection rather than of the page
+
+---
+
+### get-item-bank
+Fetches one item bank.
+- Required parameters:
+  - `courseId`: string — the launch context
+  - `bankId`: string
+- Returns the bank's full record, including `entry_count` and whether it is archived
+
+---
+
+### list-item-bank-questions
+Lists the questions in a bank — the pool a randomising quiz actually draws from.
+- Required parameters:
+  - `courseId`: string — the launch context
+  - `bankId`: string
+- Optional parameters:
+  - `full`: boolean (default: false) — the complete payload of each question, answer key and feedback included, rather than a summary
+  - `text`: string — **matches titles and tags, not question bodies.** A word visible in a question can still match nothing
+  - `interactionType`: one of `choice`, `true-false`, `multi-answer`, `essay`, `numeric`, `matching`, `rich-fill-blank`, `ordering`, `categorization`, `hot-spot`
+  - `page`: number (default: 1), `perPage`: number (default: 50)
+- Each summary carries `entryId`, `itemId`, `interaction_type`, `title`, `item_body`, `status` and `updated_at`
+- **`status: "immutable"` means a student has seen the question** and it can no longer be edited
+
+---
+
+### create-item-bank-question
+Adds a question to an existing bank. Takes the same question parameters as [`create-new-quiz-item`](#create-new-quiz-item) — question text, choices, and which one is correct; answer IDs and scoring rules are generated.
+- Required parameters:
+  - `courseId`: string — the launch context
+  - `bankId`: string — the bank must already exist; creating a bank is not exposed here
+  - `interactionType` and `body`, unless `rawEntry` is given
+- Optional parameters: the full question set — `title`, `choices`, `correctChoiceIndex`, `correctChoiceIndexes`, `partialCredit`, `correctBoolean`, `numericAnswer`, `numericMargin`, `numericMarginType`, `gradingNotes`, `matchPairs`, `distractors`, `blankMatching`, `orderItems`, `topLabel`, `bottomLabel`, `categories`, `imageUrl`, `imagePixelWidth`, `imagePixelHeight`, `hotspotRect`, `hotspotOval`, `hotspotPolygon`, `feedback`, `rawEntry`
+- **There is no `pointsPossible`.** A bank question carries no points: points are set on the quiz item that draws from the bank, so the same question can be worth different amounts in different quizzes
+- Returns both new IDs — the `entryId` to remove it with and the `itemId` to edit it with
+- Two requests under the hood: the question is stored, then linked into the bank. If the link fails the error says so and names the orphaned `itemId`, because a stored-but-unlinked question is in no bank and invisible to every listing
+
+---
+
+### update-item-bank-question
+Replaces a question's content.
+- Required parameters:
+  - `courseId`: string — the launch context
+  - `bankId`: string
+  - `itemId`: string — the **question's** ID, not the `entryId`
+  - `interactionType` and `body`, unless `rawEntry` is given
+- Optional parameters: the same question set as `create-item-bank-question`
+- **A whole-question replacement, not a patch.** Fields you leave out are not preserved; read the current question with `list-item-bank-questions` `full=true` first if you are changing only part of it
+- **A question's type cannot be changed.** To turn a multiple-choice question into an essay, delete it and create a new one
+- A question a student has already seen is immutable and the edit is refused, with that explanation
+
+---
+
+### delete-item-bank-question
+Removes a question from a bank.
+- Required parameters:
+  - `courseId`: string — the launch context
+  - `bankId`: string
+  - `entryId`: string — the **bank entry's** ID, not the `itemId`
+- Quizzes already built from the bank hold their own copies and are unaffected
+
+---
+
+## Diagnostics
+
+### get-server-version
+Reports which build of this server the client has loaded. Use it to confirm an upgrade actually took effect — the MCP server is a child process and is not swapped out without a full restart of the host app.
+- No parameters
+
+---
+
+### refresh-canvas-data
+Discards every cached Canvas response, so the next read of each resource fetches fresh data.
+- No parameters
+- Reads are served from cache for 60 seconds with **no network call**, then revalidated with an ETag. Write tools invalidate what they touch, so changes made *through this server* are always reflected and need no refresh
+- Use it when Canvas changed somewhere else: you edited a quiz or page in the Canvas UI, a co-teacher changed something, or a long-running job (course copy, assignment duplication) finished
+- **This is the only way to defeat the cache.** No read tool can force a fresh fetch on its own — parameters that change only the formatting of a result, such as `list-new-quiz-items`' `full`, share a cache key with the plain call
+- **Why it matters:** a stale read is indistinguishable from the resource not existing. A question attached to a stimulus in the Canvas UI kept not appearing in a cached item listing during development, and was nearly recorded as a Canvas API limitation that does not exist
+- Harmless: it discards local copies only, never Canvas data, and makes no request to Canvas

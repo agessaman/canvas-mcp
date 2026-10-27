@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { jsonObjectParam } from "../jsonObjectParam.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 import { buildRubricAssessment, readSubmissionContent } from "../grading.js";
@@ -64,7 +65,7 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
         points: z.number().optional().describe("Points for this criterion (needed for range or free-form criteria)"),
         comments: z.string().optional().describe("Feedback for this criterion. Students can see it, so include only text the teacher approved"),
       })).optional().describe("Rubric scores, checked against the assignment's rubric before anything is written"),
-      rubric_assessment: z.any().optional().describe("Raw Canvas rubric_assessment object (advanced; unvalidated)"),
+      rubric_assessment: jsonObjectParam("Raw Canvas rubric_assessment object, keyed by criterion id (advanced; unvalidated): {\"criterion_id\": {\"points\": 5, \"comments\": \"...\"}}").optional(),
       comment: z.string().optional().describe("Submission comment students can see. Include only text the teacher approved"),
     },
     { idempotentHint: true },

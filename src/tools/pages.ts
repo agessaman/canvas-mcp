@@ -5,6 +5,35 @@ import { CanvasClient } from "../canvasClient.js";
 // Default slug for the Canvas styleguide page
 const DEFAULT_STYLEGUIDE_SLUG = "canvas-styleguide";
 
+/**
+ * Canvas leaves no gap between a page's content and the module navigation
+ * ("Previous"/"Next") it appends to every page: div#module_navigation_target
+ * has no spacing above it, and div#wiki_page_show — the parent of the page
+ * body, class "show-content user_content clearfix enhanced" — has no padding
+ * below. They rest directly against each other, so a page whose last element
+ * carries no bottom margin ends flush against the controls.
+ *
+ * None of that is ours to restyle. Canvas's sanitizer drops <style> blocks, so
+ * the only lever is the body HTML itself, and the space has to come from
+ * inside #wiki_page_show. A fixed-height element is used rather than a margin
+ * because a margin on the last child is liable to collapse, and height never
+ * is.
+ *
+ * The marker class is what keeps this idempotent. A get-page-content → edit →
+ * update-page-content round trip would otherwise append a spacer every pass
+ * and quietly grow a stack of empty divs. Verified live 2026-08-04 that
+ * Canvas's sanitizer preserves the class, the inline style and aria-hidden
+ * through a write-and-read-back, which is what makes the guard reliable.
+ */
+const PAGE_END_MARKER = 'mcp-page-end';
+const PAGE_END_SPACER = `<div class="${PAGE_END_MARKER}" style="height: 2rem;" aria-hidden="true"></div>`;
+
+function withPageEndSpacing(body: string): string {
+  if (body.includes(PAGE_END_MARKER)) return body;
+  return `${body.replace(/\s+$/, '')}\n${PAGE_END_SPACER}`;
+}
+
+
 // Generate comprehensive Canvas styleguide content
 function generateCanvasStyleguide(includeExamples: boolean = true, customBranding?: string): string {
   return `
@@ -45,6 +74,18 @@ function generateCanvasStyleguide(includeExamples: boolean = true, customBrandin
   <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; background: #f8f9fa;">
     <strong>Content Box Example:</strong> Use for highlighting important content
     <br><code>&lt;div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; background: #f8f9fa;"&gt;...&lt;/div&gt;</code>
+  </div>
+
+  <h3>Ending a Page</h3>
+  <div class="alert alert-warning">
+    <strong>Always end a page with a spacer.</strong> Canvas appends its Previous/Next module
+    controls directly below the page body: <code>div#module_navigation_target</code> has no
+    spacing above it, and <code>div#wiki_page_show</code> — the body's parent — has no padding
+    below. Without a spacer the last element sits flush against the controls.
+    <br><code>&lt;div class="mcp-page-end" style="height: 2rem;" aria-hidden="true"&gt;&lt;/div&gt;</code>
+    <br>Pages written through this server get this automatically; add it by hand when authoring
+    in the Canvas editor. A fixed height is used rather than a margin because a margin on the
+    last child can collapse away.
   </div>
 
   <h2>📝 Typography Standards</h2>
@@ -152,7 +193,7 @@ export function registerPageTools(server: McpServer, canvas: CanvasClient) {
     { idempotentHint: true },
     async ({ courseId, includeExamples = true, customBranding, slug = DEFAULT_STYLEGUIDE_SLUG }: { courseId: string; includeExamples?: boolean; customBranding?: string; slug?: string }) => {
       try {
-        const styleguideContent = generateCanvasStyleguide(includeExamples, customBranding);
+        const styleguideContent = withPageEndSpacing(generateCanvasStyleguide(includeExamples, customBranding));
         
         const styleguide = (await canvas.updateOrCreatePage(courseId, slug, {
           wiki_page: {
@@ -304,30 +345,40 @@ export function registerPageTools(server: McpServer, canvas: CanvasClient) {
   // Tool: update-page-content
   server.tool(
     "update-page-content",
-    "Update or create a page with new content, replacing the entire body. If no body/title/editingRoles is provided, nothing is written and guidance is returned (set showStyleguidePreview to also inline the styleguide). For targeted edits to existing content, use patch-page-content instead.",
+    "Update or create a page with new content, replacing the entire body. NOTE: a page Canvas creates is UNPUBLISHED, "
+    + "so students cannot see it until published: pass published: true when the page is meant to be visible. "
+    + "If no body/title/editingRoles/published is provided, nothing is written and guidance is returned (set "
+    + "showStyleguidePreview to also inline the styleguide). For targeted edits to existing content, use "
+    + "patch-page-content instead.",
     {
       courseId: z.string().describe("The ID of the course"),
       pageUrl: z.string().describe("The page's URL slug (e.g., 'syllabus')"),
       title: z.string().optional().describe("The new title for the page (optional)"),
       body: z.string().optional().describe("The new HTML body for the page (optional)"),
       editingRoles: z.string().optional().describe("Comma-separated roles allowed to edit (optional)"),
+      published: z.boolean().optional().describe("Whether students can see the page. A newly created page is UNPUBLISHED unless this is true, and an unpublished page is invisible to students while looking perfectly fine to you."),
+      notifyOfUpdate: z.boolean().optional().describe("Notify students that the page changed. Off unless set — this sends a real notification to the class, so it is not something to pass while fixing a typo."),
+      pageEndSpacing: z.boolean().default(true).describe("Add a small spacer at the end of the body so the content does not sit flush against Canvas's Previous/Next module controls, which have no gap above them. Idempotent — it is not added twice. Set false to manage page-end spacing yourself."),
       ignoreStyleguide: z.boolean().default(false).describe("Skip styleguide reference (not recommended)"),
       showStyleguidePreview: z.boolean().default(false).describe("When no body is provided, inline the full course styleguide HTML for reference (off by default to save tokens; use get-styleguide to fetch it on demand)")
     },
     { idempotentHint: true },
-    async ({ courseId, pageUrl, title, body, editingRoles, ignoreStyleguide = false, showStyleguidePreview = false }: {
+    async ({ courseId, pageUrl, title, body, editingRoles, published, notifyOfUpdate, pageEndSpacing = true, ignoreStyleguide = false, showStyleguidePreview = false }: {
       courseId: string;
       pageUrl: string;
       title?: string;
       body?: string;
       editingRoles?: string;
+      published?: boolean;
+      notifyOfUpdate?: boolean;
+      pageEndSpacing?: boolean;
       ignoreStyleguide?: boolean;
       showStyleguidePreview?: boolean;
     }) => {
       try {
         // Nothing to write: don't create/clear a page by accident. Return guidance
         // instead, and only inline the full styleguide when explicitly requested.
-        if (body === undefined && title === undefined && editingRoles === undefined) {
+        if (body === undefined && title === undefined && editingRoles === undefined && published === undefined) {
           let styleguideBlock = '';
           if (showStyleguidePreview && !ignoreStyleguide) {
             try {
@@ -358,11 +409,35 @@ export function registerPageTools(server: McpServer, canvas: CanvasClient) {
 
         const wiki_page: any = {};
         if (title !== undefined) wiki_page.title = title;
-        if (body !== undefined) wiki_page.body = body;
+        if (body !== undefined) wiki_page.body = pageEndSpacing ? withPageEndSpacing(body) : body;
         if (editingRoles !== undefined) wiki_page.editing_roles = editingRoles;
-        
+        if (published !== undefined) wiki_page.published = published;
+        if (notifyOfUpdate !== undefined) wiki_page.notify_of_update = notifyOfUpdate;
+
         const page = (await canvas.updateOrCreatePage(courseId, pageUrl, { wiki_page }) as any);
-        
+
+        const notes: string[] = [];
+        // A page nobody can see is the failure this tool used to produce
+        // silently, so say so — but only when it was not asked for, since a
+        // warning on every call is one nobody reads.
+        if (!page.published && published !== false) {
+          notes.push(
+            '',
+            'WARNING: this page is UNPUBLISHED, so students cannot see it. Canvas creates pages in draft state; '
+            + 'call again with published: true to make it visible.'
+          );
+        }
+        // Canvas derives a new page's slug from its TITLE and ignores the one
+        // in the request path, so the page a caller just created may not be at
+        // the address they used. Verified live 2026-08-04.
+        if (page.url && page.url !== pageUrl) {
+          notes.push(
+            '',
+            `NOTE: Canvas stored this page at '${page.url}', not the '${pageUrl}' that was asked for — a new page's `
+            + 'slug is derived from its title. Use the stored one to read it back.'
+          );
+        }
+
         return {
           content: [
             {
@@ -372,7 +447,8 @@ export function registerPageTools(server: McpServer, canvas: CanvasClient) {
                 `Title: ${page.title}`,
                 `ID: ${page.page_id}`,
                 `Published: ${page.published ? 'Yes' : 'No'}`,
-                `Updated At: ${page.updated_at}`
+                `Updated At: ${page.updated_at}`,
+                ...notes
               ].join('\n')
             }
           ]
@@ -398,12 +474,17 @@ export function registerPageTools(server: McpServer, canvas: CanvasClient) {
     async ({ courseId, pageUrl }: { courseId: string; pageUrl: string }) => {
       try {
         const revisions = (await canvas.listPageRevisions(courseId, pageUrl) as any[]);
+        // Canvas calls this revision_id, not id. Reading the wrong field printed
+        // "Revision ID: undefined" for every revision, which made
+        // revert-page-revision unusable — there was no way to learn an ID to
+        // pass it. Caught live against a real page's history.
         const formatted = revisions.map((rev: any) => [
-          `Revision ID: ${rev.id}`,
+          `Revision ID: ${rev.revision_id ?? rev.id}`,
           `Updated At: ${rev.updated_at}`,
           `Edited By: ${rev.edited_by?.display_name || rev.edited_by_id || 'Unknown'}`,
+          rev.latest ? 'Latest: yes (the page\'s current content)' : null,
           '---'
-        ].join('\n')).join('\n');
+        ].filter(Boolean).join('\n')).join('\n');
         return {
           content: [
             {
@@ -540,21 +621,29 @@ IMPORTANT: When making changes, ensure all formatting follows the above stylegui
       pageUrl: z.string().describe("The page's URL slug (e.g., 'syllabus')"),
       newContent: z.string().describe("The new HTML content for the page body"),
       title: z.string().optional().describe("New title for the page (optional)"),
-      editingRoles: z.string().optional().describe("Comma-separated roles allowed to edit (optional)")
+      editingRoles: z.string().optional().describe("Comma-separated roles allowed to edit (optional)"),
+      published: z.boolean().optional().describe("Whether students can see the page. A newly created page is UNPUBLISHED unless this is true, and an unpublished page is invisible to students while looking perfectly fine to you."),
+      notifyOfUpdate: z.boolean().optional().describe("Notify students that the page changed. Off unless set — this sends a real notification to the class, so it is not something to pass while fixing a typo."),
+      pageEndSpacing: z.boolean().default(true).describe("Add a small spacer at the end of the body so the content does not sit flush against Canvas's Previous/Next module controls, which have no gap above them. Idempotent — it is not added twice. Set false to manage page-end spacing yourself.")
     },
     { idempotentHint: true },
-    async ({ courseId, pageUrl, newContent, title, editingRoles }: { 
-      courseId: string; 
-      pageUrl: string; 
+    async ({ courseId, pageUrl, newContent, title, editingRoles, published, notifyOfUpdate, pageEndSpacing = true }: {
+      courseId: string;
+      pageUrl: string;
       newContent: string;
       title?: string;
       editingRoles?: string;
+      published?: boolean;
+      notifyOfUpdate?: boolean;
+      pageEndSpacing?: boolean;
     }) => {
       try {
         // Prepare the update payload
-        const wiki_page: any = { body: newContent };
+        const wiki_page: any = { body: pageEndSpacing ? withPageEndSpacing(newContent) : newContent };
         if (title !== undefined) wiki_page.title = title;
         if (editingRoles !== undefined) wiki_page.editing_roles = editingRoles;
+        if (published !== undefined) wiki_page.published = published;
+        if (notifyOfUpdate !== undefined) wiki_page.notify_of_update = notifyOfUpdate;
 
         // Update the page
         const updatedPage = (await canvas.updateOrCreatePage(courseId, pageUrl, { wiki_page }) as any);

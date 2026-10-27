@@ -1,130 +1,501 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
-import { Outcome, OutcomeLink, Rubric, RubricCriterion, RubricStat } from "../types.js";
-import { calculateMedian, CriterionInput, fromCanvasCriteria, toCanvasCriteria } from "../rubricUtils.js";
+import { Outcome, OutcomeLink, Rubric, RubricStat } from "../types.js";
+import { calculateMedian } from "../rubricUtils.js";
 
-const ratingInputSchema = z.object({
-  id: z.string().optional().describe("Existing rating ID (from get-rubric); omit for a new rating"),
-  description: z.string().describe("Rating label, e.g. 'Proficient'"),
-  longDescription: z.string().optional().describe("Optional longer explanation"),
-  points: z.number().describe("Points for this rating")
-});
+// Rubric reading and authoring.
+//
+// grade-submission already accepts a rubric_assessment, so until now the server
+// could post scores against a rubric it had no way to read. get-rubric closes
+// that loop: it hands back the criterion IDs a rubric_assessment has to be keyed
+// by. create-rubric and update-rubric are the authoring half.
+//
+// Canvas's rubric endpoints are unusually hostile, and every quirk below was
+// read out of the canvas-lms source (app/controllers/rubrics_controller.rb,
+// app/models/rubric.rb, app/models/rubric_association.rb, lib/api/v1/rubric.rb)
+// rather than guessed. NONE of it has been exercised against a live Canvas:
+//
+//   1. Criteria are an INDEXED HASH, not an array. Canvas iterates
+//      `params[:criteria].each do |idx, criterion_data|` and sorts by idx.to_i,
+//      so `{"0": {...}, "1": {...}}` is required. Handing it a JSON array makes
+//      Ruby destructure each hash into (idx, nil) and die on nil — an
+//      undiagnosable 500. Ratings nest the same way, consumed via `.values`.
+//
+//   2. Booleans are compared to the STRING "1". `free_form_criterion_comments`
+//      is stored as `params[...] == "1"`, so a JSON `true` is stored as FALSE —
+//      a silently inverted setting. Criterion-level `criterion_use_range` uses a
+//      different list (`[true, "true"]`, no "1"), so the two cannot share an
+//      encoding.
+//
+//   3. points_possible is NOT an input. Canvas recomputes it as the sum of the
+//      criteria, and recomputes each criterion's points as its highest rating's
+//      points. A criterion with no ratings silently becomes worth 0.
+//
+//   4. Creation without a rubric_association creates a rubric that is attached
+//      to nothing. Canvas only builds an association when an association object
+//      is resolved, and GET /courses/:id/rubrics/:id finds a rubric only through
+//      a *bookmarked* association — so a rubric created without one is invisible
+//      to the read tool and to the Canvas UI.
+//
+//   5. The write endpoints render `{ error: true, messages: [...] }` under HTTP
+//      200 when validation fails, and answer with `{ rubric, rubric_association }`
+//      rather than a Rubric. A 200 here means even less than usual.
+//
+//   6. update is a full REPLACE, not a patch: an omitted title renames the
+//      rubric to "<Course> Rubric" and omitted criteria wipe every criterion.
+//      update-rubric therefore re-reads the rubric and resends what it is not
+//      changing.
+//
+//   7. Outcome alignment rides on the same replace: a criterion keeps its
+//      outcome only if the update resends learning_outcome_id (plus
+//      mastery_points and ignore_for_scoring). storedAsInput carries all three,
+//      so an edit that doesn't touch alignment leaves it in place.
 
-const criterionInputSchema = z.object({
-  id: z.string().optional().describe("Existing criterion ID (from get-rubric). Keep it when editing so existing assessments stay attached; omit for a new criterion"),
-  description: z.string().optional().describe("Criterion title. Optional when learningOutcomeId is set (defaults to the outcome's title)"),
-  longDescription: z.string().optional().describe("Optional longer explanation. Canvas replaces it with the outcome's description on outcome-aligned criteria"),
-  learningOutcomeId: z.string().nullable().optional().describe("Align this criterion to a learning outcome (standard) in the course. Omit or null for a plain criterion"),
+const RATING_FIELDS = {
+  description: z.string().min(1).describe("What this level of performance looks like, e.g. \"Proficient\""),
+  longDescription: z.string().optional().describe("Longer explanation shown under the rating"),
+  points: z.number().describe("Points awarded at this level"),
+  id: z.string().optional().describe("Existing rating ID — only when editing a rubric, to keep prior assessments attached"),
+};
+
+const CRITERION_FIELDS = {
+  description: z.string().min(1).optional().describe("The criterion's name, e.g. \"Thesis and argument\". Required unless learningOutcomeId is set, in which case it defaults to the outcome's title"),
+  longDescription: z.string().optional().describe("Longer explanation of the criterion. Canvas replaces it with the outcome's description on outcome-aligned criteria"),
+  ratings: z.array(z.object(RATING_FIELDS).passthrough()).min(1).optional()
+    .describe("The performance levels. Required unless learningOutcomeId is set, in which case they default to the outcome's rating scale. Canvas sets the criterion's points to its highest rating."),
+  points: z.number().optional()
+    .describe("Optional cross-check. Canvas always derives this from the highest rating, so a value that disagrees is refused rather than silently replaced."),
+  id: z.string().optional().describe("Existing criterion ID — only when editing a rubric, to keep prior assessments attached"),
+  criterionUseRange: z.boolean().optional().describe("Let graders pick any score in the range between two ratings, rather than only the listed values"),
+  learningOutcomeId: z.string().nullable().optional().describe("Align this criterion to a learning outcome (standard) in the course, from list-outcomes. Omit or null for a plain criterion"),
   masteryPoints: z.number().optional().describe("Mastery threshold for an outcome-aligned criterion. Defaults to the outcome's mastery points"),
-  useForScoring: z.boolean().optional().describe("For outcome-aligned criteria: whether the criterion counts toward the rubric score (default true)"),
-  useRange: z.boolean().optional().describe("Score ratings as point ranges"),
-  ratings: z.array(ratingInputSchema).optional().describe("Ratings, highest first. Optional when learningOutcomeId is set (defaults to the outcome's rating scale)")
-});
+  useForScoring: z.boolean().optional().describe("For an outcome-aligned criterion: whether it counts toward the rubric score (default true)"),
+};
 
-// Canvas create/update responses wrap the rubric as { rubric, rubric_association }.
-// A rejected save still comes back as HTTP 200 with { error: true, messages },
-// so it has to be caught here rather than by the HTTP client.
-function unwrapRubric(response: any): any {
-  if (response?.error) {
-    const messages = Array.isArray(response.messages) ? response.messages.join('; ') : JSON.stringify(response);
-    throw new Error(`Canvas rejected the rubric: ${messages}`);
-  }
-  return response?.rubric ?? response;
+const RATING_STRICT = z.object(RATING_FIELDS).strict();
+const CRITERION_STRICT = z.object({ ...CRITERION_FIELDS, ratings: z.array(RATING_STRICT).min(1).optional() }).strict()
+  .superRefine((criterion, ctx) => {
+    if (criterion.learningOutcomeId) return;
+    if (!criterion.description) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['description'], message: 'Required (only an outcome-aligned criterion can omit it)' });
+    if (!criterion.ratings) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ratings'], message: 'Required (only an outcome-aligned criterion can omit them)' });
+  });
+
+type RatingInput = z.infer<typeof RATING_STRICT>;
+// As a caller wrote it: an outcome-aligned criterion may still lack its title
+// and ratings, which resolveOutcomeCriteria fills in from the outcome.
+type CriterionDraft = z.infer<typeof CRITERION_STRICT>;
+// Ready to send: every criterion has its title and ratings.
+type CriterionInput = CriterionDraft & { description: string; ratings: RatingInput[] };
+
+/**
+ * The criteria parameter.
+ *
+ * Same hazard, and the same remedy, as `jsonObjectParam` in
+ * ../jsonObjectParam.ts: a parameter typed loosely enough that a client may hand
+ * it over as a JSON *string* goes to Canvas verbatim and comes back as a bare,
+ * undiagnosable 500. jsonObjectParam itself is not reusable here because it
+ * rejects arrays by design, and an array is the shape a caller naturally writes
+ * a rubric in. So this declares the full nested structure, and additionally
+ * accepts:
+ *
+ *   - a JSON string containing either shape, parsed rather than forwarded;
+ *   - Canvas's own indexed-hash spelling ({"0": {...}}), because a caller
+ *     working from the Canvas docs will reasonably produce that.
+ *
+ * Everything is normalized to an ordered array here; toCanvasCriteria puts it
+ * back into the indexed hash Canvas actually requires.
+ */
+function criteriaParam(description: string) {
+  return z
+    .union([
+      z.array(z.object(CRITERION_FIELDS).passthrough()),
+      z.record(z.string(), z.object(CRITERION_FIELDS).passthrough()),
+      z.string(),
+    ])
+    .transform((value, ctx): CriterionDraft[] => {
+      const fail = (message: string) => {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+        return z.NEVER as unknown as CriterionDraft[];
+      };
+
+      let raw: unknown = value;
+      if (typeof raw === "string") {
+        try {
+          raw = JSON.parse(raw);
+        } catch {
+          return fail("Expected a list of criteria, or a string containing one; this string is not valid JSON.");
+        }
+      }
+
+      let list: unknown[];
+      if (Array.isArray(raw)) {
+        list = raw;
+      } else if (raw !== null && typeof raw === "object") {
+        // Canvas's indexed-hash spelling. Sorted by numeric key, matching
+        // Canvas's own `sort_by { |c| c.first.to_i }`.
+        list = Object.entries(raw as Record<string, unknown>)
+          .sort(([a], [b]) => (Number(a) || 0) - (Number(b) || 0))
+          .map(([, criterion]) => criterion);
+      } else {
+        return fail(`Expected a list of criteria, got ${typeof raw}.`);
+      }
+
+      const parsed = z.array(CRITERION_STRICT).min(1).safeParse(list);
+      if (!parsed.success) {
+        const detail = parsed.error.issues
+          .map(issue => `criteria[${issue.path.join('.')}]: ${issue.message}`)
+          .join('; ');
+        return fail(
+          `${detail}. A criterion is { description, ratings: [{ description, points }] }, plus optional `
+          + `longDescription, criterionUseRange and id. To align it to a learning outcome add learningOutcomeId `
+          + `(and optionally masteryPoints, useForScoring); description and ratings then default to the outcome's.`
+        );
+      }
+      return parsed.data;
+    })
+    .describe(description);
 }
 
-function rubricCriteria(rubric: any): RubricCriterion[] {
-  return rubric?.data ?? rubric?.criteria ?? [];
+const points = (value: any): string => String(Number(value ?? 0));
+
+/** Canvas overwrites a criterion's points with its highest rating's points. */
+function derivedPoints(criterion: { ratings: RatingInput[] }): number {
+  return criterion.ratings.reduce((max, rating) => Math.max(max, Number(rating.points) || 0), 0);
 }
 
-function formatRubricSummary(rubric: any): string {
-  const criteria = rubricCriteria(rubric);
-  const lines = [
-    `Rubric: ${rubric.title}`,
-    `ID: ${rubric.id}`,
-    `Points Possible: ${rubric.points_possible}`,
-    'Criteria:',
-    ...criteria.map(c => {
-      const outcome = c.learning_outcome_id
-        ? ` — outcome ${c.learning_outcome_id}${c.ignore_for_scoring ? ' (not scored)' : ''}`
-        : '';
-      return `  [${c.id}] ${c.description} (${c.points} pts)${outcome}`;
-    }),
-  ];
-  return lines.join('\n');
+function expectedTotal(criteria: CriterionInput[]): number {
+  return criteria.reduce((sum, criterion) => sum + derivedPoints(criterion), 0);
 }
 
-// Validates that newly aligned outcomes are available in the course and fills
-// in a missing title, rating scale, or mastery threshold from the outcome, the
-// same way the Canvas rubric editor does when an outcome is picked. Alignments
-// the rubric already had are trusted, so an old alignment (e.g. from a course
-// copy) doesn't block unrelated edits.
+/**
+ * Build the indexed nested hash Canvas requires. This is the single most
+ * likely thing to get wrong, so it is the thing the tests assert on.
+ */
+function toCanvasCriteria(criteria: CriterionInput[]): Record<string, any> {
+  const out: Record<string, any> = {};
+  criteria.forEach((criterion, index) => {
+    const ratings: Record<string, any> = {};
+    criterion.ratings.forEach((rating, ratingIndex) => {
+      const entry: any = { description: rating.description, points: rating.points };
+      if (rating.longDescription !== undefined) entry.long_description = rating.longDescription;
+      if (rating.id !== undefined) entry.id = rating.id;
+      ratings[String(ratingIndex)] = entry;
+    });
+
+    const entry: any = {
+      description: criterion.description,
+      // Sent as the value Canvas is going to derive anyway, so the request and
+      // the stored record agree. Sending the caller's number instead would make
+      // every points mismatch look like a Canvas failure in the readback.
+      points: derivedPoints(criterion),
+      ratings,
+    };
+    if (criterion.longDescription !== undefined) entry.long_description = criterion.longDescription;
+    if (criterion.id !== undefined) entry.id = criterion.id;
+    // Sent as a boolean: Canvas tests this one against [true, "true"] and does
+    // NOT accept "1" here, unlike the rubric-level booleans.
+    if (criterion.criterionUseRange !== undefined) entry.criterion_use_range = criterion.criterionUseRange;
+    if (criterion.learningOutcomeId) {
+      entry.learning_outcome_id = criterion.learningOutcomeId;
+      if (criterion.masteryPoints !== undefined) entry.mastery_points = criterion.masteryPoints;
+      entry.ignore_for_scoring = canvasBool(criterion.useForScoring === false);
+    }
+    out[String(index)] = entry;
+  });
+  return out;
+}
+
+/**
+ * Canvas stores `free_form_criterion_comments` as `params[...] == "1"`, so a
+ * JSON boolean `true` is stored as false — an inverted setting reported as a
+ * success. Rubric-level booleans go over the wire as "1"/"0" for that reason.
+ */
+const canvasBool = (value: boolean): string => (value ? "1" : "0");
+
+/** The criteria of a rubric as Canvas returns them, under either key. */
+function criteriaOf(rubric: any): any[] {
+  const criteria = rubric?.criteria ?? rubric?.data;
+  return Array.isArray(criteria) ? criteria : [];
+}
+
+/**
+ * Turn a rubric Canvas returned back into the input shape, for resend-on-update.
+ *
+ * Outcome alignment is carried across, because Canvas's update is a full
+ * replace: a criterion resent without its learning_outcome_id is demoted to a
+ * plain criterion and the outcome is quietly unlinked.
+ */
+function storedAsInput(rubric: any): CriterionInput[] {
+  return criteriaOf(rubric).map((criterion: any) => {
+    const input: CriterionInput = {
+      description: criterion.description ?? '',
+      longDescription: criterion.long_description || undefined,
+      id: criterion.id !== undefined ? String(criterion.id) : undefined,
+      criterionUseRange: criterion.criterion_use_range ?? undefined,
+      ratings: (Array.isArray(criterion.ratings) ? criterion.ratings : []).map((rating: any) => ({
+        description: rating.description ?? '',
+        longDescription: rating.long_description || undefined,
+        points: Number(rating.points ?? 0),
+        id: rating.id !== undefined ? String(rating.id) : undefined,
+      })),
+    };
+    if (criterion.learning_outcome_id != null) {
+      input.learningOutcomeId = String(criterion.learning_outcome_id);
+      if (criterion.mastery_points != null) input.masteryPoints = Number(criterion.mastery_points);
+      input.useForScoring = criterion.ignore_for_scoring !== true;
+    }
+    return input;
+  });
+}
+
+/**
+ * Check that each outcome a criterion is newly aligned to is in the course,
+ * and fill in a missing title, rating scale or mastery threshold from the
+ * outcome — what the Canvas rubric editor does when an outcome is picked.
+ * Alignments the rubric already had are trusted, so an old alignment (from a
+ * course copy, say) doesn't block an unrelated edit.
+ */
 async function resolveOutcomeCriteria(
   canvas: CanvasClient,
   courseId: string,
-  criteria: CriterionInput[],
-  alreadyAligned: CriterionInput[] = []
+  criteria: CriterionDraft[],
+  alreadyAligned: CriterionDraft[] = []
 ): Promise<CriterionInput[]> {
   const existing = new Set(alreadyAligned.map(c => c.learningOutcomeId).filter(Boolean));
-  const outcomeIds = [...new Set(criteria.map(c => c.learningOutcomeId).filter((id): id is string => !!id && !existing.has(id)))];
-  // The course-scoped listing is also the only place Canvas reports an
-  // outcome's rating scale, so it doubles as the source for filling criteria.
   const seen = new Map<string, number>();
   criteria.forEach((c, i) => {
     if (!c.learningOutcomeId) return;
     if (seen.has(c.learningOutcomeId)) {
-      throw new Error(`Outcome ${c.learningOutcomeId} is aligned to both criterion ${seen.get(c.learningOutcomeId)! + 1} and criterion ${i + 1}; Canvas allows each outcome only once per rubric`);
+      throw new Error(`Outcome ${c.learningOutcomeId} is aligned to both criterion ${seen.get(c.learningOutcomeId)! + 1} and criterion ${i + 1}; Canvas allows each outcome only once per rubric.`);
     }
     seen.set(c.learningOutcomeId, i);
   });
+
+  // The course's outcome links are also the only place Canvas reports an
+  // outcome's rating scale, so one listing both validates and fills.
+  // Skipped when every alignment is one the rubric already had and nothing
+  // needs filling, so a plain edit doesn't cost an extra request.
   const outcomes = new Map<string, Outcome>();
-  if (criteria.some(c => c.learningOutcomeId)) {
+  const needsLookup = criteria.some(c => c.learningOutcomeId
+    && (!existing.has(c.learningOutcomeId) || !c.description || !c.ratings?.length));
+  if (needsLookup) {
     const links = await canvas.listOutcomeGroupLinks(courseId) as OutcomeLink[];
     links.forEach(l => outcomes.set(String(l.outcome.id), l.outcome));
-    const missing = outcomeIds.filter(id => !outcomes.has(id));
+    const missing = [...seen.keys()].filter(id => !existing.has(id) && !outcomes.has(id));
     if (missing.length > 0) {
       throw new Error(`Outcome(s) ${missing.join(', ')} are not in course ${courseId}. Add them with link-outcome first.`);
     }
   }
-  const resolved: CriterionInput[] = [];
-  for (const [i, c] of criteria.entries()) {
+
+  return criteria.map((c, i) => {
     const criterion = { ...c };
     if (criterion.learningOutcomeId) {
-      const needsFill = !criterion.description || !criterion.ratings?.length
-        || (criterion.masteryPoints === undefined && !existing.has(criterion.learningOutcomeId));
       const outcome = outcomes.get(criterion.learningOutcomeId);
-      if (needsFill && outcome) {
+      if (outcome) {
         criterion.description ||= outcome.title;
-        if (!criterion.ratings?.length) criterion.ratings = outcome.ratings?.map(r => ({ description: r.description, points: r.points }));
-        if (criterion.masteryPoints === undefined) criterion.masteryPoints = outcome.mastery_points;
+        if (!criterion.ratings?.length) {
+          criterion.ratings = outcome.ratings?.map(r => ({ description: r.description, points: r.points }));
+        }
+        if (criterion.masteryPoints === undefined && !existing.has(criterion.learningOutcomeId)) {
+          criterion.masteryPoints = outcome.mastery_points;
+        }
       }
     } else {
       delete criterion.learningOutcomeId;
+      delete criterion.masteryPoints;
+      delete criterion.useForScoring;
     }
     if (!criterion.description) throw new Error(`Criterion ${i + 1} needs a description`);
     if (!criterion.ratings?.length) throw new Error(`Criterion ${i + 1} ("${criterion.description}") needs at least one rating`);
-    resolved.push(criterion);
-  }
-  return resolved;
+    return criterion as CriterionInput;
+  });
 }
 
-// Saves criteria to an existing rubric and reports whether Canvas forked it
-// into a new rubric, which it does for rubrics shared or already assessed.
-async function saveRubric(canvas: CanvasClient, courseId: string, rubricId: string, rubric: {
-  title: string; freeFormCriterionComments: boolean; criteria: CriterionInput[];
-}): Promise<{ text: string }> {
-  const response = await canvas.updateRubric(courseId, rubricId, {
-    rubric: {
-      title: rubric.title,
-      free_form_criterion_comments: rubric.freeFormCriterionComments ? '1' : '0',
-      criteria: toCanvasCriteria(rubric.criteria),
-    },
+/**
+ * Explain a failed readback without overclaiming.
+ *
+ * A rubric is found through its *bookmarked association with the course*, not
+ * through the rubric row, so a 404 here really can mean the rubric exists but is
+ * linked to nothing and has vanished from the Canvas UI. That is worth shouting
+ * about — but only on a 404. This used to make the same claim for any error at
+ * all, and live testing caught it doing exactly that: a `style` parameter that
+ * Canvas 400s on produced "the association did not take" for two rubrics whose
+ * associations were demonstrably fine (`has_rubric: true` on the assignment, and
+ * both listed by list-rubrics). A warning that fires when nothing is wrong is
+ * worse than no warning, because it teaches the reader to skip the ones that
+ * mean something.
+ */
+function readbackFailureNote(rubricId: string | number, courseId: string, error: any, context: string): string {
+  const message = String(error?.message ?? 'unknown error');
+  const looksMissing = /\b404\b/.test(message);
+  const consequence = looksMissing
+    ? `Canvas finds a rubric through its association with the course, so this probably means the association did `
+      + `not take: the rubric may not appear on the course's Rubrics page or on the assignment. Check it there `
+      + `before relying on it.`
+    : `This is a failure to READ the rubric, not evidence that the write failed — the rubric may well be stored `
+      + `correctly. Check the course's Rubrics page to see.`;
+  return `\n\nWARNING — ${context} (ID ${rubricId}) but it could not be read back from course ${courseId}, so what `
+    + `Canvas stored is unconfirmed. ${consequence} Canvas said: ${message}`;
+}
+
+/**
+ * The write endpoints answer `{ error: true, messages: [...] }` with HTTP 200
+ * when the rubric fails validation, so the status line proves nothing.
+ */
+function assertNotSilentFailure(response: any, what: string): void {
+  if (response?.error) {
+    const messages = response.messages ?? response.errors ?? response;
+    throw new Error(
+      `Canvas refused to ${what} but answered HTTP 200. Canvas said: ${JSON.stringify(messages).slice(0, 600)}`
+    );
+  }
+}
+
+/**
+ * Diff what was asked for against what a re-GET says Canvas stored.
+ *
+ * Same discipline as verifyApplied in overrides.ts, for the same reason: Canvas
+ * answers 200 to writes it has not applied. Rubrics add a second failure mode on
+ * top of that — Canvas rewrites points from the ratings — so a rubric can be
+ * stored successfully and still not be the rubric that was asked for.
+ */
+function verifyRubric(
+  requested: { title?: string; criteria: CriterionInput[]; freeFormComments?: boolean },
+  stored: any
+): string {
+  const problems: string[] = [];
+
+  if (requested.title !== undefined && stored?.title !== requested.title) {
+    problems.push(`title: asked for "${requested.title}", Canvas stored "${stored?.title ?? 'nothing'}"`);
+  }
+
+  if (requested.freeFormComments !== undefined
+    && !!stored?.free_form_criterion_comments !== requested.freeFormComments) {
+    problems.push(
+      `free-form comments: asked for ${requested.freeFormComments}, Canvas stored `
+      + `${!!stored?.free_form_criterion_comments}`
+    );
+  }
+
+  const storedCriteria = criteriaOf(stored);
+  if (storedCriteria.length !== requested.criteria.length) {
+    problems.push(
+      `criteria: sent ${requested.criteria.length}, Canvas stored ${storedCriteria.length}`
+    );
+  }
+
+  requested.criteria.forEach((criterion, index) => {
+    const got = storedCriteria[index];
+    if (!got) {
+      problems.push(`criterion ${index + 1} ("${criterion.description}") is missing from the stored rubric`);
+      return;
+    }
+    if (got.description !== criterion.description) {
+      problems.push(
+        `criterion ${index + 1}: sent "${criterion.description}", Canvas stored "${got.description}" `
+        + `(criteria may have been reordered)`
+      );
+    }
+    const wantPoints = derivedPoints(criterion);
+    if (Number(got.points ?? 0) !== wantPoints) {
+      problems.push(
+        `criterion ${index + 1} ("${criterion.description}"): expected ${wantPoints} points, Canvas stored `
+        + `${points(got.points)}`
+      );
+    }
+    const gotRatings = Array.isArray(got.ratings) ? got.ratings : [];
+    if (gotRatings.length !== criterion.ratings.length) {
+      problems.push(
+        `criterion ${index + 1} ("${criterion.description}"): sent ${criterion.ratings.length} rating(s), `
+        + `Canvas stored ${gotRatings.length}`
+      );
+    }
+    // Canvas re-sorts ratings by points descending, so compare as sets of
+    // points rather than positionally — a reorder is expected, a missing or
+    // altered value is not.
+    const wantSet = [...criterion.ratings.map(r => Number(r.points))].sort((a, b) => b - a);
+    const gotSet = [...gotRatings.map((r: any) => Number(r.points ?? 0))].sort((a, b) => b - a);
+    if (JSON.stringify(wantSet) !== JSON.stringify(gotSet)) {
+      problems.push(
+        `criterion ${index + 1} ("${criterion.description}"): sent rating points [${wantSet.join(', ')}], `
+        + `Canvas stored [${gotSet.join(', ')}]`
+      );
+    }
   });
-  const saved = unwrapRubric(response);
-  const forked = saved?.id !== undefined && String(saved.id) !== String(rubricId)
-    ? `Note: Canvas saved this as a new rubric (ID ${saved.id}) because rubric ${rubricId} is shared or already assessed. Attach the new rubric where the change should apply.\n\n`
+
+  const want = expectedTotal(requested.criteria);
+  if (storedCriteria.length === requested.criteria.length && Number(stored?.points_possible ?? 0) !== want) {
+    problems.push(
+      `points possible: the criteria sum to ${want}, Canvas stored ${points(stored?.points_possible)}`
+    );
+  }
+
+  return problems.length > 0
+    ? `\n\nWARNING — Canvas did not store this as requested:\n- ${problems.join('\n- ')}`
     : '';
-  return { text: `${forked}${formatRubricSummary(saved)}` };
+}
+
+/**
+ * Whether Canvas serialized a rubric's score-total display setting.
+ *
+ * update-rubric can only preserve `hide_score_total` if the read hands it back —
+ * Canvas assigns it unconditionally from each update, so a value it does not
+ * return is a value the next update silently clears. Whether it comes back at
+ * all was read out of the serializer, and this branch's source readings have
+ * been wrong three times, so it is checked rather than assumed and the tools say
+ * which case they are in.
+ */
+function scoreTotalSetting(rubric: any): { known: boolean; hidden: boolean } {
+  const known = rubric !== null && typeof rubric === 'object' && typeof rubric.hide_score_total === 'boolean';
+  return { known, hidden: known && rubric.hide_score_total === true };
+}
+
+/** Render a rubric for a teacher, including the IDs grade-submission needs. */
+function formatRubric(rubric: any): string {
+  const criteria = criteriaOf(rubric);
+  const scoreTotal = scoreTotalSetting(rubric);
+  const header = [
+    `Rubric: ${rubric?.title ?? '(untitled)'}`,
+    `ID: ${rubric?.id}`,
+    `Points possible: ${points(rubric?.points_possible)}`,
+    `Free-form comments: ${rubric?.free_form_criterion_comments ? 'on (graders type their own comment per criterion)' : 'off (graders pick a rating)'}`,
+    // Only stated when Canvas actually returned it — saying "shown" for a field
+    // that was never in the response would be inventing an answer.
+    ...(scoreTotal.known
+      ? [`Score total: ${scoreTotal.hidden ? 'hidden from students' : 'shown to students'}`]
+      : []),
+  ].join('\n');
+
+  if (criteria.length === 0) {
+    return `${header}\n\nThis rubric has no criteria.`;
+  }
+
+  const body = criteria.map((criterion: any, index: number) => {
+    const ratings = (Array.isArray(criterion.ratings) ? criterion.ratings : [])
+      .map((rating: any) =>
+        `    ${points(rating.points)} pts — ${rating.description ?? ''}`
+        + `${rating.long_description ? `: ${rating.long_description}` : ''}`
+        + ` [rating id ${rating.id}]`
+      )
+      .join('\n');
+    return `\n${index + 1}. ${criterion.description ?? ''} — ${points(criterion.points)} points`
+      + ` [criterion id ${criterion.id}]`
+      + `${criterion.long_description ? `\n    ${criterion.long_description}` : ''}`
+      + `${criterion.criterion_use_range ? `\n    (graders may pick any score in the range between ratings)` : ''}`
+      + `${criterion.learning_outcome_id != null
+        ? `\n    Aligned to outcome ${criterion.learning_outcome_id}`
+          + `${criterion.mastery_points != null ? `, mastery at ${points(criterion.mastery_points)}` : ''}`
+          + `${criterion.ignore_for_scoring ? ' (does not count toward the score)' : ''}`
+        : ''}`
+      + `${ratings ? `\n${ratings}` : '\n    (no ratings — Canvas scores this criterion 0)'}`;
+  }).join('\n');
+
+  const ids = criteria.map((criterion: any) => `"${criterion.id}"`).join(', ');
+  return `${header}\n${body}\n\n`
+    + `To grade against this rubric, pass grade-submission a rubric_assessment keyed by CRITERION ID, not by `
+    + `name — for this rubric that is ${ids}. Each entry takes { "points": n, "comments": "..." }, e.g. `
+    + `{ "${criteria[0]?.id}": { "points": ${points(criteria[0]?.points)}, "comments": "..." } }.`;
 }
 
 export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
@@ -321,18 +692,50 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
   // Tool: attach-rubric-to-assignment
   server.tool(
     "attach-rubric-to-assignment",
-    "Attach a rubric to an assignment.",
+    "Put an EXISTING rubric on an assignment, so it can be used to grade there. Use create-rubric instead to write "
+    + "a new rubric. A rubric can be attached to several assignments; note that Canvas copies a rubric that is in "
+    + "use in more than one place when you later edit it, rather than editing it in place.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment"),
-      rubricId: z.string().describe("The ID of the rubric to attach")
+      rubricId: z.string().describe("The ID of the rubric to attach"),
+      useForGrading: z.boolean().optional().describe(
+        "Let the rubric's scores drive the assignment's grade, rather than being a scoring guide alongside a "
+        + "separately-entered grade. WARNING: Canvas also rewrites the assignment's points total to match the "
+        + "rubric's when this is on."
+      )
     },
     { idempotentHint: true },
-    async ({ courseId, assignmentId, rubricId }: { courseId: string; assignmentId: string; rubricId: string }) => {
+    async ({ courseId, assignmentId, rubricId, useForGrading }: { courseId: string; assignmentId: string; rubricId: string; useForGrading?: boolean }) => {
       try {
-        await canvas.attachRubricToAssignment(courseId, assignmentId, rubricId);
+        const before: any = await canvas.getAssignment(courseId, assignmentId).catch(() => null);
+        await canvas.attachRubricToAssignment(courseId, assignmentId, rubricId, useForGrading);
+
+        // Canvas answers this cheerfully whether or not the rubric ended up on
+        // the assignment, so check has_rubric rather than the status line.
+        let verification = '';
+        try {
+          const after: any = await canvas.getAssignment(courseId, assignmentId);
+          if (!after?.has_rubric) {
+            verification = `\n\nWARNING — Canvas accepted the request but assignment ${assignmentId} still reports no `
+              + `rubric. Check the assignment in Canvas before grading against it.`;
+          }
+          const pointsBefore = before ? Number(before.points_possible ?? 0) : null;
+          const pointsAfter = Number(after?.points_possible ?? 0);
+          if (pointsBefore !== null && pointsBefore !== pointsAfter) {
+            verification += `\n\nNote: the assignment's points total changed from ${pointsBefore} to ${pointsAfter} — `
+              + `Canvas rewrites it to the rubric's total when the rubric drives the grade.`;
+          }
+        } catch {
+          verification = `\n\nNote: the attachment could not be confirmed by re-reading assignment ${assignmentId}.`;
+        }
+
         return {
-          content: [{ type: "text", text: `Rubric ${rubricId} attached to assignment ${assignmentId} in course ${courseId}.` }]
+          content: [{
+            type: "text",
+            text: `Rubric ${rubricId} attached to assignment ${assignmentId} in course ${courseId}`
+              + `${useForGrading ? ', driving the grade' : ''}.${verification}`
+          }]
         };
       } catch (error: any) {
         if (error instanceof Error) {
@@ -346,34 +749,36 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
   // Tool: get-rubric
   server.tool(
     "get-rubric",
-    "Get a rubric's criteria, ratings, and outcome alignments as JSON. The criteria array can be edited and passed straight back to update-rubric.",
+    "Read one rubric in full — every criterion, every rating, and the points attached to each. This is the tool "
+    + "to use before grading against a rubric, because it returns the criterion IDs that grade-submission's "
+    + "rubric_assessment has to be keyed by; list-rubrics gives you only titles and IDs. Use it to check what a "
+    + "rubric actually says before applying it to a class set of essays.",
     {
       courseId: z.string().describe("The ID of the course"),
-      rubricId: z.string().describe("The ID of the rubric")
+      rubricId: z.string().describe("The rubric's ID (from list-rubrics)")
     },
     { readOnlyHint: true },
     async ({ courseId, rubricId }: { courseId: string; rubricId: string }) => {
       try {
-        const rubric = await canvas.getRubric(courseId, rubricId) as any;
-        const result = {
-          id: rubric.id,
-          title: rubric.title,
-          pointsPossible: rubric.points_possible,
-          freeFormCriterionComments: !!rubric.free_form_criterion_comments,
-          associations: (rubric.associations || []).map((a: any) => ({
-            type: a.association_type,
-            id: a.association_id,
-            purpose: a.purpose,
-            useForGrading: a.use_for_grading,
-          })),
-          criteria: fromCanvasCriteria(rubricCriteria(rubric)),
-        };
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-      } catch (error) {
-        if (error instanceof Error) {
-          throw new Error(`Failed to fetch rubric: ${error.message}`);
+        const rubric: any = await canvas.getRubric(courseId, rubricId);
+        return { content: [{ type: "text", text: formatRubric(rubric) }] };
+      } catch (error: any) {
+        const message = String(error?.message ?? 'Unknown error');
+        // Canvas resolves this endpoint through a *bookmarked* rubric
+        // association in the course, not through the rubric row, so a rubric
+        // can exist and still 404 here. Saying "not found" alone would send a
+        // teacher hunting for a rubric that is sitting right there.
+        if (/\b404\b/.test(message)) {
+          throw new Error(
+            `Rubric ${rubricId} could not be read in course ${courseId}. Canvas looks this up through the rubric's `
+            + `association with the course, so this means either the ID is wrong, or the rubric exists but is not `
+            + `linked to this course (it may belong to another course or to the account, or be a copy Canvas made `
+            + `while updating a rubric that was in use in more than one place). Note that list-rubrics will show `
+            + `such a rubric even though this tool cannot read it — the two go through different lookups, confirmed `
+            + `live. Canvas said: ${message}`
+          );
         }
-        throw new Error('Failed to fetch rubric: Unknown error');
+        throw new Error(`Failed to fetch rubric: ${message}`);
       }
     }
   );
@@ -381,144 +786,403 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
   // Tool: create-rubric
   server.tool(
     "create-rubric",
-    "Create a rubric in a course, optionally aligning criteria to learning outcomes and attaching it to an assignment.",
+    "Write a new rubric — criteria, performance levels and points — either as a reusable course rubric or "
+    + "attached to one assignment for grading. This is the tool for \"draft me a rubric for this DBQ\". To put an "
+    + "EXISTING rubric on another assignment use attach-rubric-to-assignment instead; to change a rubric you "
+    + "already made use update-rubric. Canvas works out each criterion's points from its highest rating and the "
+    + "rubric's total from the criteria, so those are not yours to set.",
     {
-      courseId: z.string().describe("The ID of the course"),
-      title: z.string().describe("Rubric title"),
-      criteria: z.array(criterionInputSchema).min(1).describe("Rubric criteria, in display order"),
-      freeFormCriterionComments: z.boolean().optional().describe("Let graders write free-form comments instead of picking ratings"),
-      assignmentId: z.string().optional().describe("Attach the new rubric to this assignment. If omitted, the rubric is saved to the course's rubric list"),
-      useForGrading: z.boolean().default(false).describe("With assignmentId: use the rubric score for the assignment grade (this sets the assignment's points to the rubric total)"),
-      hideScoreTotal: z.boolean().optional().describe("With assignmentId: hide the rubric's score total from students")
+      courseId: z.string().describe("The ID of the course the rubric belongs to"),
+      title: z.string().min(1).describe("The rubric's name, e.g. \"DBQ Essay Rubric\""),
+      criteria: criteriaParam(
+        "The rows of the rubric, in the order they should appear. Each is { description, ratings: [{ description, "
+        + "points }] } with optional longDescription and criterionUseRange. Canvas sets each criterion's points to "
+        + "its highest rating and the rubric's total to the sum of the criteria. Add learningOutcomeId (from "
+        + "list-outcomes) to align a row to a learning outcome; its title and ratings then default to the outcome's."
+      ),
+      assignmentId: z.string().optional().describe(
+        "Attach the rubric to this assignment for grading. Omit to create a reusable course-level rubric that is "
+        + "not tied to any assignment yet."
+      ),
+      useForGrading: z.boolean().optional().describe(
+        "Let rubric scores drive the assignment's grade, rather than the rubric being a scoring guide alongside a "
+        + "separately-entered grade. Requires assignmentId. WARNING: Canvas also rewrites the assignment's total "
+        + "points to match the rubric's when this is on."
+      ),
+      keepAssignmentPoints: z.boolean().optional().describe(
+        "Stop Canvas from rewriting the assignment's points_possible to match the rubric total. Only meaningful "
+        + "with useForGrading, which is the only case where Canvas rewrites it."
+      ),
+      freeFormComments: z.boolean().optional().describe(
+        "Let graders type their own comment on each criterion instead of only picking one of its ratings"
+      )
     },
     { destructiveHint: false },
-    async ({ courseId, title, criteria, freeFormCriterionComments, assignmentId, useForGrading = false, hideScoreTotal }: {
-      courseId: string; title: string; criteria: CriterionInput[]; freeFormCriterionComments?: boolean;
-      assignmentId?: string; useForGrading?: boolean; hideScoreTotal?: boolean;
-    }) => {
+    async (args: any) => {
       try {
-        const resolved = await resolveOutcomeCriteria(canvas, courseId, criteria);
-        const rubricAssociation = assignmentId
-          ? {
-              association_type: 'Assignment',
-              association_id: assignmentId,
-              purpose: 'grading',
-              use_for_grading: useForGrading,
-              ...(hideScoreTotal !== undefined ? { hide_score_total: hideScoreTotal } : {}),
-            }
-          : { association_type: 'Course', association_id: courseId, purpose: 'bookmark' };
-        const response = await canvas.createRubric(courseId, {
-          rubric: {
-            title,
-            free_form_criterion_comments: freeFormCriterionComments ? '1' : '0',
-            criteria: toCanvasCriteria(resolved),
-          },
-          rubric_association: rubricAssociation,
-        });
-        const rubric = unwrapRubric(response);
-        const attached = assignmentId ? `\nAttached to assignment ${assignmentId}${useForGrading ? ' (used for grading)' : ''}.` : '';
-        return { content: [{ type: "text", text: `Rubric created.${attached}\n\n${formatRubricSummary(rubric)}` }] };
-      } catch (error) {
-        if (error instanceof Error) {
-          throw new Error(`Failed to create rubric: ${error.message}`);
+        const criteria = await resolveOutcomeCriteria(canvas, args.courseId, args.criteria);
+
+        // Canvas derives criterion points from the ratings and would quietly
+        // replace a number that disagrees. Refusing beats reporting the
+        // caller's number back as if it had been stored.
+        const disagreements = criteria
+          .map((criterion, index) => ({ criterion, index, derived: derivedPoints(criterion) }))
+          .filter(({ criterion, derived }) => criterion.points !== undefined && Number(criterion.points) !== derived);
+        if (disagreements.length > 0) {
+          const detail = disagreements
+            .map(({ criterion, index, derived }) =>
+              `criterion ${index + 1} ("${criterion.description}") says ${criterion.points} but its highest rating is ${derived}`)
+            .join('; ');
+          throw new Error(
+            `A criterion's points must equal its highest rating's points — Canvas overwrites the field with that `
+            + `value, so any other number is silently discarded. ${detail}. Fix the ratings, or drop the points `
+            + `field and let it be derived.`
+          );
         }
-        throw new Error('Failed to create rubric: Unknown error');
+
+        if (args.useForGrading && !args.assignmentId) {
+          throw new Error(
+            'useForGrading only means something for a rubric attached to an assignment, since there is no grade '
+            + 'for a course-level rubric to drive. Pass assignmentId, or drop useForGrading.'
+          );
+        }
+        if (args.keepAssignmentPoints && !args.useForGrading) {
+          throw new Error(
+            'keepAssignmentPoints only means something with useForGrading — Canvas only rewrites an assignment\'s '
+            + 'points_possible when the rubric is driving the grade. Drop it, or turn on useForGrading.'
+          );
+        }
+
+        // The association is what decides whether this rubric exists anywhere a
+        // teacher can see it. Without one Canvas saves the rubric and attaches
+        // it to nothing, and the result is invisible in the UI and unreadable
+        // through get-rubric, so one is always sent.
+        const association: any = args.assignmentId
+          ? { association_id: args.assignmentId, association_type: 'Assignment', purpose: 'grading' }
+          : { association_id: args.courseId, association_type: 'Course', purpose: 'bookmark' };
+        if (args.useForGrading !== undefined) association.use_for_grading = canvasBool(args.useForGrading);
+
+        const payload: any = {
+          rubric: {
+            title: args.title,
+            criteria: toCanvasCriteria(criteria),
+          },
+          rubric_association: association,
+        };
+        if (args.freeFormComments !== undefined) {
+          payload.rubric.free_form_criterion_comments = canvasBool(args.freeFormComments);
+        }
+        if (args.keepAssignmentPoints) {
+          // Top level, not under rubric[], and the string "true". The Canvas
+          // docs place this at rubric[skip_updating_points_possible], but the
+          // controller reads params[:skip_updating_points_possible] and matches
+          // it against /true/i, so the documented spelling is inert. Sent the
+          // way the implementation reads it. Unverified against live Canvas.
+          payload.skip_updating_points_possible = 'true';
+        }
+
+        const response: any = await canvas.createRubric(args.courseId, payload);
+        assertNotSilentFailure(response, 'create this rubric');
+
+        // The write response is not a readback: it is a non-standard
+        // { rubric, rubric_association } envelope from a controller that also
+        // rewrites points behind your back. Re-GET the rubric instead.
+        const created = response?.rubric ?? response;
+        const rubricId = created?.id;
+        if (!rubricId) {
+          throw new Error(
+            `Canvas answered 200 but returned no rubric ID, so nothing can be confirmed. Canvas said: `
+            + `${JSON.stringify(response).slice(0, 600)}`
+          );
+        }
+
+        let stored: any = null;
+        let readbackNote = '';
+        try {
+          stored = await canvas.getRubric(args.courseId, String(rubricId));
+        } catch (error: any) {
+          readbackNote = readbackFailureNote(rubricId, args.courseId, error, 'the rubric was created');
+        }
+
+        const where = args.assignmentId
+          ? `attached to assignment ${args.assignmentId} for grading`
+          : `as a course-level rubric (not attached to an assignment — use attach-rubric-to-assignment for that)`;
+
+        const gradingNote = args.useForGrading
+          ? (args.keepAssignmentPoints
+            ? `\n\nRubric scores will drive the grade. Canvas was asked NOT to change the assignment's own points `
+              + `total; confirm it on the assignment, since this is the one option Canvas documents in a place it `
+              + `does not read.`
+            : `\n\nRubric scores will drive the grade, and Canvas rewrites the assignment's points total to match `
+              + `the rubric (${points(expectedTotal(criteria))}). If the assignment was worth something else, it is `
+              + `not any more — pass keepAssignmentPoints to prevent that.`)
+          : '';
+
+        const associationNote = response?.rubric_association
+          ? ''
+          : `\n\nWARNING — Canvas's response contained no rubric_association. A rubric with no association is not `
+            + `linked to the course or the assignment and will not appear in the Canvas UI.`;
+
+        return {
+          content: [{
+            type: "text",
+            text: `Created rubric "${created?.title ?? args.title}" (ID ${rubricId}) in course ${args.courseId}, `
+              + `${where}.\n\n${stored ? formatRubric(stored) : '(could not be read back)'}`
+              + gradingNote
+              + associationNote
+              + readbackNote
+              + (stored ? verifyRubric({ title: args.title, criteria, freeFormComments: args.freeFormComments }, stored) : '')
+          }]
+        };
+      } catch (error: any) {
+        throw new Error(`Failed to create rubric: ${error?.message ?? 'Unknown error'}`);
       }
     }
   );
 
+  // Shared by update-rubric and set-rubric-criterion-outcome, so an alignment
+  // change gets the same read-first, readback and warnings as any other edit.
+  const updateRubricHandler = async (args: any) => {
+    try {
+      // Canvas's update is a full replace: it rebuilds the rubric from what
+      // this request contains and nothing else. An omitted title renames the
+      // rubric to "<Course> Rubric"; omitted criteria delete every criterion
+      // and set the rubric to 0 points. So read first and resend whatever is
+      // not being changed. Refusing to write blind is the point of the GET —
+      // a failure here means we cannot tell what a partial update would
+      // destroy.
+      let current: any;
+      try {
+        current = await canvas.getRubric(args.courseId, args.rubricId);
+      } catch (error: any) {
+        throw new Error(
+          `Could not read rubric ${args.rubricId} in course ${args.courseId} before updating it, so this update `
+          + `was not attempted. Canvas's rubric update replaces the whole rubric — writing without knowing what `
+          + `is there would delete any criterion this call does not mention. Canvas said: `
+          + `${error?.message ?? 'unknown error'}`
+        );
+      }
+
+      // Resent criteria keep their outcome alignment (see storedAsInput), and
+      // alignments already on the rubric aren't re-validated.
+      const resent = storedAsInput(current);
+      const criteria = await resolveOutcomeCriteria(canvas, args.courseId, args.criteria ?? resent, resent);
+      const title: string = args.title ?? current?.title;
+      if (!title) {
+        throw new Error(
+          `Rubric ${args.rubricId} has no title in Canvas and none was given. Canvas would rename it to a `
+          + `default; pass title explicitly.`
+        );
+      }
+
+      const disagreements = criteria
+        .map((criterion, index) => ({ criterion, index, derived: derivedPoints(criterion) }))
+        .filter(({ criterion, derived }) => criterion.points !== undefined && Number(criterion.points) !== derived);
+      if (disagreements.length > 0) {
+        const detail = disagreements
+          .map(({ criterion, index, derived }) =>
+            `criterion ${index + 1} ("${criterion.description}") says ${criterion.points} but its highest rating is ${derived}`)
+          .join('; ');
+        throw new Error(
+          `A criterion's points must equal its highest rating's points — Canvas overwrites the field with that `
+          + `value, so any other number is silently discarded. ${detail}.`
+        );
+      }
+
+      const freeForm: boolean | undefined = args.freeFormComments
+        ?? (typeof current?.free_form_criterion_comments === 'boolean'
+          ? current.free_form_criterion_comments
+          : undefined);
+
+      const payload: any = {
+        id: args.rubricId,
+        rubric: {
+          title,
+          criteria: toCanvasCriteria(criteria),
+        },
+      };
+      if (freeForm !== undefined) payload.rubric.free_form_criterion_comments = canvasBool(freeForm);
+      // Canvas assigns hide_score_total unconditionally from this request, so
+      // an omitted value clears it. Resent when Canvas gave us one to resend.
+      if (typeof current?.hide_score_total === 'boolean') {
+        payload.rubric.hide_score_total = canvasBool(current.hide_score_total);
+      }
+      if (args.keepAssignmentPoints) {
+        // Top level and the string "true" — the controller reads
+        // params[:skip_updating_points_possible] and matches it with /true/i.
+        // Confirmed live on create: the documented rubric[...] spelling is
+        // inert, this one works.
+        payload.skip_updating_points_possible = 'true';
+      }
+
+      const response: any = await canvas.updateRubric(args.courseId, args.rubricId, payload);
+      assertNotSilentFailure(response, 'update this rubric');
+
+      const returned = response?.rubric ?? response;
+      // Canvas's own comment on this controller: updating a rubric that is
+      // used in more than one place CLONES it and returns the copy, leaving
+      // the original — and everything pointing at it — untouched. A teacher
+      // who is told "updated" in that case has been misled.
+      const clonedTo = returned?.id !== undefined && String(returned.id) !== String(args.rubricId)
+        ? `\n\nWARNING — Canvas did not edit rubric ${args.rubricId}. It created a COPY (ID ${returned.id}) and `
+          + `applied the changes there, which is what it does when a rubric is in use in more than one place. `
+          + `The original is unchanged, and any assignment using it is still using the old version. Attach the `
+          + `new rubric where you want it with attach-rubric-to-assignment.`
+        : '';
+
+      // Canvas assigns both display settings unconditionally from each update,
+      // so whatever this request does not carry is cleared. hide_points is
+      // never serialized, so it cannot be re-sent and is always lost.
+      // hide_score_total was believed to be serialized — but that came from
+      // the same source reading that got `style` wrong, so what the tool says
+      // depends on whether the pre-read actually produced it.
+      const scoreTotal = scoreTotalSetting(current);
+      const displaySettingsNote = scoreTotal.known
+        ? `\n\nNote: Canvas clears a rubric's "hide points" display setting on every update and does not return `
+          + `it through the API, so it cannot be preserved here — re-check it in the UI if you use it. The `
+          + `"hide score total" setting was returned and has been re-sent as `
+          + `${scoreTotal.hidden ? 'hidden' : 'shown'}.`
+        : `\n\nNote: Canvas clears a rubric's display settings ("hide points" and "hide score total") on every `
+          + `update, and returned neither of them on the read before this write, so neither could be re-sent. `
+          + `If you had either turned on for this rubric, it is off now — re-set it in the Canvas UI.`;
+
+      const readId = String(returned?.id ?? args.rubricId);
+      let stored: any = null;
+      let readbackNote = '';
+      try {
+        stored = await canvas.getRubric(args.courseId, readId);
+      } catch (error: any) {
+        // This readback is doing double duty. The update sends no association
+        // of its own — the id Canvas wants (rubric_association_id) is not
+        // something the read exposes — so on a 404 this is also the only
+        // available sign that the association did not survive the update.
+        readbackNote = readbackFailureNote(readId, args.courseId, error, 'the update returned 200');
+      }
+
+      const preserved: string[] = [];
+      if (args.criteria === undefined) preserved.push('criteria');
+      if (args.title === undefined) preserved.push('title');
+      const preservedNote = preserved.length > 0
+        ? `\n\nCanvas's rubric update replaces the whole rubric, so the existing ${preserved.join(' and ')} `
+          + `${preserved.length > 1 || preserved[0] === 'criteria' ? 'were' : 'was'} read back and re-sent `
+          + `unchanged rather than being wiped.`
+        : '';
+
+      // Editing a rubric reaches out and changes a DIFFERENT object: Canvas
+      // pushes the new total onto every assignment the rubric grades. Caught
+      // live — an assignment created with keepAssignmentPoints, and therefore
+      // deliberately left at 25 points, was silently rewritten to 13 when a
+      // criterion was added later. keepAssignmentPoints has to be passed again
+      // on each update; it is not a property the rubric remembers.
+      const oldTotal = Number(current?.points_possible ?? 0);
+      const newTotal = expectedTotal(criteria);
+      const totalNote = newTotal !== oldTotal
+        ? (args.keepAssignmentPoints
+          ? `\n\nThis rubric's total changed from ${points(oldTotal)} to ${points(newTotal)}. Canvas was asked NOT `
+            + `to change the points total of any assignment it grades — confirm that on the assignment.`
+          : `\n\nWARNING — this rubric's total changed from ${points(oldTotal)} to ${points(newTotal)}, and Canvas `
+            + `rewrites the points total of any assignment this rubric grades to match. An assignment that was `
+            + `worth something else is not any more. Pass keepAssignmentPoints to prevent that; it is not `
+            + `remembered from when the rubric was created.`)
+        : '';
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Updated rubric ${readId} in course ${args.courseId}.\n\n`
+            + `${stored ? formatRubric(stored) : '(could not be read back)'}`
+            + preservedNote
+            + totalNote
+            + clonedTo
+            + readbackNote
+            + (stored ? verifyRubric({ title, criteria, freeFormComments: freeForm }, stored) : '')
+            + displaySettingsNote
+        }]
+      };
+    } catch (error: any) {
+      throw new Error(`Failed to update rubric: ${error?.message ?? 'Unknown error'}`);
+    }
+  };
+
   // Tool: update-rubric
   server.tool(
     "update-rubric",
-    "Update a rubric's title, comment setting, or criteria. When criteria is given it replaces the whole list, so start from get-rubric and keep criterion IDs. If the rubric is used in several places or already assessed, Canvas may save the edit as a new rubric with a new ID.",
+    "Change an existing rubric's title, criteria or comment style. Criteria are REPLACED wholesale, not merged: "
+    + "pass the complete list you want the rubric to end up with, which is most easily got by reading it with "
+    + "get-rubric first and editing from there. Anything you leave out is re-sent unchanged rather than wiped. "
+    + "Note that editing a rubric that has already been used to grade can detach existing scores from the criteria "
+    + "they belong to, so prefer create-rubric for a new version once marking has started. Outcome alignments are "
+    + "kept on criteria you resend with their learningOutcomeId; to change just one alignment use "
+    + "set-rubric-criterion-outcome.",
     {
       courseId: z.string().describe("The ID of the course"),
-      rubricId: z.string().describe("The ID of the rubric"),
-      title: z.string().optional().describe("New rubric title"),
-      freeFormCriterionComments: z.boolean().optional().describe("Let graders write free-form comments instead of picking ratings"),
-      criteria: z.array(criterionInputSchema).min(1).optional().describe("Complete replacement criteria list (from get-rubric, edited). Omit to keep the current criteria")
+      rubricId: z.string().describe("The rubric's ID"),
+      title: z.string().min(1).optional().describe("New name. Omit to keep the current one."),
+      criteria: criteriaParam(
+        "The complete new list of criteria, replacing every existing one. Keep each criterion's existing `id` "
+        + "(from get-rubric) on the rows you are keeping, or Canvas issues new IDs and any grading already done "
+        + "against those criteria stops lining up. Omit this parameter entirely to leave the criteria alone."
+      ).optional(),
+      freeFormComments: z.boolean().optional().describe(
+        "Let graders type their own comment on each criterion. Omit to keep the current setting."
+      ),
+      keepAssignmentPoints: z.boolean().optional().describe(
+        "Stop Canvas from rewriting the points total of any assignment this rubric grades. Relevant whenever the "
+        + "edit changes the rubric's total, since Canvas pushes the new total onto the assignment."
+      )
     },
     { idempotentHint: true },
-    async ({ courseId, rubricId, title, freeFormCriterionComments, criteria }: {
-      courseId: string; rubricId: string; title?: string; freeFormCriterionComments?: boolean; criteria?: CriterionInput[];
-    }) => {
-      try {
-        if (title === undefined && freeFormCriterionComments === undefined && criteria === undefined) {
-          throw new Error('No changes were provided');
-        }
-        // Canvas rebuilds title and criteria from each update, so unchanged
-        // fields have to be sent back as they are.
-        const current = await canvas.getRubric(courseId, rubricId) as any;
-        const currentCriteria = fromCanvasCriteria(rubricCriteria(current));
-        const resolved = await resolveOutcomeCriteria(canvas, courseId, criteria ?? currentCriteria, currentCriteria);
-        const rubric = await saveRubric(canvas, courseId, rubricId, {
-          title: title ?? current.title,
-          freeFormCriterionComments: freeFormCriterionComments ?? !!current.free_form_criterion_comments,
-          criteria: resolved,
-        });
-        return { content: [{ type: "text", text: rubric.text }] };
-      } catch (error) {
-        if (error instanceof Error) {
-          throw new Error(`Failed to update rubric: ${error.message}`);
-        }
-        throw new Error('Failed to update rubric: Unknown error');
-      }
-    }
+    updateRubricHandler
   );
 
   // Tool: set-rubric-criterion-outcome
   server.tool(
     "set-rubric-criterion-outcome",
-    "Align one rubric criterion to a learning outcome (standard), or remove its alignment, leaving the rest of the rubric unchanged. Use get-rubric for criterion IDs and list-outcomes for outcome IDs.",
+    "Align one rubric criterion to a learning outcome (standard), or remove its alignment, leaving the rest of the "
+    + "rubric unchanged. Use get-rubric for criterion IDs and list-outcomes for outcome IDs. This is an "
+    + "update-rubric under the hood, with the same checks and warnings.",
     {
       courseId: z.string().describe("The ID of the course"),
-      rubricId: z.string().describe("The ID of the rubric"),
+      rubricId: z.string().describe("The rubric's ID"),
       criterionId: z.string().describe("The criterion ID (from get-rubric)"),
       outcomeId: z.string().nullable().describe("Outcome to align to, or null to remove the alignment"),
-      useOutcomeRatings: z.boolean().default(true).describe("Replace the criterion's title, ratings, and mastery points with the outcome's, as the Canvas rubric editor does. Set false to keep the criterion's own ratings"),
-      useForScoring: z.boolean().default(true).describe("Whether the aligned criterion counts toward the rubric score")
+      useOutcomeRatings: z.boolean().default(true).describe("Replace the criterion's title, ratings and mastery points with the outcome's, as the Canvas rubric editor does. Set false to keep the criterion's own"),
+      useForScoring: z.boolean().default(true).describe("Whether the aligned criterion counts toward the rubric score"),
+      keepAssignmentPoints: z.boolean().optional().describe("Stop Canvas from rewriting the points total of any assignment this rubric grades, if the alignment changes the rubric's total")
     },
     { idempotentHint: true },
-    async ({ courseId, rubricId, criterionId, outcomeId, useOutcomeRatings = true, useForScoring = true }: {
-      courseId: string; rubricId: string; criterionId: string; outcomeId: string | null; useOutcomeRatings?: boolean; useForScoring?: boolean;
-    }) => {
+    async (args: any) => {
+      let current: any;
       try {
-        const current = await canvas.getRubric(courseId, rubricId) as any;
-        const criteria = fromCanvasCriteria(rubricCriteria(current));
-        // Snapshot alignments before editing so only the targeted change is validated
-        const before = criteria.map(c => ({ ...c }));
-        const index = criteria.findIndex(c => c.id === criterionId);
-        if (index === -1) {
-          throw new Error(`Criterion ${criterionId} not found. Available: ${criteria.map(c => `${c.id} (${c.description})`).join(', ')}`);
-        }
-        const target = criteria[index];
-        if (outcomeId) {
-          target.learningOutcomeId = outcomeId;
-          target.useForScoring = useForScoring;
-          target.masteryPoints = undefined;
-          if (useOutcomeRatings) {
-            target.description = undefined;
-            target.ratings = undefined;
-          }
-        } else {
-          target.learningOutcomeId = null;
-          target.masteryPoints = undefined;
-          target.useForScoring = undefined;
-        }
-        const resolved = await resolveOutcomeCriteria(canvas, courseId, criteria, before.filter((_, i) => i !== index));
-        const rubric = await saveRubric(canvas, courseId, rubricId, {
-          title: current.title,
-          freeFormCriterionComments: !!current.free_form_criterion_comments,
-          criteria: resolved,
-        });
-        const action = outcomeId ? `Aligned criterion ${criterionId} to outcome ${outcomeId}.` : `Removed the outcome alignment from criterion ${criterionId}.`;
-        return { content: [{ type: "text", text: `${action}\n\n${rubric.text}` }] };
-      } catch (error) {
-        if (error instanceof Error) {
-          throw new Error(`Failed to set criterion outcome: ${error.message}`);
-        }
-        throw new Error('Failed to set criterion outcome: Unknown error');
+        current = await canvas.getRubric(args.courseId, args.rubricId);
+      } catch (error: any) {
+        throw new Error(`Failed to set criterion outcome: could not read rubric ${args.rubricId}: ${error?.message ?? 'unknown error'}`);
       }
+      const criteria: CriterionDraft[] = storedAsInput(current);
+      const target = criteria.find(c => c.id === args.criterionId);
+      if (!target) {
+        throw new Error(
+          `Failed to set criterion outcome: criterion ${args.criterionId} is not on rubric ${args.rubricId}. `
+          + `Available: ${criteria.map(c => `${c.id} ("${c.description}")`).join(', ')}`
+        );
+      }
+      if (args.outcomeId) {
+        target.learningOutcomeId = args.outcomeId;
+        target.useForScoring = args.useForScoring;
+        target.masteryPoints = undefined;
+        if (args.useOutcomeRatings) {
+          target.description = undefined;
+          target.ratings = undefined;
+        }
+      } else {
+        target.learningOutcomeId = null;
+      }
+      return updateRubricHandler({
+        courseId: args.courseId,
+        rubricId: args.rubricId,
+        criteria,
+        keepAssignmentPoints: args.keepAssignmentPoints,
+      });
     }
   );
 }

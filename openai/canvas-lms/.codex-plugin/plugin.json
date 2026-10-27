@@ -1,0 +1,35 @@
+{
+  "name": "canvas-lms",
+  "version": "0.1.0",
+  "description": "Use Canvas LMS course, assignment, grading, quiz, page, rubric, and file tools from ChatGPT and Codex.",
+  "author": {
+    "name": "A. Gessaman",
+    "url": "https://github.com/agessaman"
+  },
+  "homepage": "https://github.com/agessaman/canvas-mcp",
+  "repository": "https://github.com/agessaman/canvas-mcp",
+  "license": "MIT",
+  "keywords": [
+    "canvas",
+    "education",
+    "lms",
+    "mcp"
+  ],
+  "interface": {
+    "displayName": "Canvas LMS",
+    "shortDescription": "Manage courses, grading, quizzes, and content.",
+    "longDescription": "Connect ChatGPT or Codex to Canvas LMS for course administration, assignments, grading, quizzes, pages, modules, rubrics, files, and analytics. Student data is anonymized by default in supported tools.",
+    "developerName": "A. Gessaman",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "List my active Canvas courses.",
+      "What assignments need grading?",
+      "Show the missing-work report for a course."
+    ],
+    "brandColor": "#E13F2B"
+  }
+}

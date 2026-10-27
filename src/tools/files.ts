@@ -1,251 +1,322 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
-import type { CanvasFolder } from "../types.js";
+import { readFile, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { readImageSize } from "../imageMeta.js";
 
-function formatBytes(bytes: number | undefined): string {
-  if (bytes == null || Number.isNaN(bytes)) return "unknown size";
+// Course files — the Files area of a course, where syllabi, handouts and
+// images live. Uploading is a three-step handshake; see uploadCourseFile in
+// canvasClient.ts for what Canvas actually requires.
+
+// Enough to cover what a teacher actually uploads. Canvas will sniff anything
+// it doesn't recognise, so an unknown extension is not fatal.
+const CONTENT_TYPES: Record<string, string> = {
+  '.pdf': 'application/pdf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.csv': 'text/csv',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.rtf': 'application/rtf',
+  '.html': 'text/html',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.mp4': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.zip': 'application/zip',
+};
+
+function guessContentType(fileName: string): string {
+  return CONTENT_TYPES[path.extname(fileName).toLowerCase()] ?? 'application/octet-stream';
+}
+
+// Canvas has no "published" field on a file. Availability is the combination of
+// two flags, which is why the Files UI has three states rather than a checkbox:
+//
+//   locked=true              -> Unpublished. Students cannot see it at all.
+//   locked=false hidden=true -> Published but not listed; reachable only by a
+//                               direct link, e.g. from a page or assignment.
+//   both false               -> Published and visible in Files.
+//
+// unlock_at / lock_at schedule the transition, and Canvas reports a file with
+// dates set as 'scheduled' regardless of the flags.
+type FileState = 'published' | 'unpublished' | 'link-only';
+
+function describeState(file: any): string {
+  if (file?.locked) return 'unpublished';
+  if (file?.unlock_at || file?.lock_at) return 'scheduled';
+  if (file?.hidden) return 'link-only';
+  return 'published';
+}
+
+function flagsForState(state: FileState): { locked: boolean; hidden: boolean } {
+  switch (state) {
+    case 'unpublished': return { locked: true, hidden: false };
+    case 'link-only': return { locked: false, hidden: true };
+    case 'published': return { locked: false, hidden: false };
+  }
+}
+
+function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
-
-function folderFlags(folder: any): string {
-  const flags: string[] = [];
-  if (folder.hidden || folder.hidden_for_user) flags.push("hidden");
-  if (folder.locked || folder.locked_for_user) flags.push("locked");
-  if (folder.for_submissions) flags.push("submissions");
-  return flags.length ? ` [${flags.join(", ")}]` : "";
-}
-
-function fileFlags(file: any): string {
-  const flags: string[] = [];
-  if (file.hidden || file.hidden_for_user) flags.push("hidden");
-  if (file.locked || file.locked_for_user) flags.push("locked");
-  return flags.length ? ` [${flags.join(", ")}]` : "";
-}
-
-function fileContentType(file: any): string {
-  return file["content-type"] || file.content_type || "unknown";
-}
-
-function formatFolderLine(folder: any, indent = ""): string {
-  return `${indent}${folder.name} (ID: ${folder.id}) — ${folder.files_count ?? 0} files, ${folder.folders_count ?? 0} folders${folderFlags(folder)}`;
-}
-
-function formatFileLine(file: any, folderPath?: string, indent = ""): string {
-  const name = file.display_name || file.filename || "Untitled";
-  const path = folderPath ? ` | ${folderPath}` : "";
-  return `${indent}${name} (ID: ${file.id})${path} | ${fileContentType(file)} | ${formatBytes(file.size)}${fileFlags(file)}`;
-}
-
-function buildFolderTree(folders: CanvasFolder[]): string {
-  if (folders.length === 0) return "No folders found.";
-
-  const byParent = new Map<number | null, CanvasFolder[]>();
-  for (const folder of folders) {
-    const parentId = folder.parent_folder_id ?? null;
-    const siblings = byParent.get(parentId) || [];
-    siblings.push(folder);
-    byParent.set(parentId, siblings);
-  }
-
-  for (const siblings of byParent.values()) {
-    siblings.sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.name.localeCompare(b.name));
-  }
-
-  const knownIds = new Set(folders.map(f => f.id));
-  const roots = (byParent.get(null) || []).concat(
-    [...byParent.entries()]
-      .filter(([parentId]) => parentId != null && !knownIds.has(parentId as number))
-      .flatMap(([, children]) => children)
-  );
-
-  const seen = new Set<number>();
-  const lines: string[] = [];
-
-  const walk = (folder: CanvasFolder, depth: number) => {
-    if (seen.has(folder.id)) return;
-    seen.add(folder.id);
-    lines.push(formatFolderLine(folder, "  ".repeat(depth)));
-    const children = byParent.get(folder.id) || [];
-    for (const child of children) walk(child, depth + 1);
-  };
-
-  for (const root of roots) walk(root, 0);
-
-  for (const folder of folders) {
-    if (!seen.has(folder.id)) walk(folder, 0);
-  }
-
-  return lines.join("\n");
-}
-
-function fileListParams(searchTerm?: string, contentTypes?: string[]) {
-  const params: any = {};
-  if (searchTerm) params.search_term = searchTerm;
-  if (contentTypes && contentTypes.length > 0) params["content_types[]"] = contentTypes;
-  return params;
-}
-
-async function resolveTargetFolder(
-  canvas: CanvasClient,
-  courseId: string,
-  folderId?: string,
-  path?: string
-): Promise<any> {
-  if (path && path.trim().length > 0) {
-    const chain = (await canvas.resolveFolderPath(courseId, path.trim())) as any[];
-    if (!Array.isArray(chain) || chain.length === 0) {
-      throw new Error(`No folder found at path "${path}"`);
-    }
-    return chain[chain.length - 1];
-  }
-  return canvas.getFolder(courseId, folderId || "root");
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export function registerFileTools(server: McpServer, canvas: CanvasClient) {
-  // Tool: list-folders
+  // Tool: upload-course-file
   server.tool(
-    "list-folders",
-    "List folders in a course Files section. Without folderId, returns the full folder tree. With folderId, returns only immediate subfolders of that folder.",
+    "upload-course-file",
+    "Upload a local file into a course's Files area (syllabus PDFs, handouts, images). Give the path to a file on this machine. Folders are addressed by path, e.g. \"/Handouts/Unit 1\" — Canvas creates the folder if it does not exist. Whether an upload lands published varies by course and folder, so check with list-course-files and use set-file-availability if students need to see it.",
     {
       courseId: z.string().describe("The ID of the course"),
-      folderId: z.string().optional().describe("If set, list only immediate subfolders of this folder instead of the full tree")
+      filePath: z.string().describe("Absolute path to the file on this machine"),
+      fileName: z.string().optional().describe("Name to store it under in Canvas (defaults to the local file name)"),
+      folderPath: z.string().optional().describe("Destination folder path within the course, e.g. \"/Handouts\". Defaults to the course's root folder."),
+      folderId: z.string().optional().describe("Destination folder by ID instead of path — takes precedence over folderPath"),
+      onDuplicate: z.enum(['rename', 'overwrite']).optional().describe("What to do if a file of that name already exists in the folder. Default 'rename' keeps both; 'overwrite' replaces the existing file and CANNOT be undone."),
+      contentType: z.string().optional().describe("MIME type override; guessed from the extension when omitted")
     },
-    { readOnlyHint: true },
-    async ({ courseId, folderId }: { courseId: string; folderId?: string }) => {
+    { destructiveHint: false },
+    async (args: any) => {
       try {
-        if (folderId) {
-          const parent = (await canvas.getFolder(courseId, folderId)) as any;
-          const folders = (await canvas.listFolderFolders(String(parent.id))) as any[];
-          const formatted = folders.length
-            ? folders
-                .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || String(a.name).localeCompare(String(b.name)))
-                .map((folder: any) => formatFolderLine(folder))
-                .join("\n")
-            : "No subfolders.";
+        let info;
+        try {
+          info = await stat(args.filePath);
+        } catch {
+          throw new Error(`No file at ${args.filePath} (the path must be on the machine running this server, and absolute).`);
+        }
+        if (!info.isFile()) {
+          throw new Error(`${args.filePath} is a directory, not a file.`);
+        }
+
+        const name = args.fileName ?? path.basename(args.filePath);
+        const contents = await readFile(args.filePath);
+        const uploaded = await canvas.uploadCourseFile(
+          args.courseId,
+          {
+            name,
+            size: info.size,
+            contentType: args.contentType ?? guessContentType(name),
+            parentFolderPath: args.folderPath,
+            parentFolderId: args.folderId,
+            onDuplicate: args.onDuplicate,
+          },
+          contents
+        );
+
+        const where = uploaded?.folder_id ? ` in folder ${uploaded.folder_id}` : '';
+        // Canvas renames rather than clobbers by default, so say what it ended
+        // up called — a silently renamed file is a link that won't resolve.
+        const renamed = uploaded?.display_name && uploaded.display_name !== name
+          ? ` Canvas stored it as "${uploaded.display_name}" because that name was taken.`
+          : '';
+        return {
+          content: [{
+            type: "text",
+            text: `Uploaded "${name}" (${humanSize(info.size)}) to course ${args.courseId}${where}. `
+              + `File ID ${uploaded?.id ?? 'unknown'}.${renamed}`
+              + (uploaded?.url ? `\nURL: ${uploaded.url}` : '')
+          }]
+        };
+      } catch (error: any) {
+        throw new Error(`Failed to upload file: ${error.message ?? 'Unknown error'}`);
+      }
+    }
+  );
+
+  // Tool: set-file-availability
+  server.tool(
+    "set-file-availability",
+    "Publish or unpublish a file in a course's Files area, or make it available by direct link only. 'published' = visible in Files; 'unpublished' = hidden from students entirely; 'link-only' = not listed, but reachable from a link on a page or assignment. Find file IDs with list-course-files.",
+    {
+      fileId: z.string().describe("The file's ID (from list-course-files)"),
+      state: z.enum(['published', 'unpublished', 'link-only']).describe("Desired availability"),
+      availableFrom: z.string().optional().describe("Publish automatically at this time (ISO 8601). Only meaningful with state 'published'."),
+      availableUntil: z.string().optional().describe("Stop being available at this time (ISO 8601). Only meaningful with state 'published'.")
+    },
+    { idempotentHint: true },
+    async (args: any) => {
+      try {
+        const payload: any = flagsForState(args.state);
+        if (args.availableFrom !== undefined) payload.unlock_at = args.availableFrom;
+        if (args.availableUntil !== undefined) payload.lock_at = args.availableUntil;
+
+        const updated: any = await canvas.updateFile(args.fileId, payload);
+
+        // Canvas answers 200 on writes it has quietly not applied — that has
+        // bitten this server three times — so confirm from what came back
+        // rather than reporting the state that was asked for.
+        const actual = describeState(updated);
+        const name = updated?.display_name ?? updated?.filename ?? args.fileId;
+        const scheduled = args.availableFrom || args.availableUntil;
+        if (actual !== args.state && !(scheduled && actual === 'scheduled')) {
           return {
             content: [{
               type: "text",
-              text: `Subfolders of "${parent.full_name || parent.name}" (ID: ${parent.id}) in course ${courseId}:\n\n${formatted}`
+              text: `WARNING: asked Canvas to set "${name}" to ${args.state}, but it reports "${actual}" `
+                + `(locked=${updated?.locked}, hidden=${updated?.hidden}). The change may not have applied — `
+                + `check the file in Canvas.`
             }]
           };
         }
-
-        const folders = (await canvas.listCourseFolders(courseId)) as CanvasFolder[];
+        const window = scheduled
+          ? ` Available ${args.availableFrom ?? 'now'}${args.availableUntil ? ` until ${args.availableUntil}` : ''}.`
+          : '';
         return {
-          content: [{
-            type: "text",
-            text: folders.length
-              ? `Folders in course ${courseId} Files section:\n\n${buildFolderTree(folders)}`
-              : `No folders found in course ${courseId}.`
-          }]
+          content: [{ type: "text", text: `"${name}" is now ${actual}.${window}` }]
         };
       } catch (error: any) {
-        throw new Error(`Failed to list folders: ${error instanceof Error ? error.message : "Unknown error"}`);
+        throw new Error(`Failed to set file availability: ${error.message ?? 'Unknown error'}`);
       }
     }
   );
 
-  // Tool: list-files
+  // Tool: list-course-files
   server.tool(
-    "list-files",
-    "List files in a course Files section. Without folderId, returns all files (with folder paths). With folderId, returns only files in that folder. Optional searchTerm and contentTypes filters.",
+    "list-course-files",
+    "List files in a course's Files area, so you can find a file's ID or check what is already there before uploading.",
     {
       courseId: z.string().describe("The ID of the course"),
-      folderId: z.string().optional().describe("If set, list only files in this folder"),
-      searchTerm: z.string().optional().describe("Partial filename to match"),
-      contentTypes: z.array(z.string()).optional().describe("Filter by content type, e.g. ['image', 'application/pdf']")
+      searchTerm: z.string().optional().describe("Only return files whose name contains this (Canvas requires at least 3 characters)"),
+      folderId: z.string().optional().describe("Only list files in this folder")
     },
     { readOnlyHint: true },
-    async ({ courseId, folderId, searchTerm, contentTypes }: {
-      courseId: string;
-      folderId?: string;
-      searchTerm?: string;
-      contentTypes?: string[];
-    }) => {
+    async (args: any) => {
       try {
-        const params = fileListParams(searchTerm, contentTypes);
-        const files = folderId
-          ? (await canvas.listFolderFiles(folderId, params)) as any[]
-          : (await canvas.listCourseFiles(courseId, params)) as any[];
+        const params: any = {};
+        if (args.searchTerm) params.search_term = args.searchTerm;
+        // A folder listing has to go to /folders/:id/files. Passing folder_id to
+        // the course endpoint looks like it works and quietly returns the whole
+        // course instead.
+        const files = args.folderId
+          ? await canvas.listFolderFiles(args.folderId, params)
+          : await canvas.listCourseFiles(args.courseId, params);
 
-        let folderNames = new Map<number, string>();
-        if (!folderId && files.length > 0) {
-          const folders = (await canvas.listCourseFolders(courseId)) as CanvasFolder[];
-          folderNames = new Map(folders.map(f => [f.id, f.full_name]));
+        if (files.length === 0) {
+          return { content: [{ type: "text", text: "No files found." }] };
         }
-
-        const formatted = files
-          .map((file: any) => formatFileLine(file, folderNames.get(file.folder_id)))
-          .join("\n");
-
-        const scope = folderId ? `folder ${folderId}` : `course ${courseId}`;
-        return {
-          content: [{
-            type: "text",
-            text: files.length
-              ? `Files in ${scope} (${files.length}):\n\n${formatted}`
-              : `No files found in ${scope}.`
-          }]
-        };
+        const rows = files.map((file: any) => ({
+          id: file.id,
+          name: file.display_name ?? file.filename,
+          size: humanSize(file.size ?? 0),
+          content_type: file['content-type'] ?? file.content_type,
+          folder_id: file.folder_id,
+          // Two flags decoded into the state the Canvas UI actually shows.
+          state: describeState(file),
+          updated_at: file.updated_at,
+        }));
+        return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };
       } catch (error: any) {
-        throw new Error(`Failed to list files: ${error instanceof Error ? error.message : "Unknown error"}`);
+        throw new Error(`Failed to list course files: ${error.message ?? 'Unknown error'}`);
       }
     }
   );
 
-  // Tool: list-folder-contents
+  // Tool: list-course-folders
   server.tool(
-    "list-folder-contents",
-    "Browse one folder in the course Files section like the Canvas Files UI: subfolders and files together. Defaults to the course root folder. Use path relative to course files (do not include 'course files').",
+    "list-course-folders",
+    "List the folders in a course's Files area, with their full paths — use this to pick a destination for upload-course-file.",
     {
-      courseId: z.string().describe("The ID of the course"),
-      folderId: z.string().optional().describe("Folder ID to browse. Use 'root' or omit for the course Files root"),
-      path: z.string().optional().describe("Folder path relative to the course root, e.g. 'Workshops/Slides'. Overrides folderId when set")
+      courseId: z.string().describe("The ID of the course")
     },
     { readOnlyHint: true },
-    async ({ courseId, folderId, path }: { courseId: string; folderId?: string; path?: string }) => {
+    async ({ courseId }: { courseId: string }) => {
       try {
-        const folder = await resolveTargetFolder(canvas, courseId, folderId, path);
-        const [subfolders, files] = await Promise.all([
-          canvas.listFolderFolders(String(folder.id)) as Promise<any[]>,
-          canvas.listFolderFiles(String(folder.id)) as Promise<any[]>
-        ]);
+        const folders = await canvas.listCourseFolders(courseId);
+        if (folders.length === 0) {
+          return { content: [{ type: "text", text: "No folders found." }] };
+        }
+        const rows = folders.map((folder: any) => ({
+          id: folder.id,
+          path: folder.full_name,
+          files: folder.files_count,
+          locked: folder.locked ?? false,
+        }));
+        return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };
+      } catch (error: any) {
+        throw new Error(`Failed to list course folders: ${error.message ?? 'Unknown error'}`);
+      }
+    }
+  );
 
+  // Tool: get-course-file
+  //
+  // Read-only counterpart to upload-course-file. Added because placing a
+  // hot-spot on an image already in Canvas meant placing it blind: nothing in
+  // this server could see the picture, and list-course-files does not even
+  // return a URL. Guessing coordinates for an unseen image is how the first
+  // round of hotspots came out well-formed and pointing at the wrong place.
+  server.tool(
+    "get-course-file",
+    "Fetch a file from a course's Files area so it can be looked at — the read-only counterpart to upload-course-file. "
+    + "For an image this returns the picture itself along with its PIXEL DIMENSIONS, which is what hot-spot coordinates "
+    + "need: pass them to create-new-quiz-item as imagePixelWidth/imagePixelHeight and give the hotspot in pixels. "
+    + "Use saveToPath to write the file to disk instead of returning it inline, which is much cheaper for a large image. "
+    + "Find file IDs with list-course-files.",
+    {
+      fileId: z.string().describe("The file's ID (from list-course-files)"),
+      saveToPath: z.string().optional().describe(
+        "Absolute path to write the file to. When given, the file is saved and only a summary is returned — "
+        + "use this for large images rather than pulling the whole thing inline."
+      ),
+    },
+    { readOnlyHint: true },
+    async ({ fileId, saveToPath }: { fileId: string; saveToPath?: string }) => {
+      try {
+        const file = await canvas.downloadFile(fileId);
+        const buffer = Buffer.from(file.data);
+        const size = readImageSize(buffer);
+
+        // The dimensions are the point of this tool for quiz authoring, so
+        // they lead. An image whose header this cannot read says so rather
+        // than reporting a plausible-looking guess.
         const lines = [
-          `Folder: ${folder.name}`,
-          `ID: ${folder.id}`,
-          `Path: ${folder.full_name}`,
-          `Files: ${files.length} | Subfolders: ${subfolders.length}${folderFlags(folder)}`,
-          ""
+          `File ${fileId}: ${file.filename}`,
+          `Type: ${file.contentType}, ${buffer.length} bytes`,
+          size
+            ? `Dimensions: ${size.width} x ${size.height} px`
+            : 'Dimensions: could not be read from the file header'
+            + (file.contentType.startsWith('image/')
+              ? ' — hot-spot coordinates would have to be given as fractions.'
+              : ' (not a recognised image format).'),
         ];
 
-        if (subfolders.length > 0) {
-          lines.push("Subfolders:");
-          const sorted = [...subfolders].sort(
-            (a, b) => (a.position ?? 0) - (b.position ?? 0) || String(a.name).localeCompare(String(b.name))
-          );
-          for (const sub of sorted) lines.push(`  - ${formatFolderLine(sub)}`);
-          lines.push("");
+        if (saveToPath) {
+          if (!path.isAbsolute(saveToPath)) {
+            throw new Error(`saveToPath must be an absolute path (got "${saveToPath}")`);
+          }
+          await writeFile(saveToPath, buffer);
+          lines.push(`Saved to: ${saveToPath}`);
+          return { content: [{ type: "text", text: lines.join('\n') }] };
         }
 
-        if (files.length > 0) {
-          lines.push("Files:");
-          for (const file of files) lines.push(`  - ${formatFileLine(file)}`);
+        // Hand back the actual picture when it is one, so it can be looked at
+        // rather than described. A file that is not an image is summarised
+        // instead of being dumped as base64 nobody can read.
+        if (size) {
+          return {
+            content: [
+              { type: "text", text: lines.join('\n') },
+              { type: "image", data: buffer.toString('base64'), mimeType: `image/${size.format}` },
+            ],
+          };
         }
-
-        if (subfolders.length === 0 && files.length === 0) {
-          lines.push("This folder is empty.");
-        }
-
-        return {
-          content: [{ type: "text", text: lines.join("\n") }]
-        };
+        lines.push('Not returned inline. Use saveToPath to write it to disk.');
+        return { content: [{ type: "text", text: lines.join('\n') }] };
       } catch (error: any) {
-        throw new Error(`Failed to list folder contents: ${error instanceof Error ? error.message : "Unknown error"}`);
+        throw new Error(`Failed to get course file: ${error.message ?? 'Unknown error'}`);
       }
     }
   );
