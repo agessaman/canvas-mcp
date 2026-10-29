@@ -85,15 +85,15 @@ Please ensure all visualizations are clearly labeled with:
 
 3. Before reading any student work, ask me, together in one message:
    a. Whether anything the assignment depends on is missing (paper sources, a handout, a reading). Ask only if the packet suggests it.
-   b. Whether I'll accept resubmissions for this assignment. Ask once; this decides "Revise ..." vs "Next time ..." in feedback.
+   b. Whether I'll accept resubmissions for this assignment, and under what conditions — it may apply to only some students, or end at a date. Ask once; this decides "Revise ..." vs "Next time ..." in feedback, and which students get which.
    c. Whether I want feedback comments this time. The default is no feedback, just scores.
    Wait for my answers.
 
-4. Calibrate on the first two students in the queue: read each with get-submission-content and show me your draft. For every criterion, give the rating, points and the evidence (a short quote or location in the work). Add the feedback text only if feedback is on. Adjust your approach to my corrections before going on.
+4. Calibrate on the first two students in the queue: read each with get-grading-packet's userId (work only — do not re-request the instructions, rubric or queue) and show me your draft. For every criterion, give the rating, points and the evidence (a short quote or location in the work). Add the feedback text only if feedback is on. Adjust your approach to my corrections before going on.
 
-5. Continue through the queue in batches of about five. For each student show: pseudonym, total, per-criterion ratings with one line of evidence, draft feedback if it's on, and any flag (unreadable file, link not fetched, possible missing materials, late). Ask me to approve, edit or skip each one.
+5. Continue through the queue in batches of about five, reading each batch with get-grading-packet's userIds. For each student show: pseudonym, total, per-criterion ratings with one line of evidence, draft feedback if it's on, and any flag (unreadable file, link not fetched, possible missing materials, late, a partner who hasn't submitted, an integrity signal to look at yourself). Ask me to approve, edit or skip each one.
 
-6. Write only what I approved, with grade-submission: rubric scores via the rubric parameter, plus comment and rubric comments only when feedback is on and I approved that exact text. If the packet says post_manually is false, remind me before the first write that students will see grades right away.
+6. If I ask to see a grade before it's written, call grade-submission with dryRun: true — it gives the total and the letter grade without changing anything. Write only what I approved, with grade-submission: rubric scores via the rubric parameter, plus comment and rubric comments only when feedback is on and I approved that exact text. If the packet says post_manually is false, remind me before the first write that students will see grades right away.
 
 7. Finish with a short summary: how many were graded, skipped and flagged, and the user_ids that still need attention.`
           }

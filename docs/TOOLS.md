@@ -121,20 +121,28 @@ Updates due/unlock/lock dates for multiple assignments in one call.
 ## Submissions
 
 ### get-grading-packet
-Starting point for grading an assignment. Read-only.
+Starting point for grading an assignment, and the per-student reader that follows it. Read-only.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
 - Optional parameters:
-  - `userId`: string. Also include this student's work, in the same format as `get-submission-content`.
-  - `includeMaterials`: boolean (default: true). Reads up to 5 Canvas files linked in the assignment description (handouts, sources). Other links are listed but not fetched.
+  - `userId`: string. Read this student's work, in the same format as `get-submission-content`.
+  - `userIds`: array of strings. Read several students in one call, in the order given. Maximum 5, raised with `CANVAS_MAX_GRADING_BATCH`. A student who cannot be read comes back as an error block rather than failing the call.
+  - `include`: array of `"instructions" | "assignment" | "rubric" | "queue" | "work"`. Default with no student: everything except `work`. Default with a student: `work` only, plus a one-line header naming the assignment, its points and the rubric criterion IDs.
+  - `queueLimit`: number (default: 50). `queue_truncated: true` is returned when more students need grading.
+  - `includeMaterials`: boolean (default: true). Reads up to 5 Canvas files linked in the assignment description (handouts, sources). Other links are listed but not fetched. Only applies when `assignment` is included.
   - `anonymous`: boolean (default: true)
-- Returns:
-  - Grading instructions the model follows: check for missing materials such as paper sources or handouts, ask once whether resubmissions are accepted ("Revise ..." vs "Next time ..."), keep feedback off by default, get the teacher's approval before writing any grade or feedback, and keep feedback brief, actionable, direct and supportive
-  - The assignment's settings, including `allowed_attempts` and `post_manually`
+  - `scrubFirstNamesInBody`: boolean (default: false). Redact bare roster first names in body text as well as on name lines. Off by default, because course content is full of words that are also student names.
+  - `includePartners`: boolean (default: true). Report classmates named on the work's `Names:`/`Partner:` line.
+- Returns, depending on `include`:
+  - Grading instructions the model follows: check for missing materials such as paper sources or handouts, ask once whether resubmissions are accepted and under what conditions ("Revise ..." vs "Next time ..."), keep feedback off by default, get the teacher's approval before writing any grade or feedback, keep feedback brief and actionable, and treat integrity signals as prompts rather than findings
+  - The assignment's settings, including `allowed_attempts` and `post_manually`, with `due_at_local`, `lock_at_local` and `unlock_at_local` in the course time zone
   - The rubric, with the `criterionId` and `ratingId` values `grade-submission` needs
-  - Submission counts, and a queue of students needing grading (oldest submission first, including resubmissions made after grading)
+  - Submission counts, and a queue of students needing grading (oldest submission first, including resubmissions made after grading), each with `submitted_at_local`
+  - `template_variants`, the worksheet versions seen among the students read so far in this session
   - The assignment description as text, plus the linked materials
+  - Each named student's work, under a `--- Student work · user <id> ---` separator
+- **Cost**: the first four sections do not change between students. Call the full packet once, then call per student with `userId` or `userIds`; the per-student call is a fraction of the size.
 
 ### grade-submission
 Writes a score, grade, rubric assessment, or comment for a student's submission. The tool's instructions tell the model to call it only after the teacher approves, and to include comment text only when the teacher has approved those exact words.
@@ -148,6 +156,7 @@ Writes a score, grade, rubric assessment, or comment for a student's submission.
   - `rubric`: array of `{ criterionId, ratingId?, points?, comments? }`. This is checked against the assignment's rubric (unknown IDs, out-of-range points, and points that don't match the chosen rating are rejected) before anything is written.
   - `rubric_assessment`: raw Canvas object (unvalidated; use `rubric` instead)
   - `comment`: string
+  - `dryRun`: boolean (default: false). Validates exactly as a real write does, then returns `{ dry_run, would_write, total, points_possible, letter_grade, grading_standard, visible_immediately, notes }` **without sending anything to Canvas**. The letter comes from the assignment's grading standard, then the course's, then Canvas's default scheme. `visible_immediately` is `!post_manually` — worth checking before the first write on an assignment students see straight away.
 - Returns the resulting score and grade, plus the rubric total. It also notes any criteria left unscored, and points out when the rubric isn't set to calculate the grade.
 
 ### list-assignment-submissions
@@ -161,7 +170,7 @@ Gets all student submissions for a specific assignment.
 - **Privacy**: Student data is anonymized by default
 
 ### get-submission-content
-Reads a student's submitted work in a form the model can grade from.
+Reads one student's submitted work in a form the model can grade from. The lightweight per-student reader: use it rather than `get-submission-documents`, which only lists attachments.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
@@ -175,24 +184,34 @@ Reads a student's submitted work in a form the model can grade from.
   - `maxCharsPerFile`: number (default: 60000)
   - `maxFileMB`: number (default: 25)
   - `anonymous`: boolean (default: true)
-- Returns a JSON summary (attempts, per-file extraction status, comments, warnings) followed by the content itself:
+  - `scrubFirstNamesInBody`: boolean (default: false). Redact bare roster first names in body text as well as on name lines.
+  - `includePartners`: boolean (default: true). Report classmates named on the work's `Names:`/`Partner:` line.
+  - `comparePartnerFiles`: boolean (default: true). Compare a partner's upload against this one.
+- Returns a JSON summary (attempts, per-file extraction status, partners, comments, warnings) followed by the content itself:
   - PDF, Word (`.docx`), HTML and text/code files come back as extracted text
   - Photos come back as images, downscaled to 1568px
   - Text-entry and discussion submissions are converted from HTML to plain text
   - Links, recordings, LTI and annotation submissions are reported in notes
-- **Privacy**: With `anonymous`, the student's name is replaced by their pseudonym in filenames, document text and comments. This is best effort: names inside images are not removed.
+  - Each attempt's `submitted_at` is paired with `submitted_at_local` in the course time zone
+- **Partners**: students named on the work's name line and enrolled in the course appear as `partners: [{ student, user_id, submitted, workflow_state, same_file_hash? }]`. `same_file_hash` compares extracted text (length plus the first 500 characters), since Canvas exposes no content hash; files of different sizes settle it without a download. In anonymous mode only the pseudonym and the user ID are given.
+- **Per-file extras**: `redactions` counts what anonymization did (`nameLine`, `body`, `unmatched`); `integrity_signals` lists short excerpts worth a second look, which are prompts and never findings; `template_fingerprint` and `template_headers` identify which version of a worksheet template the student had (documents with table markup only).
+- **Privacy**: With `anonymous`, names on a `Name:`/`Names:`/`Partner:` line are matched against the whole course roster and replaced with each student's pseudonym, so a partner reads as `Student 12` rather than a blank; anything there that matches nobody becomes `[name]` and raises a warning. In body text only full first-and-last roster matches are redacted, plus every part of the submitting student's own name — bare first names are left alone unless `scrubFirstNamesInBody` is set, because a student called Henry would otherwise erase "Prince Henry". Still best effort: names inside images, nicknames and misspellings are not caught.
 - **macOS**: PDF text comes from Apple's PDFKit, which rejoins wrapped lines into paragraphs. Scanned pages and photos also get Vision OCR text next to the image, and iPhone HEIC photos are converted with `sips`. All three use built-in system tools through `osascript`. Other platforms use pdf.js and return images only. The first OCR call after a reboot loads Vision's models and can take up to a minute.
-- **Optional dependency**: rendering scanned PDF pages and resizing photos uses `@napi-rs/canvas`. Without it, text extraction still works and the response says what was skipped.
+- **Optional dependency**: rendering scanned PDF pages and resizing photos uses `@napi-rs/canvas`, which `npm install` brings in. Without it, text extraction still works, and the warning appears only on submissions that actually needed rendering.
 
 ### get-submission-documents
-Retrieves a student's submission with attachment metadata and optional file content.
+Lists a student's submission attachments, with their extracted text when `downloadFiles` is on.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
   - `userId`: string
 - Optional parameters:
-  - `downloadFiles`: boolean (default: false)
-  - `anonymous`: boolean (default: true)
+  - `downloadFiles`: boolean (default: false). Download each attachment and return its extracted text.
+  - `forceBase64`: boolean (default: false). Return raw base64 instead of extracted text.
+  - `maxChars`: number (default: 60000). Per-file truncation limit for extracted text.
+  - `anonymous`: boolean (default: true). Redacts names in the extracted text as well as the metadata.
+- Returns, per file: `content_encoding` (`"text"` or `"base64"`), `content`, and `truncated: true` when the text was cut. Text for PDFs, Word (`.docx`), HTML and plain-text files; base64 for images, media, and formats with no extractor, each with a `note` saying why. Base64 over 5 MB is refused with an explanation rather than returned.
+- To read or grade the work, including photos and scanned handwriting, use `get-submission-content` instead.
 
 ### get-submission-file-info
 Returns metadata for a specific file attached to a submission.
@@ -200,11 +219,14 @@ Returns metadata for a specific file attached to a submission.
   - `fileId`: string
 
 ### download-submission-file
-Downloads a submission file as text or base64.
+Reads one submission file by its file ID.
 - Required parameters:
   - `fileId`: string
 - Optional parameters:
-  - `forceBase64`: boolean (default: false)
+  - `forceBase64`: boolean (default: false). Return raw base64 instead of extracted text.
+  - `maxChars`: number (default: 60000). Truncation limit for extracted text; `truncated: true` is set when it applies.
+- Returns extracted text for PDFs, Word (`.docx`), HTML and plain-text files; base64 for images, media and formats with no extractor, or when `forceBase64` is set. Base64 over 5 MB is refused with an explanation rather than returned.
+- **Privacy**: a file ID carries no course, so this tool has no roster to match names against and does not anonymize. Use `get-submission-content` or `get-submission-documents` when names must be scrubbed.
 
 ### post-submission-comment
 Posts a comment on a student's assignment submission.

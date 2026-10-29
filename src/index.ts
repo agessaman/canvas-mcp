@@ -28,6 +28,9 @@ import { registerConversationTools } from './tools/conversations.js';
 import { registerFileTools } from './tools/files.js';
 import { registerOutcomeTools } from './tools/outcomes.js';
 import { registerGradingTools } from './tools/grading.js';
+import { clearRosterCache } from './grading.js';
+import { clearCourseZoneCache } from './courseTime.js';
+import { clearTemplateVariants } from './documentSignals.js';
 import { registerOverrideTools } from './tools/overrides.js';
 import { registerQuizExtensionTools } from './tools/quizExtensions.js';
 import { registerCourseSettingsTools } from './tools/courseSettings.js';
@@ -109,6 +112,11 @@ server.tool(
   async () => {
     const dropped = canvas.clearCache();
     itemBanks?.clearSessions();
+    // Process-lifetime caches of their own: a roster that outlives a drop/add,
+    // and a course time zone, both of which the grading tools reuse per call.
+    clearRosterCache();
+    clearCourseZoneCache();
+    clearTemplateVariants();
     return {
       content: [{
         type: "text",

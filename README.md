@@ -23,6 +23,7 @@
 - [Usage Examples](#usage-examples)
 - [Student Data Privacy](#student-data-privacy)
 - [Tool Reference](#tool-reference)
+  - [Grading an assignment efficiently](#grading-an-assignment-efficiently)
 - [Available Prompts](#available-prompts)
 - [Troubleshooting](#troubleshooting)
 - [Performance & Caching](#performance--caching)
@@ -36,7 +37,7 @@
 
 - **Courses** — list courses (including unpublished shells and past terms, with name/code search), look up a course by ID, post announcements
 - **Assignments** — create, update, delete assignments and assignment groups; bulk date updates
-- **Grading** — grading packets (instructions, rubric IDs, linked handouts, queue), student work as text and images (PDF, Word, photos, scans, OCR on macOS), validated rubric grading, feedback only with teacher approval
+- **Grading** — grading packets (instructions, rubric IDs, linked handouts, queue) read once, then work-only calls per student; student work as text and images (PDF, Word, photos, scans, OCR on macOS); roster-aware name scrubbing that catches partners typed onto a worksheet; partner detection; dry-run grades with a letter-grade preview; dates in the course time zone; validated rubric grading, feedback only with teacher approval
 - **Rubrics** — read a rubric's full criteria and ratings, draft and edit rubrics, align criteria to outcomes, analyze statistics, attach rubrics to assignments
 - **Outcomes** — create, edit, organise, and link learning outcomes (standards)
 - **Students** — enrollment lists with privacy-first anonymization
@@ -109,6 +110,12 @@ npm run build
 npm start
 ```
 
+`npm install` also brings in [`@napi-rs/canvas`](https://www.npmjs.com/package/@napi-rs/canvas), a prebuilt native renderer that is needed to turn scanned PDF pages into images and to downscale large phone photos — the usual shape of handwritten work. It is declared as an `optionalDependency`, so an install that skips it (a platform with no prebuilt binary, or `--no-optional`) still works: text extraction is unaffected, and a submission that actually needed rendering says so in its warnings. To add it later:
+
+```bash
+npm install @napi-rs/canvas
+```
+
 For development with auto-reload:
 
 ```bash
@@ -124,6 +131,7 @@ Set these environment variables (via `.env` file, MCP client config, or shell):
 | `CANVAS_API_TOKEN` | Yes | Personal access token from Canvas |
 | `CANVAS_BASE_URL` | No | Your Canvas instance URL (default: `https://fhict.instructure.com`) |
 | `CANVAS_ENABLE_ITEM_BANKS` | No | Set to `true` to add the six New Quizzes item bank tools and the two stimulus tools, which use a **private** Instructure API. Off by default — see [New Quizzes item banks](#new-quizzes-item-banks-opt-in) |
+| `CANVAS_MAX_GRADING_BATCH` | No | How many students `get-grading-packet`'s `userIds` may read in one call (default: `5`) |
 
 See [.env.example](.env.example) for a template.
 
@@ -264,9 +272,27 @@ This server includes **privacy-first anonymization** for student data. By defaul
 List all students in course 123, but show their actual names and emails
 ```
 
-**Affected tools:** `list-students`, `list-assignments` (with submission data), `list-assignment-submissions`, `list-section-submissions`, `list-rubric-assessments`, `get-submission-documents`
+**Affected tools:** `list-students`, `list-assignments` (with submission data), `list-assignment-submissions`, `list-section-submissions`, `list-rubric-assessments`, `get-submission-documents`, `get-submission-content`, `get-grading-packet`
 
 Each affected tool accepts an `anonymous` parameter (default: `true`). Your AI assistant sets `anonymous: false` when you ask for real names.
+
+### Names typed into the work itself
+
+Canvas knows how it spells a student's name. A worksheet's "Names:" line knows nothing of the sort, and that is where anonymization used to leak: a partner's first name, a lowercase name wedged into a row of underscores, a name joined by "and". `get-submission-content`, `get-grading-packet` and `get-submission-documents` therefore run two different passes over extracted document text when `anonymous` is on.
+
+**On a name line** — anything whose label matches `Name:`, `Names:`, `Student Name:` or `Partner:`, at the start of a line or of a table cell — every token is treated as a name. Underscores are stripped, and each name is matched against the whole course roster (first, last, preferred and sortable name parts, case-insensitively), so a partner comes back as *their own* pseudonym rather than a blank. The line runs until the next label (`Period`, `Date`, `Class`, `Hour`) or the end of the line, so `Name: ____ Period: 3` keeps its period. A name-like token that matches nobody becomes `[name]` and is counted, because a blank you don't know about is worse than one you do.
+
+**In body text**, only full first-and-last matches from the roster are redacted, plus every part of the submitting student's own name. Bare first names are left alone by default: course content is full of words that are also somebody's first name, and a student called Henry must not erase "Prince Henry" or "Henry Hudson" from a history passage. Pass `scrubFirstNamesInBody: true` to redact roster first names in body text too, when the assignment makes that the greater risk.
+
+Each file reports what happened, so the scrubbing is auditable rather than a matter of trust:
+
+```json
+"redactions": { "nameLine": 2, "body": 0, "unmatched": 1 }
+```
+
+`unmatched` above zero also raises a warning on the submission — usually a partner enrolled in another section, or a nickname.
+
+This is still best effort. Names inside images, misspellings and nicknames are not caught, and `download-submission-file` takes only a file ID, so it has no course to look a roster up in and does not anonymize at all.
 
 > **Exception — intervention tools default to real names.** `get-course-grades`, `list-missing-submissions`, and `get-student-engagement` default to `anonymous: false`, because "Student 7 is failing" is not something you can act on. They still accept `anonymous: true` when you want to reason about the class in aggregate or share output. Note also that pseudonyms are assigned from an in-memory counter that resets when the server restarts — `Student 3` in one session is not necessarily `Student 3` in the next, so don't carry those labels across conversations.
 
@@ -320,6 +346,44 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | ePortfolios | 3 | `list-eportfolios`, `get-eportfolio`, `get-eportfolio-pages` |
 
 **Full parameter reference:** [docs/TOOLS.md](docs/TOOLS.md)
+
+### Grading an assignment efficiently
+
+`get-grading-packet` is two tools in one shape. Call it **once** with no student to get the grading instructions, the assignment, its linked handouts, the rubric with the criterion IDs `grade-submission` needs, and the queue. Then call it **per student** with `userId`, which returns only that student's work plus a one-line header naming the assignment, its points and the criterion IDs. None of the first call's content changes between students, and resending it was costing four to five thousand tokens each time — over 100k of pure duplication across a class of thirty.
+
+| Parameter | Default | What it does |
+|-----------|---------|--------------|
+| `include` | everything but `work`; `["work"]` when a student is named | Pick sections explicitly: `"instructions"`, `"assignment"`, `"rubric"`, `"queue"`, `"work"` |
+| `userIds` | — | Read several students in one call, in the order given (max 5, see `CANVAS_MAX_GRADING_BATCH`). One unreadable student does not take the rest down |
+| `queueLimit` | `50` | How many students the queue lists; `queue_truncated: true` when there are more |
+| `scrubFirstNamesInBody` | `false` | Redact roster first names in body text too (see [Names typed into the work itself](#names-typed-into-the-work-itself)) |
+| `includePartners` | `true` | Report classmates named on the work's name line |
+
+**Partners.** Where an assignment allows partners and both are meant to submit, the name line is the only record of who worked with whom. Students named there and enrolled in the course come back on the per-student output:
+
+```json
+"partners": [
+  { "student": "Student 12", "user_id": 1234, "submitted": true, "same_file_hash": true }
+]
+```
+
+`same_file_hash` compares the two uploads. Canvas exposes no content hash, so it compares extracted text — length plus the first 500 characters — and settles the common case for free, since files of different sizes cannot be the same file. In anonymous mode only the pseudonym and the user ID are given. Pass `comparePartnerFiles: false` to skip the comparison, or `includePartners: false` to skip partner lookups entirely.
+
+**Dates.** `due_at: "2026-10-27T05:00:00Z"` is 10pm Pacific on the 26th, which is easy to misread as the 27th — and the day is what decides whether work was late or a revision window has closed. Every `due_at`, `lock_at`, `unlock_at` and `submitted_at` therefore comes back with a `_local` twin formatted in the course's own time zone (falling back to the account's): `"due_at_local": "2026-10-26 22:00 PDT"`.
+
+**Drafting a grade.** `grade-submission` takes `dryRun: true`, which validates the rubric exactly as a real write does, computes the total and the letter grade from the assignment's or course's grading standard, and reports whether students would see it immediately — without sending anything to Canvas:
+
+```json
+{ "dry_run": true, "would_write": { ... }, "total": 20, "letter_grade": "C", "visible_immediately": true }
+```
+
+**Reading files directly.** `get-submission-documents` and `download-submission-file` return extracted text by default for PDFs, Word (`.docx`), HTML and plain-text files, truncated at 60,000 characters with `truncated: true` (override with `maxChars`). Base64 comes back only for images, media and formats with no extractor, or when `forceBase64: true` is passed — with a 5 MB limit, above which the tool says so rather than returning a placeholder. A 192 KB PDF used to come back as `[FILE_TOO_LARGE_FOR_DISPLAY]`, leaving the caller nothing to grade from.
+
+### Signals worth a second look
+
+Each extracted file can carry `integrity_signals`: short excerpts a teacher might want to open the work over. They are **prompts, never findings** — not evidence of copying, and not grounds for a lower score. The heuristics fire on artefacts of how text was produced rather than on how it reads, so they stay quiet on ordinary student writing: a footnote number left mid-sentence (`France.12 Now`), wiki page furniture (`[edit]`, `[citation needed]`, `Retrieved from`, `^ `), and an answer to "which X is most like …" that names the same thing the question asked about.
+
+Documents that keep table markup (HTML, and `.docx`) also carry `template_fingerprint` and `template_headers`, taken from the first table's header row. Teachers revise worksheet templates between class periods, and the rubric's meaning depends on which version a student had. `get-grading-packet` with `include: ["queue"]` summarises the versions as `template_variants` — covering the students read so far in the session, since fingerprinting the rest would mean downloading every file.
 
 ### Classic vs. New Quizzes
 

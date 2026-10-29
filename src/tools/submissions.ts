@@ -2,7 +2,9 @@ import { z } from "zod";
 import { jsonObjectParam } from "../jsonObjectParam.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
-import { buildRubricAssessment, readSubmissionContent } from "../grading.js";
+import { buildRubricAssessment, getCourseRoster, letterFor, readSubmissionContent, resolveGradingScheme } from "../grading.js";
+import { createRedactor, noopRedactor } from "../nameRedaction.js";
+import { TOOL_BASE64_LIMIT_BYTES, TOOL_TEXT_LIMIT, extractFileForTool } from "../submissionContent.js";
 
 export function registerSubmissionTools(server: McpServer, canvas: CanvasClient) {
   // Tool: list-assignment-submissions
@@ -52,7 +54,7 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
   // Tool: grade-submission
   server.tool(
     "grade-submission",
-    "Write a score, grade, rubric assessment and/or comment to a student's submission. Only call this after the teacher has approved the grade, and only include comment or rubric comments when the teacher has approved that exact feedback text. Prefer `rubric` (validated against the assignment's rubric; get IDs from get-grading-packet) over the raw `rubric_assessment`.",
+    "Write a score, grade, rubric assessment and/or comment to a student's submission. Only call this after the teacher has approved the grade, and only include comment or rubric comments when the teacher has approved that exact feedback text. Prefer `rubric` (validated against the assignment's rubric; get IDs from get-grading-packet) over the raw `rubric_assessment`. Pass dryRun: true to validate a draft and see its total and letter grade without writing anything to Canvas.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment"),
@@ -67,9 +69,10 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
       })).optional().describe("Rubric scores, checked against the assignment's rubric before anything is written"),
       rubric_assessment: jsonObjectParam("Raw Canvas rubric_assessment object, keyed by criterion id (advanced; unvalidated): {\"criterion_id\": {\"points\": 5, \"comments\": \"...\"}}").optional(),
       comment: z.string().optional().describe("Submission comment students can see. Include only text the teacher approved"),
+      dryRun: z.boolean().default(false).describe("Validate and price the grade without writing it: returns would_write, the rubric total, the letter grade from the grading standard, and whether students would see it immediately. Makes no changes in Canvas (default: false)"),
     },
     { idempotentHint: true },
-    async ({ courseId, assignmentId, userId, posted_grade, score, rubric, rubric_assessment, comment }: {
+    async ({ courseId, assignmentId, userId, posted_grade, score, rubric, rubric_assessment, comment, dryRun = false }: {
       courseId: string;
       assignmentId: string;
       userId: string;
@@ -78,6 +81,7 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
       rubric?: { criterionId: string; ratingId?: string; points?: number; comments?: string }[];
       rubric_assessment?: any;
       comment?: string;
+      dryRun?: boolean;
     }) => {
       try {
         if (rubric && rubric_assessment !== undefined) {
@@ -109,6 +113,33 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
         }
         if (Object.keys(payload).length === 0) {
           throw new Error("Nothing to write: pass posted_grade, score, rubric, rubric_assessment or comment.");
+        }
+
+        if (dryRun) {
+          // Same validation as a real write, no request. Nothing below this
+          // branch may call a write method on the client.
+          const assignment: any = await canvas.getAssignment(courseId, assignmentId);
+          const total = rubricTotal ?? (score !== undefined ? score : Number(posted_grade));
+          const points = Number(assignment?.points_possible);
+          let letter: string | undefined;
+          let scheme: { name: string; source: string } | undefined;
+          if (Number.isFinite(total) && Number.isFinite(points) && points > 0) {
+            const resolved = await resolveGradingScheme(canvas, courseId, assignment);
+            letter = letterFor(total / points, resolved);
+            scheme = { name: resolved.name, source: resolved.source };
+          }
+          const preview = {
+            dry_run: true,
+            would_write: payload,
+            total: Number.isFinite(total) ? total : undefined,
+            points_possible: Number.isFinite(points) ? points : undefined,
+            letter_grade: letter,
+            grading_type: assignment?.grading_type,
+            ...(scheme ? { grading_standard: scheme } : {}),
+            visible_immediately: !assignment?.post_manually,
+            ...(notes.length ? { notes } : {}),
+          };
+          return { content: [{ type: "text", text: JSON.stringify(preview) }] };
         }
 
         const s = await canvas.gradeSubmission(courseId, assignmentId, userId, payload) as any;
@@ -176,29 +207,70 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
   // Tool: get-submission-documents
   server.tool(
     "get-submission-documents",
-    "Retrieve a student's submission with attachment metadata and optional file downloads. Returns submission details, file information, and optionally the actual file content.",
+    `List a student's submission attachments, with their extracted text when downloadFiles is on. Text comes back as text for PDFs, Word (.docx), HTML and plain-text files, truncated at ${TOOL_TEXT_LIMIT} characters with truncated: true; base64 only for images, media and formats with no extractor, or when forceBase64 is set (base64 limit: ${(TOOL_BASE64_LIMIT_BYTES / 1048576).toFixed(0)} MB). With anonymous (the default), names are redacted from the extracted text as well as the metadata. To read or grade the work, including photos and scanned handwriting, use get-submission-content instead.`,
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment"),
       userId: z.string().describe("The ID of the student/user"),
-      downloadFiles: z.boolean().default(false).describe("Whether to download the actual file content (default: false, only returns metadata)"),
+      downloadFiles: z.boolean().default(false).describe("Download each attachment and return its extracted text (default: false, metadata only)"),
+      forceBase64: z.boolean().default(false).describe("Return raw base64 instead of extracted text (default: false)"),
+      maxChars: z.number().int().min(1000).default(TOOL_TEXT_LIMIT).describe(`Truncate extracted text per file beyond this length (default: ${TOOL_TEXT_LIMIT})`),
       anonymous: z.boolean().default(true).describe("Whether to anonymize student information (default: true for privacy)")
     },
     { readOnlyHint: true },
-    async ({ courseId, assignmentId, userId, downloadFiles = false, anonymous = true }: { 
-      courseId: string; 
-      assignmentId: string; 
-      userId: string; 
+    async ({ courseId, assignmentId, userId, downloadFiles = false, forceBase64 = false, maxChars = TOOL_TEXT_LIMIT, anonymous = true }: {
+      courseId: string;
+      assignmentId: string;
+      userId: string;
       downloadFiles?: boolean;
-      anonymous?: boolean; 
+      forceBase64?: boolean;
+      maxChars?: number;
+      anonymous?: boolean;
     }) => {
       try {
-        const result = await canvas.getSubmissionDocuments(courseId, assignmentId, userId, { 
-          downloadFiles, 
-          anonymous 
+        const result = await canvas.getSubmissionDocuments(courseId, assignmentId, userId, {
+          downloadFiles,
+          anonymous
         });
-        
-        // Format the response nicely
+
+        // This tool now returns document text rather than opaque bytes, so
+        // anonymous has to mean the text too, not just the metadata around it.
+        const redactor = anonymous
+          ? createRedactor({ roster: await getCourseRoster(canvas, courseId), submitterId: userId })
+          : noopRedactor();
+        const scrub = (t: unknown) => (typeof t === 'string' ? redactor.redact(t) : t);
+
+        // A 192 KB PDF used to come back as "[FILE_TOO_LARGE_FOR_DISPLAY]",
+        // which left the caller with nothing at all. Every readable file now
+        // returns its text; only what has no extractor falls back to bytes.
+        const downloaded = [];
+        for (const file of (downloadFiles ? result.downloadedFiles : []) as any[]) {
+          if (file.error) {
+            downloaded.push({ id: file.id, filename: file.filename, error: file.error });
+            continue;
+          }
+          const extracted = await extractFileForTool(
+            Buffer.from(file.data), file.filename ?? '', file.contentType ?? '', { forceBase64, maxChars }
+          );
+          const redactions = { nameLine: 0, body: 0, unmatched: 0 };
+          if (extracted.content_encoding === 'text' && extracted.content !== undefined) {
+            extracted.content = scrub(extracted.content) as string;
+            Object.assign(redactions, redactor.takeCounts());
+          }
+          if (extracted.integrity_signals) {
+            extracted.integrity_signals = extracted.integrity_signals.map(sig => ({ ...sig, excerpt: scrub(sig.excerpt) as string }));
+            redactor.takeCounts();
+          }
+          downloaded.push({
+            id: file.id,
+            filename: scrub(file.filename),
+            content_type: file.contentType,
+            size: file.size,
+            ...extracted,
+            ...(anonymous ? { redactions } : {}),
+          });
+        }
+
         const response = {
           submission: {
             id: result.submission.id,
@@ -211,27 +283,16 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
             score: result.submission.score,
             attempt: result.submission.attempt
           },
-          text_content: result.textSubmission,
+          text_content: scrub(result.textSubmission),
           attachments: result.attachments.map((attachment: any) => ({
             id: attachment.id,
-            filename: attachment.filename || attachment.display_name,
+            filename: scrub(attachment.filename || attachment.display_name),
             content_type: attachment.content_type,
             size: attachment.size,
             url: downloadFiles ? '[DOWNLOADED_BELOW]' : attachment.url,
             created_at: attachment.created_at
           })),
-          downloaded_files: downloadFiles ? result.downloadedFiles.map((file: any) => ({
-            id: file.id,
-            filename: file.filename,
-            content_type: file.contentType,
-            size: file.size,
-            // Only include base64 data for small files or text files
-            has_content: !!file.data,
-            content_base64: (file.contentType?.includes('text') || file.size < 1024 * 100) // < 100KB
-              ? file.dataBase64 
-              : '[FILE_TOO_LARGE_FOR_DISPLAY]',
-            error: file.error
-          })) : []
+          downloaded_files: downloaded
         };
 
         return {
@@ -293,40 +354,24 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
   // Tool: download-submission-file
   server.tool(
     "download-submission-file",
-    "Download the actual content of a file attached to a submission. Returns file content as base64 for binary files or as text for text files.",
+    `Read one submission file by its file ID. Returns extracted text for PDFs, Word (.docx), HTML and plain-text files, truncated at ${TOOL_TEXT_LIMIT} characters with truncated: true; base64 for images, media and formats with no extractor, or when forceBase64 is set (base64 limit: ${(TOOL_BASE64_LIMIT_BYTES / 1048576).toFixed(0)} MB). A file ID carries no course, so this tool cannot anonymize: use get-submission-content or get-submission-documents when names must be scrubbed.`,
     {
       fileId: z.string().describe("The ID of the file to download"),
-      forceBase64: z.boolean().default(false).describe("Force return content as base64 even for text files (default: false)")
+      forceBase64: z.boolean().default(false).describe("Return raw base64 instead of extracted text (default: false)"),
+      maxChars: z.number().int().min(1000).default(TOOL_TEXT_LIMIT).describe(`Truncate extracted text beyond this length (default: ${TOOL_TEXT_LIMIT})`)
     },
     { readOnlyHint: true },
-    async ({ fileId, forceBase64 = false }: { fileId: string; forceBase64?: boolean }) => {
+    async ({ fileId, forceBase64 = false, maxChars = TOOL_TEXT_LIMIT }: { fileId: string; forceBase64?: boolean; maxChars?: number }) => {
       try {
         const fileData = await canvas.downloadFile(fileId);
-        
-        let content: string;
-        let contentType = 'base64';
-        
-        // For text files, try to decode as text unless forceBase64 is true
-        if (!forceBase64 && fileData.contentType.includes('text')) {
-          try {
-            content = Buffer.from(fileData.data).toString('utf-8');
-            contentType = 'text';
-          } catch {
-            // If text decoding fails, fall back to base64
-            content = Buffer.from(fileData.data).toString('base64');
-            contentType = 'base64';
-          }
-        } else {
-          content = Buffer.from(fileData.data).toString('base64');
-          contentType = 'base64';
-        }
+        const buf = Buffer.from(fileData.data);
+        const extracted = await extractFileForTool(buf, fileData.filename, fileData.contentType, { forceBase64, maxChars });
 
         const response = {
           filename: fileData.filename,
           content_type: fileData.contentType,
-          content_encoding: contentType,
-          size: fileData.data.byteLength,
-          content: content
+          size: buf.byteLength,
+          ...extracted,
         };
 
         return {
@@ -349,7 +394,7 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
   // Tool: get-submission-content
   server.tool(
     "get-submission-content",
-    "Read a student's submitted work for grading. Extracts text from PDFs, Word (.docx), HTML and text files, returns photos and scanned/handwritten PDF pages as images, converts text-entry submissions to plain text, and includes submission comments. Use this rather than get-submission-documents when you need to read or grade the work.",
+    "Read one student's submission content: the student work itself, for grading. This is the lightweight per-student reader — it extracts text from PDFs, Word (.docx), HTML and text files, returns photos and scanned or handwritten PDF pages as images, converts text-entry submissions to plain text, and includes submission comments. Use it rather than get-submission-documents, which only lists attachments. get-grading-packet returns the same student work, plus the rubric and queue; read the full packet once with get-grading-packet, then read each student with this tool or with get-grading-packet's userId.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment"),
@@ -363,10 +408,13 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
       maxImages: z.number().int().min(0).max(40).default(15).describe("Maximum images returned in this response across all files (default: 15)"),
       maxCharsPerFile: z.number().int().min(1000).default(60000).describe("Truncate extracted text per file beyond this length (default: 60000)"),
       maxFileMB: z.number().positive().default(25).describe("Skip downloading files larger than this (default: 25 MB)"),
-      anonymous: z.boolean().default(true).describe("Replace the student's name with a pseudonym, including best-effort scrubbing inside document text (default: true)")
+      anonymous: z.boolean().default(true).describe("Replace every student's name with their pseudonym, including best-effort scrubbing inside document text. Names on a \"Names:\"/\"Partner:\" line are matched against the whole course roster, so a partner reads as their own pseudonym (default: true)"),
+      scrubFirstNamesInBody: z.boolean().default(false).describe("Also redact bare first names from the roster in body text. Off by default, because course content is full of words that are also student names (a student called Henry would erase \"Prince Henry\")"),
+      includePartners: z.boolean().default(true).describe("Report classmates named on the work's \"Names:\"/\"Partner:\" line, with whether they submitted (default: true)"),
+      comparePartnerFiles: z.boolean().default(true).describe("Compare a partner's upload against this one to say whether both submitted the same work (default: true)")
     },
     { readOnlyHint: true },
-    async ({ courseId, assignmentId, userId, attempt, renderPdfPages = "auto", maxPdfPagesToRender = 10, ocr = true, maxImages = 15, maxCharsPerFile = 60000, maxFileMB = 25, anonymous = true }: {
+    async ({ courseId, assignmentId, userId, attempt, renderPdfPages = "auto", maxPdfPagesToRender = 10, ocr = true, maxImages = 15, maxCharsPerFile = 60000, maxFileMB = 25, anonymous = true, scrubFirstNamesInBody = false, includePartners = true, comparePartnerFiles = true }: {
       courseId: string;
       assignmentId: string;
       userId: string;
@@ -378,10 +426,14 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
       maxCharsPerFile?: number;
       maxFileMB?: number;
       anonymous?: boolean;
+      scrubFirstNamesInBody?: boolean;
+      includePartners?: boolean;
+      comparePartnerFiles?: boolean;
     }) => {
       try {
         const content = await readSubmissionContent(canvas, courseId, assignmentId, userId, {
           attempt, renderPdfPages, maxPdfPagesToRender, ocr, maxImages, maxCharsPerFile, maxFileMB, anonymous,
+          scrubFirstNamesInBody, includePartners, comparePartnerFiles,
         });
         return { content };
       } catch (error: any) {

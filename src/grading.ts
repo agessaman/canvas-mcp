@@ -8,11 +8,18 @@ import {
   ExtractOptions,
   FileSummary,
   ImageBudget,
-  buildNameScrubber,
-  canvasAvailable,
   extractFile,
   htmlToText,
 } from './submissionContent.js';
+import {
+  Redactor,
+  RosterMember,
+  buildRoster,
+  createRedactor,
+  noopRedactor,
+} from './nameRedaction.js';
+import { recordTemplateVariant } from './documentSignals.js';
+import { formatInZone, resolveCourseZone } from './courseTime.js';
 
 // What each non-file submission type needs the grader to know
 const EXTERNAL_TYPE_NOTES: Record<string, string> = {
@@ -28,6 +35,57 @@ export interface ReadSubmissionOptions extends ExtractOptions {
   maxImages: number;
   maxFileMB: number;
   anonymous: boolean;
+  /** Redact bare first names from the roster in body text (default: false). */
+  scrubFirstNamesInBody?: boolean;
+  /** Report students named on the worksheet's name line (default: true). */
+  includePartners?: boolean;
+  /** Compare a partner's file against this one (default: true). */
+  comparePartnerFiles?: boolean;
+  /** A roster built once by the caller, so a batch doesn't refetch it. */
+  roster?: RosterMember[];
+  /** Course time zone for the _local date fields. */
+  timeZone?: string;
+}
+
+// The roster is read once per course per process. It only moves when someone
+// adds or drops, which doesn't happen inside a grading session, and refetching
+// it for every student in a 30-student queue is 30 pointless round trips.
+const rosterCache = new Map<string, Promise<RosterMember[]>>();
+
+export async function getCourseRoster(canvas: CanvasClient, courseId: string): Promise<RosterMember[]> {
+  let cached = rosterCache.get(courseId);
+  if (!cached) {
+    // Real names, deliberately: they are what the redactor has to find. They
+    // stay inside this process — only pseudonyms reach the tool output.
+    cached = canvas
+      .listStudents(courseId, { enrollment_type: ['student'], per_page: 100 }, { anonymous: false })
+      .then((users: any) => buildRoster(users as any[]))
+      .catch(() => []);
+    rosterCache.set(courseId, cached);
+  }
+  return cached;
+}
+
+export function clearRosterCache(): void {
+  rosterCache.clear();
+}
+
+/** A content fingerprint cheap enough to compare two partners' uploads. */
+interface FileFingerprint {
+  bytes: number;
+  chars: number;
+  head: string;
+}
+
+const FINGERPRINT_HEAD = 500;
+
+function fingerprintOf(bytes: number, text: string): FileFingerprint {
+  return { bytes, chars: text.length, head: text.replace(/\s+/g, ' ').trim().slice(0, FINGERPRINT_HEAD) };
+}
+
+function sameWork(a: FileFingerprint[], b: FileFingerprint[]): boolean {
+  if (a.length === 0 || a.length !== b.length) return false;
+  return a.every((f, i) => f.chars === b[i].chars && f.head === b[i].head);
 }
 
 /**
@@ -43,9 +101,27 @@ export async function readSubmissionContent(
   options: ReadSubmissionOptions,
 ): Promise<ContentBlock[]> {
   const { attempt, maxImages, maxFileMB, anonymous } = options;
+  const includePartners = options.includePartners !== false;
+  const comparePartnerFiles = options.comparePartnerFiles !== false;
   const s = await canvas.getSubmissionWithHistory(courseId, assignmentId, userId);
   const alias = anonymous ? DataAnonymizer.pseudonymFor(s.user_id) : (s.user?.name ?? `User ${s.user_id}`);
-  const scrub = anonymous ? buildNameScrubber(s.user, alias) : (t: string) => t;
+
+  // The roster is what lets a partner's first name resolve to the pseudonym
+  // they carry everywhere else, instead of being blanked or missed.
+  let roster: RosterMember[] = [];
+  if (anonymous || includePartners) {
+    roster = options.roster ?? await getCourseRoster(canvas, courseId);
+    if (s.user && !roster.some(m => m.userId === String(s.user_id))) {
+      roster = [...roster, ...buildRoster([{ ...s.user, id: s.user_id }])];
+    }
+  }
+  const redactor: Redactor = anonymous
+    ? createRedactor({ roster, submitterId: s.user_id, scrubFirstNamesInBody: options.scrubFirstNamesInBody })
+    : noopRedactor();
+  const scrub = (t: string) => redactor.redact(t);
+
+  const timeZone = options.timeZone ?? (await resolveCourseZone(canvas, courseId)).timeZone;
+  const local = (iso: unknown) => formatInZone(iso, timeZone);
 
   const history: any[] = (s.submission_history?.length ? s.submission_history : [s])
     .filter((h: any) => h.submitted_at || h.attempt);
@@ -67,20 +143,29 @@ export async function readSubmissionContent(
   const budget = new ImageBudget(maxImages);
   const blocks: ContentBlock[] = [];
   const attemptSummaries: any[] = [];
+  let needsCanvas = false;
+  // Redactions made outside any one file still count toward the warning.
+  let looseUnmatched = 0;
+  const drain = () => { looseUnmatched += redactor.takeCounts().unmatched; };
+  // Latest attempt only: what a partner's upload is compared against.
+  let ownFingerprints: FileFingerprint[] = [];
 
   for (const a of attempts) {
     const label = `Attempt ${a.attempt ?? '?'}`;
     const files: FileSummary[] = [];
     const notes: string[] = [];
+    const fingerprints: FileFingerprint[] = [];
 
     if (a.body) {
       blocks.push({ type: 'text', text: `--- ${label} · text entry ---\n${scrub(htmlToText(a.body))}` });
+      drain();
     }
     if (a.discussion_entries?.length) {
       const posts = a.discussion_entries
         .map((e: any) => `[${e.created_at ?? ''}] ${htmlToText(e.message ?? '')}`)
         .join('\n\n');
       blocks.push({ type: 'text', text: `--- ${label} · discussion posts ---\n${scrub(posts)}` });
+      drain();
     }
     if (EXTERNAL_TYPE_NOTES[a.submission_type]) {
       notes.push(EXTERNAL_TYPE_NOTES[a.submission_type]);
@@ -95,7 +180,10 @@ export async function readSubmissionContent(
     for (const att of a.attachments ?? []) {
       const filename = scrub(att.display_name || att.filename || `file_${att.id}`);
       if (att.size && att.size > maxFileMB * 1024 * 1024) {
-        files.push({ filename, kind: 'skipped', status: 'unsupported', note: `File is ${(att.size / 1048576).toFixed(1)} MB, over maxFileMB.` });
+        const skipped: FileSummary = { filename, kind: 'skipped', status: 'unsupported', note: `File is ${(att.size / 1048576).toFixed(1)} MB, over maxFileMB.` };
+        const counts = redactor.takeCounts();
+        if (anonymous) skipped.redactions = counts;
+        files.push(skipped);
         continue;
       }
       try {
@@ -103,21 +191,42 @@ export async function readSubmissionContent(
         const { summary, blocks: fileBlocks } = await extractFile(
           data, filename, att['content-type'] || att.content_type || contentType, options, budget
         );
-        files.push(summary);
+        if (summary.needs_canvas) needsCanvas = true;
+        const rawText = fileBlocks.filter(b => b.type === 'text').map(b => (b as any).text).join('\n');
+        fingerprints.push(fingerprintOf(data.length, rawText));
+        if (summary.template_fingerprint) {
+          // The header row is document text like any other: on a worksheet
+          // whose first table row is the name row, it carries names.
+          summary.template_headers = scrub(summary.template_headers ?? '');
+          recordTemplateVariant(String(s.assignment_id ?? assignmentId), alias, {
+            template_fingerprint: summary.template_fingerprint,
+            template_headers: summary.template_headers,
+          });
+        }
         if (fileBlocks.length) {
           blocks.push({ type: 'text', text: `--- ${label} · ${filename} (${summary.kind}${summary.pages ? `, ${summary.pages} pages` : ''}) ---` });
           for (const b of fileBlocks) {
             blocks.push(b.type === 'text' ? { type: 'text', text: scrub(b.text) } : b);
           }
         }
+        // An excerpt can quote a name line, so it is redacted like any other text.
+        if (summary.integrity_signals) {
+          summary.integrity_signals = summary.integrity_signals.map(sig => ({ ...sig, excerpt: scrub(sig.excerpt) }));
+        }
+        const counts = redactor.takeCounts();
+        if (anonymous) summary.redactions = counts;
+        files.push(summary);
       } catch (e: any) {
+        drain();
         files.push({ filename, kind: 'unknown', status: 'error', note: `Download failed: ${e?.message ?? e}` });
       }
     }
+    if (a === attempts[attempts.length - 1]) ownFingerprints = fingerprints;
 
     attemptSummaries.push({
       attempt: a.attempt,
       submitted_at: a.submitted_at,
+      ...(local(a.submitted_at) ? { submitted_at_local: local(a.submitted_at) } : {}),
       submission_type: a.submission_type,
       late: a.late || false,
       ...(a.body ? { has_text_entry: true } : {}),
@@ -132,11 +241,49 @@ export async function readSubmissionContent(
     created_at: c.created_at,
     comment: scrub(c.comment ?? ''),
   }));
+  drain();
+
+  // --- partners ---
+  const namedPartners = includePartners ? redactor.namedPartners() : [];
+  const partners: any[] = [];
+  for (const member of namedPartners) {
+    try {
+      const theirs: any = await canvas.getSubmission(courseId, assignmentId, member.userId, { include: ['user'] });
+      const entry: any = {
+        ...(anonymous ? { student: member.pseudonym } : { student: theirs?.user?.name }),
+        user_id: Number(member.userId) || member.userId,
+        submitted: !!theirs?.submitted_at,
+        workflow_state: theirs?.workflow_state,
+      };
+      const same = comparePartnerFiles
+        ? await comparePartnerWork(canvas, theirs, ownFingerprints, maxFileMB, options)
+        : undefined;
+      if (same !== undefined) entry.same_file_hash = same;
+      partners.push(entry);
+    } catch {
+      partners.push({
+        ...(anonymous ? { student: member.pseudonym } : {}),
+        user_id: Number(member.userId) || member.userId,
+        note: "This student's submission could not be read.",
+      });
+    }
+  }
+
+  const totals = attemptSummaries
+    .flatMap((a: any) => a.files ?? [])
+    .reduce((acc: any, f: any) => {
+      if (!f.redactions) return acc;
+      acc.unmatched += f.redactions.unmatched;
+      return acc;
+    }, { unmatched: looseUnmatched });
 
   const warnings: string[] = [];
   if (attempts.length === 0) warnings.push('The student has not submitted anything for this assignment.');
   if (anonymous) warnings.push('Name scrubbing in document text is best effort; names in images, nicknames or misspellings are not removed.');
-  if (!(await canvasAvailable())) warnings.push("@napi-rs/canvas is not installed: scanned PDF pages can't be rendered and large photos can't be downscaled.");
+  if (totals.unmatched > 0) {
+    warnings.push(`${totals.unmatched} name-like token(s) on a name line matched nobody in the course and were replaced with [name]. Check whether a partner is enrolled in another section, or wrote a nickname.`);
+  }
+  if (needsCanvas) warnings.push("@napi-rs/canvas is not installed: this submission has scanned pages or photos that could not be rendered. Run `npm install @napi-rs/canvas`.");
 
   const header = {
     student: alias,
@@ -150,11 +297,52 @@ export async function readSubmissionContent(
     excused: s.excused || false,
     total_attempts: s.attempt,
     attempts: attemptSummaries,
+    ...(partners.length ? { partners } : {}),
     ...(comments.length ? { comments } : {}),
     ...(warnings.length ? { warnings } : {}),
   };
 
   return [{ type: 'text', text: JSON.stringify(header) }, ...blocks];
+}
+
+/**
+ * Did the partner upload the same work? Canvas exposes no content hash, so
+ * this compares extracted text: length plus the first 500 characters. Sizes
+ * that differ settle it without downloading anything, which is the common case.
+ * Returns undefined when there is nothing to compare.
+ */
+async function comparePartnerWork(
+  canvas: CanvasClient,
+  theirSubmission: any,
+  ownFingerprints: FileFingerprint[],
+  maxFileMB: number,
+  opts: ExtractOptions,
+): Promise<boolean | undefined> {
+  const attachments: any[] = theirSubmission?.attachments ?? [];
+  if (attachments.length === 0 || ownFingerprints.length === 0) return undefined;
+  if (attachments.length !== ownFingerprints.length) return false;
+  // Unequal bytes cannot be the same file, and saying so costs no download.
+  if (attachments.every(a => typeof a.size === 'number')
+    && attachments.some((a, i) => a.size !== ownFingerprints[i].bytes)) {
+    return false;
+  }
+  const theirs: FileFingerprint[] = [];
+  for (const att of attachments) {
+    if (att.size && att.size > maxFileMB * 1024 * 1024) return undefined;
+    try {
+      const { data, contentType } = await canvas.downloadUrl(att.url);
+      const { blocks } = await extractFile(
+        data, att.display_name || att.filename || 'file',
+        att['content-type'] || att.content_type || contentType,
+        { ...opts, templateFingerprint: false, integritySignals: false },
+        new ImageBudget(0),
+      );
+      theirs.push(fingerprintOf(data.length, blocks.filter(b => b.type === 'text').map(b => (b as any).text).join('\n')));
+    } catch {
+      return undefined;
+    }
+  }
+  return sameWork(ownFingerprints, theirs);
 }
 
 // --- Rubrics ---
@@ -265,13 +453,73 @@ export function needsGrading(s: any): boolean {
     || s.grade_matches_current_submission === false;
 }
 
+// --- Grading standards (letter grades) ---
+
+// Canvas's built-in scheme, used when the course and assignment name none.
+const DEFAULT_GRADING_SCHEME: [string, number][] = [
+  ['A', 0.94], ['A-', 0.90], ['B+', 0.87], ['B', 0.84], ['B-', 0.80],
+  ['C+', 0.77], ['C', 0.74], ['C-', 0.70], ['D+', 0.67], ['D', 0.64], ['D-', 0.61], ['F', 0.0],
+];
+
+export interface GradingScheme {
+  name: string;
+  source: 'assignment' | 'course' | 'default';
+  entries: [string, number][];
+}
+
+function normalizeScheme(data: any[]): [string, number][] {
+  return (data ?? [])
+    .map((e: any) => [String(e.name ?? e.letter_grade ?? ''), Number(e.value ?? e.calculated_score ?? 0)] as [string, number])
+    .filter(([name]) => name)
+    .sort((a, b) => b[1] - a[1]);
+}
+
+/**
+ * The scheme a letter grade should be read from: the assignment's own standard,
+ * then the course's, then Canvas's default. A missing or unreadable standard is
+ * not an error — the default is what Canvas itself would fall back to.
+ */
+export async function resolveGradingScheme(
+  canvas: CanvasClient,
+  courseId: string,
+  assignment: any,
+): Promise<GradingScheme> {
+  const attempts: { id: any; source: 'assignment' | 'course' }[] = [];
+  if (assignment?.grading_standard_id) attempts.push({ id: assignment.grading_standard_id, source: 'assignment' });
+  let course: any = null;
+  try {
+    course = await canvas.getCourse(courseId);
+  } catch {
+    // Unreadable course: the default scheme still gives a usable preview.
+  }
+  if (course?.grading_standard_id) attempts.push({ id: course.grading_standard_id, source: 'course' });
+
+  for (const { id, source } of attempts) {
+    try {
+      const standard: any = await canvas.getGradingStandard(courseId, String(id));
+      const entries = normalizeScheme(standard?.grading_scheme);
+      if (entries.length) return { name: standard?.title ?? `standard ${id}`, source, entries };
+    } catch {
+      // Fall through to the next candidate.
+    }
+  }
+  return { name: 'Canvas default scheme', source: 'default', entries: DEFAULT_GRADING_SCHEME };
+}
+
+/** The letter a percentage earns under a scheme. */
+export function letterFor(percentage: number, scheme: GradingScheme): string | undefined {
+  if (!Number.isFinite(percentage)) return undefined;
+  for (const [name, cutoff] of scheme.entries) {
+    if (percentage >= cutoff) return name;
+  }
+  return scheme.entries[scheme.entries.length - 1]?.[0];
+}
+
 export const GRADING_INSTRUCTIONS = `GRADING INSTRUCTIONS (follow these for every student in this assignment)
 
 1. Missing materials. Before grading, check whether the assignment or the students' work depends on materials that are not included here: a paper copy of primary sources, a handout, a reading, textbook pages, a video, a lab or a class discussion. If it looks like something is missing, stop and ask the teacher to provide or describe it. Don't guess what it said.
 
-2. Resubmission policy. Ask the teacher ONCE for this assignment whether resubmissions will be accepted, unless they have already answered in this conversation. Canvas's allowed_attempts is only a hint. The answer sets the feedback wording:
-   - Resubmissions accepted: forward-looking, "Revise ..." (to fix this piece of work).
-   - Not accepted: "Next time ..." (to carry the skill into future work).
+2. Resubmission policy. Ask the teacher ONCE for this assignment whether resubmissions will be accepted, and under what conditions, unless they have already answered in this conversation. Canvas's allowed_attempts is only a hint. The policy can apply to only some students (for example, only work flagged for copying) and can end at a date. Use "Revise ..." wording for students who are eligible to resubmit, and "Next time ..." for everyone else. When a resubmission window applies, give its end date in the course time zone, using lock_at_local unless the teacher says otherwise.
 
 3. Feedback is OFF by default. Draft scores only, with no comments, unless the teacher turns feedback on. Even when it's on, never post a comment (submission comments or rubric criterion comments) until the teacher has seen the exact text and approved it. Scores and grades also need the teacher's approval before you write them.
 
@@ -279,4 +527,6 @@ export const GRADING_INSTRUCTIONS = `GRADING INSTRUCTIONS (follow these for ever
 
 5. Evidence. Base every rubric score on the student's work: quote or point to the passage, page or answer that justifies it. If the work can't be fully read (unreadable files, links, recordings, handwriting the OCR got wrong), say so rather than scoring what you can't see.
 
-6. Visibility. If post_manually is false, grades and comments become visible to students as soon as they are written. Remind the teacher of this before writing the first grade.`;
+6. Visibility. If post_manually is false, grades and comments become visible to students as soon as they are written. Remind the teacher of this before writing the first grade.
+
+7. Integrity signals are not findings. A file's integrity_signals field lists short excerpts worth a second look — footnote numbers left in a sentence, wiki page furniture, an answer that names its own question's subject. They are prompts for the teacher to open the work themselves, never evidence of copying and never grounds for a lower score. Mention them to the teacher plainly, say what the excerpt is, and leave the judgement to them.`;
