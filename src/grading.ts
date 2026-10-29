@@ -94,6 +94,8 @@ interface FileFingerprint {
 
 const FINGERPRINT_HEAD = 500;
 const SHINGLE = 5;
+// Above this, two uploads are the same work in different wrappers.
+const NEAR_IDENTICAL = 0.9;
 
 function fingerprintOf(bytes: number, text: string): FileFingerprint {
   // Page markers are the extractor's furniture, not the student's words, and
@@ -134,14 +136,19 @@ function jaccard(a: Set<string>, b: Set<string>): number {
  * The same worksheet submitted by one partner as a PDF and the other as a
  * DOCX is the same work, and comparing bytes or raw text said it was not.
  */
-function textAgreement(a: FileFingerprint[], b: FileFingerprint[]): { same_text: boolean; text_similarity: number } {
+function textAgreement(a: FileFingerprint[], b: FileFingerprint[]): { same_text: boolean; text_similarity: number; near_identical: boolean } {
   const joinedA = a.map(f => f.normalized).join('');
   const joinedB = b.map(f => f.normalized).join('');
   const wordsA = a.flatMap(f => f.words);
   const wordsB = b.flatMap(f => f.words);
+  const similarity = Number(jaccard(shinglesOf(wordsA), shinglesOf(wordsB)).toFixed(3));
   return {
+    // Strict: the same words in the same order, nothing else.
     same_text: joinedA.length > 0 && joinedA === joinedB,
-    text_similarity: Number(jaccard(shinglesOf(wordsA), shinglesOf(wordsB)).toFixed(3)),
+    text_similarity: similarity,
+    // One document exported twice rarely matches to the character — a header
+    // or a page number differs — so this is the flag worth reading.
+    near_identical: similarity >= NEAR_IDENTICAL,
   };
 }
 
@@ -335,6 +342,7 @@ export async function readSubmissionContent(
         // Identical work in two formats: different bytes, same words.
         entry.same_text = agreement.same_text;
         entry.text_similarity = agreement.text_similarity;
+        entry.near_identical = agreement.near_identical;
       }
       partners.push(entry);
     } catch {
@@ -398,7 +406,7 @@ async function comparePartnerWork(
   ownFingerprints: FileFingerprint[],
   maxFileMB: number,
   opts: ExtractOptions,
-): Promise<{ same: boolean; same_text: boolean; text_similarity: number } | undefined> {
+): Promise<{ same: boolean; same_text: boolean; text_similarity: number; near_identical: boolean } | undefined> {
   const attachments: any[] = theirSubmission?.attachments ?? [];
   if (attachments.length === 0 || ownFingerprints.length === 0) return undefined;
   // Byte equality used to end it here, but a partner who exported the same

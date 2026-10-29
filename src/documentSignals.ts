@@ -227,31 +227,72 @@ function pageLines(page: string): string[] {
 // A repeated block longer than this is page furniture, not a header row.
 const MAX_REPEATED_BLOCK = 12;
 
-// The name line, and the labels that sit beside it. The directions start
-// after whichever of these comes last near the top of the sheet.
+// The name line, and the labels that sit beside it.
 const HEADER_LABEL = /^.*\b(?:(?:student\s+)?names?|partners?|period|date|class|hour|block)\s*[:\-].*$/gim;
+// A line that is nothing but the word "Directions": the cleanest possible
+// start, and the one most worksheets give.
+const DIRECTIONS_LINE = /^\s*directions?\s*:?\s*$/i;
 // Only the top of the document can hold the header; a "Date:" inside a
 // student's answer must not push the directions region past the directions.
 const HEADER_SEARCH_CHARS = 1200;
+// Below this a line is the tail of a filled-in blank, not worksheet prose.
+const PROSE_WORDS = 5;
+
+function wordCount(line: string): number {
+  return line.split(/\s+/).filter(w => /[a-z0-9]/i.test(w)).length;
+}
 
 /**
- * The teacher's directions: everything between the name/period line and the
- * table header, normalized to letters and digits.
+ * The teacher's directions: everything between the start of the worksheet's
+ * own text and the table header, normalized to letters and digits.
  *
- * It was previously anchored on a literal "Part 1", which most sheets do not
- * have, so it hashed either nothing or the whole document — every PDF came
- * back with the same fingerprint, which is the giveaway that it was hashing an
- * empty region. The region is now bounded by two things every worksheet has.
- * Student-entered text is below the table header, so none of it is included.
+ * Where it starts matters more than it looks. Starting at the end of the
+ * name/period line put the STUDENT's period entry into the hash, and a period
+ * written across several lines ("Period:" / "__" / "2") added a character or
+ * two — so two copies of one template fingerprinted differently depending on
+ * how a student filled the top of the sheet in. It now starts at a line that
+ * is exactly "Directions", and failing that at the first line of real prose,
+ * stepping over the debris of a filled-in blank.
  */
 export function directionsBlock(text: string, headerLine?: string): { text: string; chars: number } | undefined {
   if (!text) return undefined;
-  let from = 0;
+  const lines = text.split('\n');
+  const offsets: number[] = [];
+  let at = 0;
+  for (const line of lines) {
+    offsets.push(at);
+    at += line.length + 1;
+  }
+
+  // Where the header labels stop, as a floor to search from.
+  let floor = 0;
   HEADER_LABEL.lastIndex = 0;
   for (let m = HEADER_LABEL.exec(text); m; m = HEADER_LABEL.exec(text)) {
     if (m.index > HEADER_SEARCH_CHARS) break;
-    from = m.index + m[0].length;
+    floor = m.index + m[0].length;
   }
+
+  let from = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (offsets[i] > HEADER_SEARCH_CHARS && from < 0) break;
+    if (DIRECTIONS_LINE.test(lines[i])) {
+      from = offsets[i] + lines[i].length + 1;
+      break;
+    }
+  }
+  if (from < 0) {
+    // No heading, so the first line of real prose after the labels — anything
+    // shorter is what is left of the blank the student wrote in.
+    for (let i = 0; i < lines.length; i++) {
+      if (offsets[i] < floor) continue;
+      if (wordCount(lines[i]) >= PROSE_WORDS) {
+        from = offsets[i];
+        break;
+      }
+    }
+  }
+  if (from < 0) return undefined;
+
   // Without a located table header there is no end to the directions, and
   // running to the end of the document would hash the student's own answers —
   // and, in a cross-check, treat their whole submission as worksheet text.
@@ -374,11 +415,14 @@ export function rememberScan(key: string, fp: TemplateFingerprint | null): void 
 
 // --- Text shared between submissions ---
 
-// Short sentences are shared by coincidence; long ones are not. Twelve words
-// is long enough that two students writing it independently is implausible,
-// and short enough to catch a single pasted line.
-const MIN_SENTENCE_WORDS = 12;
-// A sentence this common across the class came off the worksheet, not a source.
+// The window everything is measured in. Eight words is short enough to survive
+// a table cell that a PDF ran into the next row, and long enough that two
+// students hitting the same one by chance is not worth a teacher's time.
+const SHINGLE_WORDS = 8;
+// A run of matching windows has to reach this many words before it is worth
+// reporting. Below it, shared phrasing is just how the question was worded.
+const MIN_SPAN_WORDS = 12;
+// A span this common across the class came off the worksheet, not a source.
 const TEMPLATE_SHARE = 0.5;
 
 export const SHARED_TEXT_REASON =
@@ -396,29 +440,48 @@ export interface SubmissionText {
 export interface SharedTextSignal {
   students: string[];
   excerpt: string;
+  words: number;
   reason: string;
 }
 
-/** Sentences of at least MIN_SENTENCE_WORDS, as hash -> first excerpt seen. */
-function sentenceHashes(text: string): Map<string, string> {
-  const found = new Map<string, string>();
-  if (!text) return found;
-  for (const raw of text.split(/(?<=[.!?])\s+|\n+/)) {
-    const sentence = raw.trim();
-    if (sentence.split(/\s+/).filter(w => /[a-z0-9]/i.test(w)).length < MIN_SENTENCE_WORDS) continue;
-    const key = hashable(sentence);
-    if (key.length < 40) continue;
-    if (!found.has(key)) {
-      const flat = sentence.replace(/\s+/g, ' ');
-      found.set(key, flat.length > MAX_EXCERPT ? `${flat.slice(0, MAX_EXCERPT - 1)}…` : flat);
-    }
+/**
+ * The words of a document, with everything that is not a letter, a digit or a
+ * space removed and line breaks turned into spaces.
+ *
+ * A PDF's text layer breaks a table cell wherever the cell ended, so the last
+ * sentence of a cell frequently has no full stop and runs into the next row.
+ * Hashing sentences therefore missed copied text outright — three real cases,
+ * each a 14-to-17-word sentence ending at a cell edge. Words do not care where
+ * the cell ended.
+ */
+function contentWords(text: string): string[] {
+  if (!text) return [];
+  return text
+    .replace(/\[Page \d+\][^\n]*/g, ' ')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean);
+}
+
+/** Every SHINGLE_WORDS-long window, in order. */
+function windowsOf(words: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i + SHINGLE_WORDS <= words.length; i++) {
+    out.push(words.slice(i, i + SHINGLE_WORDS).join(' '));
   }
-  return found;
+  return out;
+}
+
+function excerptOf(words: string[], from: number, count: number): string {
+  const phrase = words.slice(from, from + count).join(' ');
+  return phrase.length > MAX_EXCERPT ? `${phrase.slice(0, MAX_EXCERPT - 1)}…` : phrase;
 }
 
 /**
- * Sentences that turn up in two students' work where neither named the other
- * as a partner.
+ * Runs of text that turn up in two students' work where neither named the
+ * other as a partner.
  *
  * This is a prompt, never a finding: the usual explanation is that both
  * students used the same web page, which is not misconduct and may not even be
@@ -428,38 +491,63 @@ function sentenceHashes(text: string): Map<string, string> {
  */
 export function sharedTextSignals(submissions: SubmissionText[]): SharedTextSignal[] {
   if (submissions.length < 2) return [];
-  const perStudent = submissions.map(s => ({
-    student: s.student,
-    partners: s.partners,
-    sentences: sentenceHashes(s.text),
-  }));
-  const fromTemplate = new Set<string>();
+
+  const entries = submissions.map(s => {
+    const words = contentWords(s.text);
+    const list = windowsOf(words);
+    return { student: s.student, partners: s.partners, words, list, set: new Set(list) };
+  });
+
+  // Windows to ignore: the worksheet's own directions, and anything most of
+  // the class has, which is the same thing seen from the other side.
+  const ignored = new Set<string>();
   for (const s of submissions) {
     if (!s.directions) continue;
-    for (const key of sentenceHashes(s.directions).keys()) fromTemplate.add(key);
+    for (const w of windowsOf(contentWords(s.directions))) ignored.add(w);
+  }
+  const shareCount = new Map<string, number>();
+  for (const entry of entries) {
+    for (const w of entry.set) shareCount.set(w, (shareCount.get(w) ?? 0) + 1);
+  }
+  for (const [w, n] of shareCount) {
+    if (n / submissions.length > TEMPLATE_SHARE) ignored.add(w);
   }
 
-  const byHash = new Map<string, { students: string[]; excerpt: string }>();
-  for (const entry of perStudent) {
-    for (const [key, excerpt] of entry.sentences) {
-      if (fromTemplate.has(key)) continue;
-      const seen = byHash.get(key);
-      if (seen) seen.students.push(entry.student);
-      else byHash.set(key, { students: [entry.student], excerpt });
-    }
-  }
-
-  const partnersOf = new Map(perStudent.map(e => [e.student, e.partners]));
   const signals: SharedTextSignal[] = [];
-  for (const { students, excerpt } of byHash.values()) {
-    if (students.length < 2) continue;
-    // Off the worksheet, not off a source.
-    if (students.length / submissions.length > TEMPLATE_SHARE) continue;
-    for (let i = 0; i < students.length; i++) {
-      for (let j = i + 1; j < students.length; j++) {
-        const [a, b] = [students[i], students[j]];
-        if (partnersOf.get(a)?.has(b) || partnersOf.get(b)?.has(a)) continue;
-        signals.push({ students: [a, b], excerpt, reason: SHARED_TEXT_REASON });
+  const seen = new Set<string>();
+  for (let a = 0; a < entries.length; a++) {
+    for (let b = a + 1; b < entries.length; b++) {
+      const left = entries[a];
+      const right = entries[b];
+      if (left.partners.has(right.student) || right.partners.has(left.student)) continue;
+
+      // Consecutive matching windows are one passage, not several findings:
+      // a 20-word copied run is 13 overlapping windows, and reporting it
+      // thirteen times would bury the one thing worth looking at.
+      let runStart = -1;
+      for (let i = 0; i <= left.list.length; i++) {
+        const matches = i < left.list.length && !ignored.has(left.list[i]) && right.set.has(left.list[i]);
+        if (matches) {
+          if (runStart < 0) runStart = i;
+          continue;
+        }
+        if (runStart >= 0) {
+          const count = SHINGLE_WORDS + (i - 1 - runStart);
+          if (count >= MIN_SPAN_WORDS) {
+            const excerpt = excerptOf(left.words, runStart, count);
+            const key = `${[left.student, right.student].sort().join('|')}|${left.words.slice(runStart, runStart + count).join(' ')}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              signals.push({
+                students: [left.student, right.student],
+                excerpt,
+                words: count,
+                reason: SHARED_TEXT_REASON,
+              });
+            }
+          }
+          runStart = -1;
+        }
       }
     }
   }

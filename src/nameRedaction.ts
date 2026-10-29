@@ -619,7 +619,14 @@ function nameSpanVerdict(line: string): 'continue' | 'stop' | 'empty' {
       return taken;
     },
     unresolvedPartners(): UnresolvedPartner[] {
-      return unresolved;
+      // A line that wraps is redacted twice — once to detect the open span,
+      // once over the whole span — so the same token reports itself twice.
+      // The first verdict for a position is the one that counts.
+      const byToken = new Map<number, UnresolvedPartner>();
+      for (const entry of unresolved) {
+        if (!byToken.has(entry.token_index)) byToken.set(entry.token_index, entry);
+      }
+      return [...byToken.values()].sort((a, b) => a.token_index - b.token_index);
     },
   };
 }

@@ -39,7 +39,7 @@ export function makeTextPdf(lines, padBytes = 0) {
  * an extractor. `pages` repeats the header row on every page, the way Google
  * Docs exports a table that spans pages.
  */
-export function makeTablePdf({ headers, rows = [], pages = 1, title = null, directions = null, nameLine = null }) {
+export function makeTablePdf({ headers, rows = [], pages = 1, title = null, directions = null, nameLine = null, preLines = [] }) {
   const columnX = headers.map((_, i) => 72 + i * 140);
   const pageContent = [];
   for (let page = 0; page < pages; page++) {
@@ -53,6 +53,14 @@ export function makeTablePdf({ headers, rows = [], pages = 1, title = null, dire
     if (nameLine && page === 0) {
       ops.push(`1 0 0 1 72 ${y} Tm (${esc(nameLine)}) Tj`);
       y -= 20;
+    }
+    // Anything between the name line and the directions: a Period entry the
+    // student wrote across several lines, a "Directions" heading.
+    if (page === 0) {
+      for (const extra of preLines) {
+        ops.push(`1 0 0 1 72 ${y} Tm (${esc(extra)}) Tj`);
+        y -= 14;
+      }
     }
     // The teacher's instructions, wrapped the way a real export wraps them —
     // a PDF's text layer only carries what fits on the page.
