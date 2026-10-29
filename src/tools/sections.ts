@@ -78,7 +78,7 @@ export function registerSectionTools(server: McpServer, canvas: CanvasClient) {
       assignmentId: z.string().describe("The ID of the assignment"),
       sectionId: z.string().describe("The ID of the section"),
       includeComments: z.boolean().default(true).describe("Whether to include submission comments"),
-      anonymous: z.boolean().default(true).describe("Whether to anonymize student names and emails (default: true for privacy)")
+      anonymous: z.boolean().default(true).describe("Whether to anonymize student names and emails. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true for privacy)")
     },
     { readOnlyHint: true },
     async ({ courseId, assignmentId, sectionId, includeComments = true, anonymous = true }: { courseId: string; assignmentId: string; sectionId: string; includeComments?: boolean; anonymous?: boolean }) => {
@@ -94,7 +94,7 @@ export function registerSectionTools(server: McpServer, canvas: CanvasClient) {
             'assignment'
           ]
         };
-        const submissions = (await canvas.listSectionAssignmentSubmissions(sectionId, assignmentId, params, { anonymous }) as any[]);
+        const submissions = (await canvas.listSectionAssignmentSubmissions(sectionId, assignmentId, params, { anonymous, courseId }) as any[]);
         const formattedSubmissions = submissions
           .map(submission => {
             const parts = [

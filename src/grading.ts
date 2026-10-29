@@ -46,6 +46,8 @@ export interface ReadSubmissionOptions extends ExtractOptions {
   includePartners?: boolean;
   /** Compare a partner's file against this one (default: true). */
   comparePartnerFiles?: boolean;
+  /** Guess informal partner names within the submitter's sections (default: true). */
+  fuzzyPartners?: boolean;
   /** A roster built once by the caller, so a batch doesn't refetch it. */
   roster?: RosterMember[];
   /** Course time zone for the _local date fields. */
@@ -63,8 +65,10 @@ export async function getCourseRoster(canvas: CanvasClient, courseId: string): P
     // Real names, deliberately: they are what the redactor has to find. They
     // stay inside this process — only pseudonyms reach the tool output.
     cached = canvas
-      .listStudents(courseId, { enrollment_type: ['student'], per_page: 100 }, { anonymous: false })
-      .then((users: any) => buildRoster(users as any[]))
+      // include[]=enrollments carries course_section_id, which is what confines
+      // a fuzzy first-name guess to the submitter's own class.
+      .listStudents(courseId, { enrollment_type: ['student'], include: ['enrollments'], per_page: 100 }, { anonymous: false })
+      .then((users: any) => buildRoster(users as any[], courseId))
       .catch(() => []);
     rosterCache.set(courseId, cached);
   }
@@ -109,7 +113,7 @@ export async function readSubmissionContent(
   const includePartners = options.includePartners !== false;
   const comparePartnerFiles = options.comparePartnerFiles !== false;
   const s = await canvas.getSubmissionWithHistory(courseId, assignmentId, userId);
-  const alias = anonymous ? DataAnonymizer.pseudonymFor(s.user_id) : (s.user?.name ?? `User ${s.user_id}`);
+  const alias = anonymous ? DataAnonymizer.pseudonymFor(s.user_id, courseId) : (s.user?.name ?? `User ${s.user_id}`);
 
   // The roster is what lets a partner's first name resolve to the pseudonym
   // they carry everywhere else, instead of being blanked or missed.
@@ -117,11 +121,16 @@ export async function readSubmissionContent(
   if (anonymous || includePartners) {
     roster = options.roster ?? await getCourseRoster(canvas, courseId);
     if (s.user && !roster.some(m => m.userId === String(s.user_id))) {
-      roster = [...roster, ...buildRoster([{ ...s.user, id: s.user_id }])];
+      roster = [...roster, ...buildRoster([{ ...s.user, id: s.user_id }], courseId)];
     }
   }
   const redactor: Redactor = anonymous
-    ? createRedactor({ roster, submitterId: s.user_id, scrubFirstNamesInBody: options.scrubFirstNamesInBody })
+    ? createRedactor({
+      roster,
+      submitterId: s.user_id,
+      scrubFirstNamesInBody: options.scrubFirstNamesInBody,
+      fuzzyPartners: options.fuzzyPartners,
+    })
     : noopRedactor();
   const scrub = (t: string) => redactor.redact(t);
 
@@ -206,6 +215,7 @@ export async function readSubmissionContent(
           const fp = {
             template_fingerprint: summary.template_fingerprint,
             template_headers: summary.template_headers,
+            ...(summary.directions_fingerprint ? { directions_fingerprint: summary.directions_fingerprint } : {}),
           };
           recordTemplateVariant(String(s.assignment_id ?? assignmentId), alias, fp);
           // This file is already downloaded and fingerprinted; a later
@@ -223,7 +233,9 @@ export async function readSubmissionContent(
           summary.integrity_signals = summary.integrity_signals.map(sig => ({ ...sig, excerpt: scrub(sig.excerpt) }));
         }
         const counts = redactor.takeCounts();
+        const fileNotes = redactor.takeNotes();
         if (anonymous) summary.redactions = counts;
+        if (fileNotes.length) summary.name_line_notes = fileNotes;
         files.push(summary);
       } catch (e: any) {
         drain();
@@ -255,12 +267,15 @@ export async function readSubmissionContent(
   // --- partners ---
   const namedPartners = includePartners ? redactor.namedPartners() : [];
   const partners: any[] = [];
-  for (const member of namedPartners) {
+  for (const { member, match } of namedPartners) {
     try {
       const theirs: any = await canvas.getSubmission(courseId, assignmentId, member.userId, { include: ['user'] });
       const entry: any = {
         ...(anonymous ? { student: member.pseudonym } : { student: theirs?.user?.name }),
         user_id: Number(member.userId) || member.userId,
+        // 'fuzzy' means a first name was resolved against the submitter's own
+        // section because exactly one classmate fitted. Worth a teacher's eye.
+        match,
         submitted: !!theirs?.submitted_at,
         workflow_state: theirs?.workflow_state,
       };
@@ -273,6 +288,7 @@ export async function readSubmissionContent(
       partners.push({
         ...(anonymous ? { student: member.pseudonym } : {}),
         user_id: Number(member.userId) || member.userId,
+        match,
         note: "This student's submission could not be read.",
       });
     }
@@ -376,13 +392,13 @@ export async function scanTemplateVariants(
   // name row, it carries names, and these go straight into the packet.
   const roster = options.anonymous ? (options.roster ?? await getCourseRoster(canvas, courseId)) : [];
   const headerRedactor = options.anonymous ? createRedactor({ roster }) : noopRedactor();
-  const clean = (fp: { template_fingerprint: string; template_headers: string }) => ({
-    template_fingerprint: fp.template_fingerprint,
+  const clean = (fp: { template_fingerprint: string; template_headers: string; directions_fingerprint?: string }) => ({
+    ...fp,
     template_headers: headerRedactor.redact(fp.template_headers),
   });
   for (const entry of queue) {
     const userId = String(entry.user_id);
-    const alias = options.anonymous ? DataAnonymizer.pseudonymFor(entry.user_id) : userId;
+    const alias = options.anonymous ? DataAnonymizer.pseudonymFor(entry.user_id, courseId) : userId;
     const key = scanKey(String(assignmentId), userId, entry.attempt);
     const already = cachedScan(key);
     if (already !== undefined) {
@@ -407,7 +423,11 @@ export async function scanTemplateVariants(
         new ImageBudget(0),
       );
       const fp = summary.template_fingerprint
-        ? { template_fingerprint: summary.template_fingerprint, template_headers: summary.template_headers ?? '' }
+        ? {
+          template_fingerprint: summary.template_fingerprint,
+          template_headers: summary.template_headers ?? '',
+          ...(summary.directions_fingerprint ? { directions_fingerprint: summary.directions_fingerprint } : {}),
+        }
         : null;
       rememberScan(key, fp);
       if (fp) {

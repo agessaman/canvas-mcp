@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { writeFile, mkdtemp } from 'node:fs/promises';
+import fs from 'node:fs';
+import os from 'node:os';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -84,8 +86,10 @@ async function withCanvasAndStorage(run, { finalize = 'redirect', fileState } = 
   storageOrigin = `http://127.0.0.1:${storage.address().port}`;
   canvasOrigin = `http://127.0.0.1:${canvas.address().port}`;
 
+  // Its own pseudonym store, so a test run never writes into ~/.canvas-mcp.
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'canvas-mcp-state-'));
   const child = spawn('node', [serverEntry], {
-    env: { ...process.env, CANVAS_API_TOKEN: 'secret-token', CANVAS_BASE_URL: canvasOrigin },
+    env: { ...process.env, CANVAS_MCP_STATE_DIR: stateDir, CANVAS_API_TOKEN: 'secret-token', CANVAS_BASE_URL: canvasOrigin },
     stdio: ['pipe', 'pipe', 'ignore'],
   });
 

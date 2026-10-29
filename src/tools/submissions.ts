@@ -14,7 +14,7 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment"),
-      anonymous: z.boolean().default(true).describe("Whether to anonymize student names and emails (default: true for privacy)")
+      anonymous: z.boolean().default(true).describe("Whether to anonymize student names and emails. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true for privacy)")
     },
     { readOnlyHint: true },
     async ({ courseId, assignmentId, anonymous = true }: { courseId: string; assignmentId: string; anonymous?: boolean }) => {
@@ -222,7 +222,7 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
       downloadFiles: z.boolean().default(false).describe("Download each attachment and return its extracted text (default: false, metadata only)"),
       forceBase64: z.boolean().default(false).describe("Return raw base64 instead of extracted text (default: false)"),
       maxChars: z.number().int().min(1000).default(TOOL_TEXT_LIMIT).describe(`Truncate extracted text per file beyond this length (default: ${TOOL_TEXT_LIMIT})`),
-      anonymous: z.boolean().default(true).describe("Whether to anonymize student information (default: true for privacy)")
+      anonymous: z.boolean().default(true).describe("Whether to anonymize student information. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true for privacy)")
     },
     { readOnlyHint: true },
     async ({ courseId, assignmentId, userId, downloadFiles = false, forceBase64 = false, maxChars = TOOL_TEXT_LIMIT, anonymous = true }: {
@@ -415,13 +415,14 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
       maxImages: z.number().int().min(0).max(40).default(15).describe("Maximum images returned in this response across all files (default: 15)"),
       maxCharsPerFile: z.number().int().min(1000).default(60000).describe("Truncate extracted text per file beyond this length (default: 60000)"),
       maxFileMB: z.number().positive().default(25).describe("Skip downloading files larger than this (default: 25 MB)"),
-      anonymous: z.boolean().default(true).describe("Replace every student's name with their pseudonym, including best-effort scrubbing inside document text. Names on a \"Names:\"/\"Partner:\" line are matched against the whole course roster, so a partner reads as their own pseudonym (default: true)"),
+      anonymous: z.boolean().default(true).describe("Replace every student's name with their pseudonym, including best-effort scrubbing inside document text. Names on a \"Names:\"/\"Partner:\" line are matched against the whole course roster, so a partner reads as their own pseudonym. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true)"),
       scrubFirstNamesInBody: z.boolean().default(false).describe("Also redact bare first names from the roster in body text. Off by default, because course content is full of words that are also student names (a student called Henry would erase \"Prince Henry\")"),
       includePartners: z.boolean().default(true).describe("Report classmates named on the work's \"Names:\"/\"Partner:\" line, with whether they submitted (default: true)"),
-      comparePartnerFiles: z.boolean().default(true).describe("Compare a partner's upload against this one to say whether both submitted the same work (default: true)")
+      comparePartnerFiles: z.boolean().default(true).describe("Compare a partner's upload against this one to say whether both submitted the same work (default: true)"),
+      fuzzyPartners: z.boolean().default(true).describe("Resolve an informal partner name (\"Jordan T\", lowercase \"casey\") against the submitter's own sections, and only when exactly one classmate fits. Such a partner is marked match: \"fuzzy\"; set false to leave these as [name] (default: true)")
     },
     { readOnlyHint: true },
-    async ({ courseId, assignmentId, userId, attempt, renderPdfPages = "auto", maxPdfPagesToRender = 10, ocr = true, maxImages = 15, maxCharsPerFile = 60000, maxFileMB = 25, anonymous = true, scrubFirstNamesInBody = false, includePartners = true, comparePartnerFiles = true }: {
+    async ({ courseId, assignmentId, userId, attempt, renderPdfPages = "auto", maxPdfPagesToRender = 10, ocr = true, maxImages = 15, maxCharsPerFile = 60000, maxFileMB = 25, anonymous = true, scrubFirstNamesInBody = false, includePartners = true, comparePartnerFiles = true, fuzzyPartners = true }: {
       courseId: string;
       assignmentId: string;
       userId: string;
@@ -436,11 +437,12 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
       scrubFirstNamesInBody?: boolean;
       includePartners?: boolean;
       comparePartnerFiles?: boolean;
+      fuzzyPartners?: boolean;
     }) => {
       try {
         const content = await readSubmissionContent(canvas, courseId, assignmentId, userId, {
           attempt, renderPdfPages, maxPdfPagesToRender, ocr, maxImages, maxCharsPerFile, maxFileMB, anonymous,
-          scrubFirstNamesInBody, includePartners, comparePartnerFiles,
+          scrubFirstNamesInBody, includePartners, comparePartnerFiles, fuzzyPartners,
         });
         return { content };
       } catch (error: any) {

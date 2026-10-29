@@ -163,6 +163,27 @@ export function findIntegritySignals(text: string): IntegritySignal[] {
 export interface TemplateFingerprint {
   template_fingerprint: string;
   template_headers: string;
+  /** The directions above the table, hashed separately. */
+  directions_fingerprint?: string;
+}
+
+/**
+ * Reduce header text to the thing that identifies the template, not the
+ * format it arrived in. A PDF's header row comes back as "question evidence
+ * analysis" and the same table in HTML as "question | evidence | analysis" —
+ * the same worksheet, which must not split into two variants. Everything that
+ * is not a letter or a digit goes.
+ */
+function hashable(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/\p{M}+/gu, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '')
+    .toLowerCase();
+}
+
+function shortHash(text: string): string {
+  return createHash('sha1').update(text).digest('hex').slice(0, 8);
 }
 
 /**
@@ -172,13 +193,47 @@ export interface TemplateFingerprint {
  * table structure to read, so those get no fingerprint.
  */
 /** Hash a normalized header string into the pair callers report. */
-export function makeFingerprint(headers: string): TemplateFingerprint | undefined {
-  const normalized = headers.replace(/\s+/g, ' ').trim().toLowerCase();
-  if (normalized.length < 8) return undefined;
+export function makeFingerprint(headers: string, directions?: string): TemplateFingerprint | undefined {
+  const readable = headers.replace(/\s+/g, ' ').trim().toLowerCase();
+  const key = hashable(readable);
+  if (key.length < 8) return undefined;
+  const directionsKey = directions ? hashable(directions) : '';
   return {
-    template_fingerprint: createHash('sha1').update(normalized).digest('hex').slice(0, 8),
-    template_headers: normalized,
+    template_fingerprint: shortHash(key),
+    template_headers: readable,
+    // Teachers edit the directions without touching the table, and the rubric
+    // can turn on that edit, so it is tracked as its own hash rather than
+    // folded into the template's.
+    ...(directionsKey.length >= 16 ? { directions_fingerprint: shortHash(directionsKey) } : {}),
   };
+}
+
+// Where the directions start. Everything from here to the table header is the
+// teacher's instructions; student-entered text is below the header, so none of
+// it is hashed.
+const DIRECTIONS_START = /^.*?\bpart\s*1\b.*$/im;
+
+/**
+ * The directions between the first "Part 1" heading and the table header.
+ * Returns undefined when either end can't be located, rather than hashing an
+ * arbitrary slab of the document.
+ */
+export function directionsBlock(text: string, headerLine?: string): string | undefined {
+  if (!text) return undefined;
+  const start = DIRECTIONS_START.exec(text);
+  if (!start) return undefined;
+  const from = start.index;
+  let to = text.length;
+  if (headerLine) {
+    // The header's first cell is enough to find where the table begins.
+    const firstCell = headerLine.split('|')[0].trim();
+    if (firstCell.length >= 3) {
+      const at = text.toLowerCase().indexOf(firstCell.toLowerCase(), from + start[0].length);
+      if (at > from) to = at;
+    }
+  }
+  const block = text.slice(from, to).trim();
+  return block.length >= 16 ? block : undefined;
 }
 
 // A page's lines, normalized for comparison across pages.
@@ -199,7 +254,7 @@ const MAX_REPEATED_BLOCK = 12;
  * consecutive lines that also appears on another page is that header. Per-page
  * furniture ("Page 2 of 3") differs page to page and so never qualifies.
  */
-export function fingerprintFromRepeatedLines(pages: string[]): TemplateFingerprint | undefined {
+export function fingerprintFromRepeatedLines(pages: string[], directions?: string): TemplateFingerprint | undefined {
   if (!pages || pages.length < 2) return undefined;
   const normalized = pages.map(pageLines);
   const elsewhere = new Set<string>();
@@ -216,10 +271,10 @@ export function fingerprintFromRepeatedLines(pages: string[]): TemplateFingerpri
     }
   }
   if (best.length === 0) return undefined;
-  return makeFingerprint(best.slice(0, MAX_REPEATED_BLOCK).join(' | '));
+  return makeFingerprint(best.slice(0, MAX_REPEATED_BLOCK).join(' | '), directions);
 }
 
-export function fingerprintFromHtml(html: string): TemplateFingerprint | undefined {
+export function fingerprintFromHtml(html: string, directions?: string): TemplateFingerprint | undefined {
   if (!html) return undefined;
   const table = /<table\b[^>]*>([\s\S]*?)<\/table>/i.exec(html);
   if (!table) return undefined;
@@ -229,32 +284,43 @@ export function fingerprintFromHtml(html: string): TemplateFingerprint | undefin
     .map(c => c[1].replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase())
     .filter(Boolean);
   if (cells.length === 0) return undefined;
-  const headers = cells.join(' | ');
-  return {
-    template_fingerprint: createHash('sha1').update(headers).digest('hex').slice(0, 8),
-    template_headers: headers,
-  };
+  return makeFingerprint(cells.join(' | '), directions);
 }
 
 // Which template each student's work used, gathered as submissions are read.
 // Fingerprinting every student up front would mean downloading every file,
 // which is the cost this round of work is trying to remove — so the registry
 // fills in as the grader goes, and says so.
-const registry = new Map<string, Map<string, { headers: string; students: Set<string> }>>();
+const registry = new Map<string, Map<string, { fingerprint: string; directions?: string; headers: string; students: Set<string> }>>();
+
+// A variant is the pair: the same table under revised directions is a
+// different thing to grade, and a teacher needs to see which students had it.
+function variantKey(fp: TemplateFingerprint): string {
+  return `${fp.template_fingerprint}/${fp.directions_fingerprint ?? '-'}`;
+}
 
 export function recordTemplateVariant(assignmentId: string, student: string, fp: TemplateFingerprint): void {
   let byAssignment = registry.get(String(assignmentId));
   if (!byAssignment) registry.set(String(assignmentId), (byAssignment = new Map()));
-  let entry = byAssignment.get(fp.template_fingerprint);
-  if (!entry) byAssignment.set(fp.template_fingerprint, (entry = { headers: fp.template_headers, students: new Set() }));
+  const key = variantKey(fp);
+  let entry = byAssignment.get(key);
+  if (!entry) {
+    byAssignment.set(key, (entry = {
+      fingerprint: fp.template_fingerprint,
+      directions: fp.directions_fingerprint,
+      headers: fp.template_headers,
+      students: new Set(),
+    }));
+  }
   entry.students.add(student);
 }
 
 export function templateVariants(assignmentId: string) {
   const byAssignment = registry.get(String(assignmentId));
   if (!byAssignment || byAssignment.size === 0) return undefined;
-  return [...byAssignment.entries()].map(([fingerprint, entry]) => ({
-    template_fingerprint: fingerprint,
+  return [...byAssignment.values()].map(entry => ({
+    template_fingerprint: entry.fingerprint,
+    ...(entry.directions ? { directions_fingerprint: entry.directions } : {}),
     template_headers: entry.headers,
     students: [...entry.students],
   }));

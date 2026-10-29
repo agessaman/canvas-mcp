@@ -21,6 +21,11 @@ export interface RosterMember {
   tokens: string[];
   /** Lowercase "first last" variants, both orders. */
   fullNames: string[];
+  /** Given and family name, for the "first name plus last initial" shape. */
+  first?: string;
+  last?: string;
+  /** Section ids, so a fuzzy guess can be confined to the submitter's class. */
+  sectionIds: string[];
 }
 
 export interface RedactionCounts {
@@ -35,6 +40,18 @@ export interface RedactorOptions {
   submitterId?: string | number;
   /** Redact bare first names from the roster in body text (default: false). */
   scrubFirstNamesInBody?: boolean;
+  /**
+   * Guess an informal partner name ("Jordan T", "casey") against the
+   * submitter's own sections, where a first name is usually unique. Only
+   * applied when exactly one classmate fits (default: true).
+   */
+  fuzzyPartners?: boolean;
+}
+
+export interface PartnerMatch {
+  member: RosterMember;
+  /** 'exact' from a roster name, 'fuzzy' from a unique first-name guess. */
+  match: 'exact' | 'fuzzy';
 }
 
 // A name label owns the rest of its line, up to one of these.
@@ -70,6 +87,38 @@ export function nameZoneEnd(_text: string): number {
   return NAME_ZONE_CHARS;
 }
 
+/**
+ * A name reduced to bare letters: accents folded, hyphens and apostrophes
+ * gone. "José-Luis O'Neil" and "jose luis oneil" are the same student, and a
+ * worksheet is written by hand so only the loose form can be relied on.
+ */
+function loose(token: string): string {
+  return token
+    .normalize('NFD')
+    .replace(/\p{M}+/gu, '')
+    .replace(/[^\p{L}\p{N}]/gu, '')
+    .toLowerCase();
+}
+
+/** Every loose spelling of one roster member's name, for the relaxed pass. */
+function looseKeys(member: RosterMember): Set<string> {
+  const keys = new Set<string>();
+  for (const token of member.tokens) {
+    const whole = loose(token);
+    if (whole.length >= 2) keys.add(whole);
+    // "José-Luis" is also written "Jose" or "Luis" on its own.
+    for (const part of token.split(/[-'\u2019\s]+/)) {
+      const piece = loose(part);
+      if (piece.length >= 3) keys.add(piece);
+    }
+  }
+  for (const full of member.fullNames) {
+    const joined = loose(full);
+    if (joined.length >= 4) keys.add(joined);
+  }
+  return keys;
+}
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -97,7 +146,7 @@ function normalizeName(field: unknown): string | null {
  * shared anonymizer, so a partner reads as the same "Student 12" the queue
  * and the grading tools use for them.
  */
-export function buildRoster(users: any[]): RosterMember[] {
+export function buildRoster(users: any[], courseId?: unknown): RosterMember[] {
   const members: RosterMember[] = [];
   for (const user of users ?? []) {
     const id = user?.id ?? user?.user_id;
@@ -121,11 +170,23 @@ export function buildRoster(users: any[]): RosterMember[] {
       }
     }
     if (tokens.size === 0) continue;
+    // The legal name decides which part is given and which is family; a
+    // preferred name contributes tokens but not that ordering.
+    const primary = normalizeName(user.name) ?? normalizeName(user.sortable_name);
+    const parts = primary ? primary.split(/\s+/).map(clean).filter(Boolean) : [];
+    const sectionIds = [...new Set(
+      (user.enrollments ?? [])
+        .map((e: any) => e?.course_section_id)
+        .filter((sid: any) => sid !== undefined && sid !== null)
+        .map(String),
+    )] as string[];
     members.push({
       userId: String(id),
-      pseudonym: DataAnonymizer.pseudonymFor(id),
+      pseudonym: DataAnonymizer.pseudonymFor(id, courseId),
       tokens: [...tokens],
       fullNames: [...fullNames],
+      ...(parts.length ? { first: parts[0], last: parts[parts.length - 1] } : {}),
+      sectionIds,
     });
   }
   return members;
@@ -137,7 +198,9 @@ export interface Redactor {
   /** Counts since the last call, then reset — one file's worth. */
   takeCounts(): RedactionCounts;
   /** Roster members named on a name line, excluding the submitter. */
-  namedPartners(): RosterMember[];
+  namedPartners(): PartnerMatch[];
+  /** Anything the name-line pass wants the grader to know, drained per file. */
+  takeNotes(): string[];
 }
 
 /** A redactor that leaves text exactly as it found it (anonymous: false). */
@@ -146,11 +209,12 @@ export function noopRedactor(): Redactor {
     redact: t => t,
     takeCounts: () => ({ nameLine: 0, body: 0, unmatched: 0 }),
     namedPartners: () => [],
+    takeNotes: () => [],
   };
 }
 
 export function createRedactor(options: RedactorOptions): Redactor {
-  const { roster, scrubFirstNamesInBody = false } = options;
+  const { roster, scrubFirstNamesInBody = false, fuzzyPartners = true } = options;
   const submitterId = options.submitterId === undefined ? undefined : String(options.submitterId);
 
   const byToken = new Map<string, RosterMember | 'ambiguous'>();
@@ -167,12 +231,65 @@ export function createRedactor(options: RedactorOptions): Redactor {
   }
 
   const submitter = submitterId ? roster.find(m => m.userId === submitterId) : undefined;
-  const partners = new Map<string, RosterMember>();
+  // The submitter is the one name on the sheet we are certain belongs there,
+  // so it gets the loosest rules: accents folded, hyphens and apostrophes
+  // optional, any part of any spelling of their name.
+  const submitterKeys = submitter ? looseKeys(submitter) : new Set<string>();
+  // A fuzzy guess is only safe inside the submitter's own sections, where a
+  // first name is usually unique. Across a whole school it is not.
+  const peers = submitter
+    ? roster.filter(m => m.userId !== submitter.userId
+      && m.sectionIds.some(sid => submitter.sectionIds.includes(sid)))
+    : [];
+  const partners = new Map<string, PartnerMatch>();
+  const notes: string[] = [];
   let counts: RedactionCounts = { nameLine: 0, body: 0, unmatched: 0 };
 
-  const record = (m: RosterMember) => {
-    if (m.userId !== submitterId) partners.set(m.userId, m);
+  const record = (m: RosterMember, match: 'exact' | 'fuzzy' = 'exact') => {
+    if (m.userId === submitterId) return;
+    // An exact match must never be downgraded by a later fuzzy one.
+    const existing = partners.get(m.userId);
+    if (!existing || (existing.match === 'fuzzy' && match === 'exact')) {
+      partners.set(m.userId, { member: m, match });
+    }
   };
+
+  /** The submitter, written however they wrote it, over 1 to 3 tokens. */
+  function matchSubmitter(tokens: string[], from: number): number {
+    if (!submitter) return 0;
+    for (let len = Math.min(3, tokens.length - from); len >= 1; len--) {
+      const joined = loose(tokens.slice(from, from + len).join(''));
+      if (joined.length >= 2 && submitterKeys.has(joined)) return len;
+    }
+    return 0;
+  }
+
+  /**
+   * "Jordan T" or "casey": a first name, optionally a last initial. Answers
+   * only when exactly one classmate fits — zero or several is not a match, and
+   * the count is reported without naming anybody.
+   */
+  function matchPeer(tokens: string[], from: number): { member: RosterMember; length: number } | { candidates: number } | null {
+    const first = loose(tokens[from] ?? '');
+    if (first.length < 3) return null;
+    let fits = peers.filter(m => m.first && loose(m.first) === first);
+    if (fits.length === 0) return null;
+    let length = 1;
+    const nextRaw = (tokens[from + 1] ?? '').replace(/_/g, '');
+    if (fits.length > 1 && INITIAL.test(nextRaw)) {
+      const initial = loose(nextRaw);
+      const narrowed = fits.filter(m => m.last && loose(m.last).startsWith(initial));
+      if (narrowed.length > 0) {
+        fits = narrowed;
+        length = 2;
+      }
+    } else if (INITIAL.test(nextRaw) && fits.length === 1) {
+      const initial = loose(nextRaw);
+      if (fits[0].last && loose(fits[0].last).startsWith(initial)) length = 2;
+    }
+    if (fits.length === 1) return { member: fits[0], length };
+    return { candidates: fits.length };
+  }
 
   // --- body text ---
 
@@ -271,11 +388,41 @@ export function createRedactor(options: RedactorOptions): Redactor {
         i++;
         continue;
       }
+      // The submitter, spelled their own way. Tried before anything else is
+      // called unknown, because their name is the one certainly on this sheet.
+      const own = matchSubmitter(tokens, i);
+      if (own && submitter) {
+        out.push(submitter.pseudonym);
+        counts.nameLine++;
+        i += own;
+        continue;
+      }
+      // An informal partner name, resolved only if one classmate fits.
+      const peer = fuzzyPartners ? matchPeer(tokens, i) : null;
+      if (peer && 'member' in peer) {
+        out.push(peer.member.pseudonym);
+        record(peer.member, 'fuzzy');
+        counts.nameLine++;
+        i += peer.length;
+        continue;
+      }
+      // Last resort before blanking: the full-name body scrubber, which knows
+      // spellings the name-line tokeniser does not.
+      const scrubbed = redactBody(tokens[i]);
+      if (scrubbed !== tokens[i]) {
+        out.push(scrubbed.trim());
+        counts.nameLine++;
+        i++;
+        continue;
+      }
       // A name-like token that matches nobody. Blank it and say so.
       if (out[out.length - 1] !== '[name]') {
         out.push('[name]');
         counts.unmatched++;
         counts.nameLine++;
+        if (peer && 'candidates' in peer) {
+          notes.push(`A first name on the name line fits ${peer.candidates} students in this section; left as [name] rather than guessing.`);
+        }
       }
       i++;
     }
@@ -370,8 +517,13 @@ export function createRedactor(options: RedactorOptions): Redactor {
       counts = { nameLine: 0, body: 0, unmatched: 0 };
       return taken;
     },
-    namedPartners(): RosterMember[] {
+    namedPartners(): PartnerMatch[] {
       return [...partners.values()];
+    },
+    takeNotes(): string[] {
+      const taken = [...new Set(notes)];
+      notes.length = 0;
+      return taken;
     },
   };
 }

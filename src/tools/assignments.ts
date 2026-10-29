@@ -24,7 +24,7 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
       courseId: z.string().describe("The ID of the course"),
       studentId: z.string().optional().describe("Optional: Get submission status for a specific student"),
       includeSubmissionHistory: z.boolean().default(false).describe("Whether to include submission history details"),
-      anonymous: z.boolean().default(true).describe("Whether to anonymize student names and emails in submission data (default: true for privacy)")
+      anonymous: z.boolean().default(true).describe("Whether to anonymize student names and emails in submission data. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true for privacy)")
     },
     { readOnlyHint: true },
     async ({ courseId, studentId, includeSubmissionHistory = false, anonymous = true }: { courseId: string; studentId?: string; includeSubmissionHistory?: boolean; anonymous?: boolean }) => {

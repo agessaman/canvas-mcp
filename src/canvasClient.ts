@@ -353,7 +353,7 @@ export class CanvasClient {
   // --- Assignments ---
   async listCourseAssignments(courseId: string, params: any = {}, options: { anonymous?: boolean } = {}) {
     const data = await this.get(`/api/v1/courses/${courseId}/assignments`, params) as any[];
-    return options.anonymous !== false ? DataAnonymizer.anonymizeAssignments(data) : data;
+    return options.anonymous !== false ? DataAnonymizer.anonymizeAssignments(data, courseId) : data;
   }
   async getAssignment(courseId: string, assignmentId: string, params: any = {}) {
     return this.get(`/api/v1/courses/${courseId}/assignments/${assignmentId}`, params);
@@ -612,7 +612,7 @@ export class CanvasClient {
   }
   async listRubricAssessments(courseId: string, assignmentId: string, params: any = {}, options: { anonymous?: boolean } = {}) {
     const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/assignments/${assignmentId}/submissions`, params);
-    return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions(data) : data;
+    return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions(data, courseId) : data;
   }
   /**
    * A rubric write lands on the ASSIGNMENT as well as the rubric.
@@ -777,7 +777,7 @@ export class CanvasClient {
   // --- Students ---
   async listStudents(courseId: string, params: any = {}, options: { anonymous?: boolean } = {}) {
     const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/users`, params);
-    return options.anonymous !== false ? DataAnonymizer.anonymizeUsers(data) : data;
+    return options.anonymous !== false ? DataAnonymizer.anonymizeUsers(data, courseId) : data;
   }
 
   // --- Sections ---
@@ -787,15 +787,18 @@ export class CanvasClient {
   async getSection(courseId: string, sectionId: string) {
     return this.get(`/api/v1/courses/${courseId}/sections/${sectionId}`);
   }
-  async listSectionAssignmentSubmissions(sectionId: string, assignmentId: string, params: any = {}, options: { anonymous?: boolean } = {}) {
+  // Section-scoped, but pseudonyms are numbered per COURSE — without the course
+  // a section listing would hand the same student a different label than the
+  // course-wide one. Every caller has it, so it is required here.
+  async listSectionAssignmentSubmissions(sectionId: string, assignmentId: string, params: any = {}, options: { anonymous?: boolean; courseId?: string } = {}) {
     const data = await this.fetchAllPages<any>(`/api/v1/sections/${sectionId}/assignments/${assignmentId}/submissions`, params);
-    return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions(data) : data;
+    return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions(data, options.courseId) : data;
   }
 
   // --- Submissions ---
   async listAssignmentSubmissions(courseId: string, assignmentId: string, params: any = {}, options: { anonymous?: boolean } = {}) {
     const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/assignments/${assignmentId}/submissions`, params);
-    return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions(data) : data;
+    return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions(data, courseId) : data;
   }
   async gradeSubmission(courseId: string, assignmentId: string, userId: string, data: any) {
     return this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}/submissions/${userId}`, data);
@@ -809,7 +812,7 @@ export class CanvasClient {
   async getSubmissionWithAttachments(courseId: string, assignmentId: string, userId: string, options: { anonymous?: boolean } = {}) {
     const params = { include: ['attachments', 'submission_comments'] };
     const data = await this.get(`/api/v1/courses/${courseId}/assignments/${assignmentId}/submissions/${userId}`, params);
-    return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions([data])[0] : data;
+    return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions([data], courseId)[0] : data;
   }
 
   /**
@@ -1000,12 +1003,12 @@ export class CanvasClient {
   async listCourseEnrollments(courseId: string, params: any = {}, options: { anonymous?: boolean } = {}) {
     const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/enrollments`, params);
     if (options.anonymous !== true) return data;
-    return data.map(e => (e.user ? { ...e, user: DataAnonymizer.anonymizeUser(e.user) } : e));
+    return data.map(e => (e.user ? { ...e, user: DataAnonymizer.anonymizeUser(e.user, courseId) } : e));
   }
   // Submissions across every assignment in one call (student_ids[]=all).
   async listCourseStudentSubmissions(courseId: string, params: any = {}, options: { anonymous?: boolean } = {}) {
     const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/students/submissions`, params);
-    return options.anonymous === true ? DataAnonymizer.anonymizeSubmissions(data) : data;
+    return options.anonymous === true ? DataAnonymizer.anonymizeSubmissions(data, courseId) : data;
   }
   async getStudentSummaries(courseId: string, params: any = {}) {
     return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/analytics/student_summaries`, params);

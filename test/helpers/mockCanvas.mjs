@@ -3,6 +3,8 @@
 // this server's real bugs have been: a payload that looks right in the tool
 // arguments can still reach Canvas in the wrong shape.
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -12,7 +14,7 @@ const serverEntry = path.resolve(
   '../../dist/index.js'
 );
 
-export async function withMockCanvas(run) {
+export async function withMockCanvas(run, { stateDir: callerStateDir } = {}) {
   const requests = [];
   let respondWith = () => ({ id: '1', points_possible: 1 });
 
@@ -54,11 +56,18 @@ export async function withMockCanvas(run) {
   await new Promise(resolve => httpServer.listen(0, '127.0.0.1', resolve));
   const { port } = httpServer.address();
 
+  // Pseudonym numbering is persisted per course, so without its own state dir
+  // every test run would write into the developer's real ~/.canvas-mcp map and
+  // read back numbers another test allocated.
+  // A caller testing the persisted map supplies its own directory and keeps it
+  // across several servers; everyone else gets a throwaway.
+  const stateDir = callerStateDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'canvas-mcp-state-'));
   const child = spawn('node', [serverEntry], {
     env: {
       ...process.env,
       CANVAS_API_TOKEN: 'test-token',
       CANVAS_BASE_URL: `http://127.0.0.1:${port}`,
+      CANVAS_MCP_STATE_DIR: stateDir,
     },
     stdio: ['pipe', 'pipe', 'ignore'],
   });
@@ -137,5 +146,6 @@ export async function withMockCanvas(run) {
   } finally {
     child.kill();
     await new Promise(resolve => httpServer.close(resolve));
+    if (!callerStateDir) fs.rmSync(stateDir, { recursive: true, force: true });
   }
 }

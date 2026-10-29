@@ -9,6 +9,7 @@ import {
   findIntegritySignals,
   fingerprintFromHtml,
   fingerprintFromRepeatedLines,
+  directionsBlock,
   makeFingerprint,
 } from './documentSignals.js';
 import type { RedactionCounts } from './nameRedaction.js';
@@ -48,8 +49,11 @@ export interface FileSummary {
   integrity_signals?: IntegritySignal[];
   template_fingerprint?: string;
   template_headers?: string;
+  directions_fingerprint?: string;
   // How much anonymization this file needed, and what it couldn't resolve.
   redactions?: RedactionCounts;
+  // Why a name on the name line was left as [name], without naming anyone.
+  name_line_notes?: string[];
 }
 
 // Shared across every file in one response so a stack of photos can't
@@ -254,7 +258,10 @@ function addSignals(summary: FileSummary, text: string, opts: ExtractOptions, ht
     if (signals.length) summary.integrity_signals = signals;
   }
   if (opts.templateFingerprint !== false && html) {
-    const fp = fingerprintFromHtml(html);
+    const headers = fingerprintFromHtml(html);
+    const fp = headers
+      ? fingerprintFromHtml(html, directionsBlock(text, headers.template_headers))
+      : undefined;
     if (fp) Object.assign(summary, fp);
   }
 }
@@ -362,8 +369,9 @@ async function extractPdf(buf: Buffer, filename: string, opts: ExtractOptions, b
   // header row Google Docs repeats on every page, or — on a one-page sheet,
   // where there is nothing to repeat — from the laid-out first table row.
   if (opts.templateFingerprint !== false) {
-    const fp = fingerprintFromRepeatedLines(pages)
-      ?? makeFingerprint((await firstTableRowFromLayout(await pdfjs()).catch(() => undefined)) ?? '');
+    const headerRow = fingerprintFromRepeatedLines(pages)?.template_headers
+      ?? (await firstTableRowFromLayout(await pdfjs()).catch(() => undefined));
+    const fp = headerRow ? makeFingerprint(headerRow, directionsBlock(body, headerRow)) : undefined;
     if (fp) Object.assign(summary, fp);
   }
   return { summary, blocks };

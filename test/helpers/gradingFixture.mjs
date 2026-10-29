@@ -39,7 +39,7 @@ export function makeTextPdf(lines, padBytes = 0) {
  * an extractor. `pages` repeats the header row on every page, the way Google
  * Docs exports a table that spans pages.
  */
-export function makeTablePdf({ headers, rows = [], pages = 1, title = null }) {
+export function makeTablePdf({ headers, rows = [], pages = 1, title = null, directions = null }) {
   const columnX = headers.map((_, i) => 72 + i * 140);
   const pageContent = [];
   for (let page = 0; page < pages; page++) {
@@ -47,6 +47,11 @@ export function makeTablePdf({ headers, rows = [], pages = 1, title = null }) {
     let y = 720;
     if (title && page === 0) {
       ops.push(`1 0 0 1 72 ${y} Tm (${esc(title)}) Tj`);
+      y -= 24;
+    }
+    // The teacher's instructions, on their own line as a real export has them.
+    if (directions && page === 0) {
+      ops.push(`1 0 0 1 72 ${y} Tm (${esc(directions)}) Tj`);
       y -= 24;
     }
     // The header row, repeated on every page.
@@ -96,13 +101,17 @@ function buildPdf(pageStreams) {
   return Buffer.from(pdf, 'latin1');
 }
 
+// Section 1 is the submitter's class; section 2 is another period, so a name
+// that is unique in section 1 but shared across the course still resolves.
+const inSection = (id, ...sections) => ({ enrollments: sections.map(s => ({ course_section_id: s, type: 'StudentEnrollment' })) });
+
 export const ROSTER = [
-  { id: 101, name: 'Avery Nolan', short_name: 'Avery', sortable_name: 'Nolan, Avery' },
-  { id: 102, name: 'Jordan Tate', short_name: 'Jordan', sortable_name: 'Tate, Jordan' },
-  { id: 103, name: 'Casey Lin', short_name: 'Casey', sortable_name: 'Lin, Casey' },
-  { id: 104, name: 'Riley Okafor', short_name: 'Riley', sortable_name: 'Okafor, Riley' },
-  { id: 105, name: 'Henry Bowen', short_name: 'Henry', sortable_name: 'Bowen, Henry' },
-  { id: 106, name: 'Morgan Devi', short_name: 'Morgan', sortable_name: 'Devi, Morgan' },
+  { id: 101, name: 'Avery Nolan', short_name: 'Avery', sortable_name: 'Nolan, Avery', ...inSection(101, 1) },
+  { id: 102, name: 'Jordan Tate', short_name: 'Jordan', sortable_name: 'Tate, Jordan', ...inSection(102, 1) },
+  { id: 103, name: 'Casey Lin', short_name: 'Casey', sortable_name: 'Lin, Casey', ...inSection(103, 1) },
+  { id: 104, name: 'Riley Okafor', short_name: 'Riley', sortable_name: 'Okafor, Riley', ...inSection(104, 1) },
+  { id: 105, name: 'Henry Bowen', short_name: 'Henry', sortable_name: 'Bowen, Henry', ...inSection(105, 1) },
+  { id: 106, name: 'Morgan Devi', short_name: 'Morgan', sortable_name: 'Devi, Morgan', ...inSection(106, 2) },
 ];
 
 /** Every real name in the roster, for "did anything leak?" assertions. */

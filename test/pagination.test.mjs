@@ -7,6 +7,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -52,8 +54,10 @@ async function withBookmarkPaginatedCanvas(run) {
   await new Promise(resolve => httpServer.listen(0, '127.0.0.1', resolve));
   origin = `http://127.0.0.1:${httpServer.address().port}`;
 
+  // Its own pseudonym store, so a test run never writes into ~/.canvas-mcp.
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'canvas-mcp-state-'));
   const child = spawn('node', [serverEntry], {
-    env: { ...process.env, CANVAS_API_TOKEN: 'test-token', CANVAS_BASE_URL: origin },
+    env: { ...process.env, CANVAS_MCP_STATE_DIR: stateDir, CANVAS_API_TOKEN: 'test-token', CANVAS_BASE_URL: origin },
     stdio: ['pipe', 'pipe', 'ignore'],
   });
 

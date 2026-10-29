@@ -86,14 +86,14 @@ function summariseItemAnalysis(items: any[], full: boolean): any[] {
  * and section for every one of them, so the identifying fields go only when
  * the caller asked for them.
  */
-function summariseStudentAnalysis(rows: any[], anonymous: boolean, full: boolean): any[] {
+function summariseStudentAnalysis(rows: any[], anonymous: boolean, full: boolean, courseId?: string): any[] {
   return rows.map(row => {
     const student = row?.student_data ?? {};
     const responses: any[] = Array.isArray(row?.item_responses) ? row.item_responses : [];
     const scored = responses.filter(r => typeof r?.score === 'number');
     const out: any = {
       user_id: student.id,
-      student: anonymous ? DataAnonymizer.pseudonymFor(student.id) : student.name,
+      student: anonymous ? DataAnonymizer.pseudonymFor(student.id, courseId) : student.name,
       ...(anonymous ? {} : { sis_id: student.sis_id }),
       sections: student.section_info?.section_names,
       submitted_at: student.submitted_at,
@@ -789,7 +789,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient, qu
       format: z.enum(['summary', 'full']).default('summary').describe("'summary' trims question and answer text; 'full' adds every student's per-question responses (can be large)"),
       waitSeconds: z.number().min(0).max(50).default(30).describe("How long to wait for a report that is still generating before returning (default 30; clients commonly give up on a tool call after 60)"),
       progressId: z.string().optional().describe("Resume the job from an earlier call that returned before the report was ready, rather than generating a new one"),
-      anonymous: z.boolean().default(true).describe("Whether to replace student identity with a stable pseudonym (default: true for privacy). student_analysis only."),
+      anonymous: z.boolean().default(true).describe("Whether to replace student identity with a stable pseudonym (default: true for privacy). student_analysis only. Pseudonyms are per course and stable across sessions: the same student keeps the same number."),
     },
     { readOnlyHint: true },
     async ({ courseId, assignmentId, reportType = 'item_analysis', format = 'summary', waitSeconds = 30, progressId, anonymous = true }: {
@@ -872,7 +872,7 @@ export function registerNewQuizTools(server: McpServer, canvas: CanvasClient, qu
             report_type: reportType,
             assignment_id: assignmentId,
             students: rows.length,
-            student_analysis: summariseStudentAnalysis(rows, anonymous, format === 'full'),
+            student_analysis: summariseStudentAnalysis(rows, anonymous, format === 'full', courseId),
           }
           : {
             report_type: reportType,

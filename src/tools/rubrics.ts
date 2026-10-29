@@ -662,7 +662,7 @@ export function registerRubricTools(server: McpServer, canvas: CanvasClient) {
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment"),
-      anonymous: z.boolean().default(true).describe("Whether to anonymize student names and emails (default: true for privacy)")
+      anonymous: z.boolean().default(true).describe("Whether to anonymize student names and emails. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true for privacy)")
     },
     { readOnlyHint: true },
     async ({ courseId, assignmentId, anonymous = true }: { courseId: string; assignmentId: string; anonymous?: boolean }) => {

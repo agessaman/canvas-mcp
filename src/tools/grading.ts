@@ -83,7 +83,7 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
         .describe("Which sections to return. Default with no userId: instructions, assignment, rubric, queue. Default with a userId: work only, plus a one-line header naming the assignment, its points and the rubric criterion IDs."),
       queueLimit: z.number().int().min(1).max(500).default(DEFAULT_QUEUE_LIMIT).describe(`Maximum students listed in the grading queue (default: ${DEFAULT_QUEUE_LIMIT}); queue_truncated is set when there are more`),
       includeMaterials: z.boolean().default(true).describe("Read Canvas files linked in the assignment description, such as handouts and sources (default: true)"),
-      anonymous: z.boolean().default(true).describe("Use pseudonyms for students (default: true)"),
+      anonymous: z.boolean().default(true).describe("Use pseudonyms for students. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true)"),
       scrubFirstNamesInBody: z.boolean().default(false).describe("Also redact bare first names from the roster in body text. Off by default, because course content is full of words that are also student names (a student called Henry would erase \"Prince Henry\"). Names on a \"Names:\" line are always redacted when anonymous."),
       includePartners: z.boolean().default(true).describe("Report classmates named on the work's \"Names:\"/\"Partner:\" line, with whether they submitted (default: true)"),
       scanTemplates: z.boolean().default(false).describe("With the queue, download one file per queued student to work out which version of the worksheet template each had, and return template_variants. Off by default because it costs a download per student; results are cached per attempt, and students already read in this session are not refetched.")
@@ -168,7 +168,7 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
           };
           summary.queue = all.slice(0, queueLimit).map(s => ({
             user_id: s.user_id,
-            student: anonymous ? DataAnonymizer.pseudonymFor(s.user_id) : undefined,
+            student: anonymous ? DataAnonymizer.pseudonymFor(s.user_id, courseId) : undefined,
             submitted_at: s.submitted_at,
             ...(local(s.submitted_at) ? { submitted_at_local: local(s.submitted_at) } : {}),
             attempt: s.attempt,

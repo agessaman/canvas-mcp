@@ -70,7 +70,7 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
     {
       courseId: z.string().describe("The ID of the course"),
       quizId: z.string().describe("The ID of the quiz"),
-      anonymous: z.boolean().default(true).describe("Whether to replace student identity with a stable pseudonym (default: true for privacy)"),
+      anonymous: z.boolean().default(true).describe("Whether to replace student identity with a stable pseudonym. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true for privacy)"),
     },
     { readOnlyHint: true },
     async ({ courseId, quizId, anonymous = true }: { courseId: string; quizId: string; anonymous?: boolean }) => {
@@ -87,7 +87,7 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
           (envelope.users ?? []).map((u: any) => [String(u.id), u.name])
         );
         const labelled = anonymous
-          ? DataAnonymizer.anonymizeQuizSubmissions(raw)
+          ? DataAnonymizer.anonymizeQuizSubmissions(raw, courseId)
           : raw.map((s: any) => ({ ...s, student: nameById.get(String(s.user_id)) }));
         const submissions = labelled.map((s: any) => ({
           id: s.id,
@@ -234,7 +234,7 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
       quizId: z.string().describe("The ID of the quiz"),
       userId: z.string().describe("The ID of the student/user"),
       attempt: z.number().optional().describe("Which attempt to read (default: the most recent)"),
-      anonymous: z.boolean().default(true).describe("Whether to replace student identity with a stable pseudonym (default: true for privacy)"),
+      anonymous: z.boolean().default(true).describe("Whether to replace student identity with a stable pseudonym. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true for privacy)"),
     },
     { readOnlyHint: true },
     async ({ courseId, quizId, userId, attempt, anonymous = true }: {
@@ -305,7 +305,7 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
           content: [{
             type: "text",
             text: JSON.stringify({
-              student: anonymous ? DataAnonymizer.pseudonymFor(userId) : submission.user?.name ?? null,
+              student: anonymous ? DataAnonymizer.pseudonymFor(userId, courseId) : submission.user?.name ?? null,
               user_id: userId,
               quiz_id: quizId,
               attempt: chosen.attempt,
@@ -338,7 +338,7 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
       format: z.enum(["summary", "full"]).default("summary").describe("'summary' aggregates per question and per student; 'full' returns every cell (can be large)"),
       regenerate: z.boolean().default(false).describe("Ask Canvas for a new report instead of reusing the last one. Canvas still returns the existing report when no submissions have arrived since it was generated."),
       waitSeconds: z.number().min(0).max(50).default(30).describe("How long to wait for a report that is still generating before returning (default 30; clients commonly give up on a tool call after 60)"),
-      anonymous: z.boolean().default(true).describe("Whether to replace student identity with a stable pseudonym (default: true for privacy)"),
+      anonymous: z.boolean().default(true).describe("Whether to replace student identity with a stable pseudonym. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true for privacy)"),
     },
     { readOnlyHint: true },
     async ({ courseId, quizId, reportType = "student_analysis", allVersions = false, format = "summary", regenerate = false, waitSeconds = 30, anonymous = true }: {
@@ -414,7 +414,7 @@ export function registerQuizResultTools(server: McpServer, canvas: CanvasClient)
         const cleaned = body.map(r => {
           const row = [...r];
           if (anonymous) {
-            if (nameIndex >= 0) row[nameIndex] = idIndex >= 0 ? DataAnonymizer.pseudonymFor(r[idIndex]) : 'Student';
+            if (nameIndex >= 0) row[nameIndex] = idIndex >= 0 ? DataAnonymizer.pseudonymFor(r[idIndex], courseId) : 'Student';
             for (const i of redactIndexes) row[i] = '';
           }
           return row;
