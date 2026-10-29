@@ -38,14 +38,37 @@ export interface RedactorOptions {
 }
 
 // A name label owns the rest of its line, up to one of these.
-const BOUNDARY_LABEL = /\b(?:period|date|class|hour)\b\s*[:\-]/i;
-// "Name:", "Names:", "Student Name:", "Partner:" — at the start of a line or
-// of a table cell. Cells arrive either on their own line or joined by "|".
-const NAME_LABEL = /(^|[|\t]|\s{2,})[ \t]*((?:student[ \t]+)?names?|partners?)[ \t]*[:\-][ \t]*/gi;
+const BOUNDARY_LABEL = /\b(?:period|date|class|hour|block)\b\s*[:\-]/i;
+// "Name:", "Names:", "Student Name:", "Partner:" at the start of a line or of
+// a table cell. Cells arrive either on their own line or joined by "|".
+const NAME_LABEL_ANCHORED = /(^|[|\t]|\s{2,})[ \t]*((?:student[ \t]+)?names?|partners?)[ \t]*[:\-][ \t]*/gi;
+// The same label anywhere in the line. PDF text extractors reflow a worksheet
+// header into one line — "17.1 Worksheet Title Names: Jordan T Period: 4" —
+// so anchoring to the start of a line or cell found nothing on a PDF at all.
+// Only used inside the name zone below, because "the names: Diaz, Cabral and
+// Magellan" in a body paragraph must not be treated as a roster line.
+const NAME_LABEL_ANYWHERE = /\b((?:student\s+)?names?|partners?)\s*:[ \t]*/gi;
+// Where a name line can plausibly be: the top of the document. A worksheet
+// puts its name line in the header, within a few hundred characters; prose
+// that happens to say "the crew names: Diaz, Cabral and Magellan" is further
+// down. Past this point a label must still be at the start of a line or a
+// table cell to count, which is the shape a real "Partner:" row has anyway.
+const NAME_ZONE_CHARS = 1500;
+
 // Pseudonyms already in the text (a prior pass, or Canvas's own anonymous ids).
 const PSEUDONYM_TOKEN = /^student$/i;
+// "Student 12" as one token, where an extractor dropped the space.
+const GLUED_PSEUDONYM = /^student(\d+)$/i;
 // A lone initial next to a name, with or without its period.
 const INITIAL = /^\p{L}[.)]?$/u;
+// A value that is only underscores, dots or spaces: a blank to be filled in,
+// which in a table means the names are in the next cell.
+const EMPTY_VALUE = /^[\s_.\u2026|-]*$/;
+
+/** How far into the text a bare "Names:" is still read as a roster line. */
+export function nameZoneEnd(_text: string): number {
+  return NAME_ZONE_CHARS;
+}
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -205,9 +228,19 @@ export function createRedactor(options: RedactorOptions): Redactor {
       const here = clean(tokens[i]);
       const next = clean(tokens[i + 1] ?? '');
 
-      // A pseudonym already in the text: "Student 4".
+      // A pseudonym already in the text: "Student 4", or "Student4" where an
+      // extractor dropped the space. It is a name that is already accounted
+      // for, so it counts as matched and never as unmatched.
+      const glued = GLUED_PSEUDONYM.exec(here);
+      if (glued) {
+        out.push(`Student ${glued[1]}`);
+        counts.nameLine++;
+        i++;
+        continue;
+      }
       if (PSEUDONYM_TOKEN.test(here) && /^\d+$/.test(next)) {
         out.push(`Student ${next}`);
+        counts.nameLine++;
         i += 2;
         continue;
       }
@@ -261,16 +294,25 @@ export function createRedactor(options: RedactorOptions): Redactor {
     return names.join(', ');
   }
 
-  function redactLine(line: string): string {
-    NAME_LABEL.lastIndex = 0;
+  /**
+   * Redact one line. `inZone` widens label matching from "start of a line or
+   * cell" to "anywhere", for the top of the document where a name line lives.
+   * `wantsValue` is set when the label was there but its value was blank —
+   * a table whose label and names are in neighbouring cells, which arrive as
+   * separate lines. The caller then feeds the next line back as a value.
+   */
+  function redactLine(line: string, inZone: boolean): { text: string; wantsValue: boolean } {
+    const label = inZone ? NAME_LABEL_ANYWHERE : NAME_LABEL_ANCHORED;
+    label.lastIndex = 0;
     let out = '';
     let idx = 0;
+    let wantsValue = false;
     let m: RegExpExecArray | null;
-    while ((m = NAME_LABEL.exec(line)) !== null) {
+    while ((m = label.exec(line)) !== null) {
       const labelStart = m.index;
       const valueStart = m.index + m[0].length;
       if (labelStart < idx) {
-        NAME_LABEL.lastIndex = idx;
+        label.lastIndex = idx;
         continue;
       }
       out += redactBody(line.slice(idx, labelStart));
@@ -282,17 +324,46 @@ export function createRedactor(options: RedactorOptions): Redactor {
       // or "Name: Avery   Period: 3" collapses into "Name: Student 1Period: 3".
       const trail = /[\s|]*$/.exec(value)?.[0] ?? '';
       out += redactNameValue(value) + trail;
+      wantsValue = EMPTY_VALUE.test(value) && !boundary;
       idx = valueStart + value.length;
-      NAME_LABEL.lastIndex = idx;
+      label.lastIndex = idx;
     }
     out += redactBody(line.slice(idx));
-    return out;
+    return { text: out, wantsValue };
+  }
+
+  /** A whole line read as the value of a label on the line before it. */
+  function redactValueLine(line: string): string {
+    const boundary = BOUNDARY_LABEL.exec(line);
+    const value = boundary ? line.slice(0, boundary.index) : line;
+    const tail = boundary ? line.slice(boundary.index) : '';
+    const trail = /[\s|]*$/.exec(value)?.[0] ?? '';
+    return redactNameValue(value) + trail + (tail ? redactBody(tail) : '');
   }
 
   return {
     redact(text: string): string {
       if (!text) return text;
-      return text.split('\n').map(redactLine).join('\n');
+      const lines = text.split('\n');
+      const zoneEnd = nameZoneEnd(text);
+      const out: string[] = [];
+      let offset = 0;
+      let takeNextAsValue = false;
+      for (const line of lines) {
+        if (takeNextAsValue && line.trim()) {
+          // The label was in the previous cell and its own cell was empty.
+          out.push(redactValueLine(line));
+          takeNextAsValue = false;
+        } else {
+          const { text: redacted, wantsValue } = redactLine(line, offset < zoneEnd);
+          out.push(redacted);
+          // A blank line between the two cells is still the same table row.
+          if (wantsValue) takeNextAsValue = true;
+          else if (line.trim()) takeNextAsValue = false;
+        }
+        offset += line.length + 1;
+      }
+      return out.join('\n');
     },
     takeCounts(): RedactionCounts {
       const taken = counts;

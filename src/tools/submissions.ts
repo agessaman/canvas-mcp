@@ -122,11 +122,18 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
           const total = rubricTotal ?? (score !== undefined ? score : Number(posted_grade));
           const points = Number(assignment?.points_possible);
           let letter: string | undefined;
-          let scheme: { name: string; source: string } | undefined;
+          let scheme: Record<string, unknown> | undefined;
           if (Number.isFinite(total) && Number.isFinite(points) && points > 0) {
             const resolved = await resolveGradingScheme(canvas, courseId, assignment);
             letter = letterFor(total / points, resolved);
-            scheme = { name: resolved.name, source: resolved.source };
+            scheme = {
+              name: resolved.name,
+              source: resolved.source,
+              ...(resolved.id !== undefined ? { id: resolved.id } : {}),
+              // Say what was checked when the school's own scheme wasn't found,
+              // so a surprising letter can be traced rather than trusted.
+              ...(resolved.tried ? { fell_back_because: resolved.tried } : {}),
+            };
           }
           const preview = {
             dry_run: true,

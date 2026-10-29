@@ -280,7 +280,7 @@ Each affected tool accepts an `anonymous` parameter (default: `true`). Your AI a
 
 Canvas knows how it spells a student's name. A worksheet's "Names:" line knows nothing of the sort, and that is where anonymization used to leak: a partner's first name, a lowercase name wedged into a row of underscores, a name joined by "and". `get-submission-content`, `get-grading-packet` and `get-submission-documents` therefore run two different passes over extracted document text when `anonymous` is on.
 
-**On a name line** — anything whose label matches `Name:`, `Names:`, `Student Name:` or `Partner:`, at the start of a line or of a table cell — every token is treated as a name. Underscores are stripped, and each name is matched against the whole course roster (first, last, preferred and sortable name parts, case-insensitively), so a partner comes back as *their own* pseudonym rather than a blank. The line runs until the next label (`Period`, `Date`, `Class`, `Hour`) or the end of the line, so `Name: ____ Period: 3` keeps its period. A name-like token that matches nobody becomes `[name]` and is counted, because a blank you don't know about is worse than one you do.
+**On a name line** — anything whose label matches `Name:`, `Names:`, `Student Name:` or `Partner:` — every token is treated as a name. In the first 1,500 characters the label is matched *anywhere* on the line, because PDF text extractors reflow a worksheet header into a single line (`17.1 Worksheet Title Names: Jordan T Period: 4`); anchoring to the start of a line found nothing at all on a PDF. Past that point the label must start a line or a table cell, so a sentence like "the crew names: Diaz, Cabral and Magellan" stays prose. A label whose own cell is empty takes the next line as its value, which is how a `.docx` table arrives once its cells are flattened. Underscores are stripped, and each name is matched against the whole course roster (first, last, preferred and sortable name parts, case-insensitively), so a partner comes back as *their own* pseudonym rather than a blank. The line runs until the next label (`Period`, `Date`, `Class`, `Hour`) or the end of the line, so `Name: ____ Period: 3` keeps its period. A name-like token that matches nobody becomes `[name]` and is counted, because a blank you don't know about is worse than one you do.
 
 **In body text**, only full first-and-last matches from the roster are redacted, plus every part of the submitting student's own name. Bare first names are left alone by default: course content is full of words that are also somebody's first name, and a student called Henry must not erase "Prince Henry" or "Henry Hudson" from a history passage. Pass `scrubFirstNamesInBody: true` to redact roster first names in body text too, when the assignment makes that the greater risk.
 
@@ -290,7 +290,7 @@ Each file reports what happened, so the scrubbing is auditable rather than a mat
 "redactions": { "nameLine": 2, "body": 0, "unmatched": 1 }
 ```
 
-`unmatched` above zero also raises a warning on the submission — usually a partner enrolled in another section, or a nickname.
+`unmatched` above zero also raises a warning on the submission — usually a partner enrolled in another section, or a nickname. A `Student 12` already in the text counts as matched, never as unmatched.
 
 This is still best effort. Names inside images, misspellings and nicknames are not caught, and `download-submission-file` takes only a file ID, so it has no course to look a roster up in and does not anonymize at all.
 
@@ -358,6 +358,7 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | `queueLimit` | `50` | How many students the queue lists; `queue_truncated: true` when there are more |
 | `scrubFirstNamesInBody` | `false` | Redact roster first names in body text too (see [Names typed into the work itself](#names-typed-into-the-work-itself)) |
 | `includePartners` | `true` | Report classmates named on the work's name line |
+| `scanTemplates` | `false` | With the queue, read one file per student to report which worksheet version each had |
 
 **Partners.** Where an assignment allows partners and both are meant to submit, the name line is the only record of who worked with whom. Students named there and enrolled in the course come back on the per-student output:
 
@@ -377,13 +378,15 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 { "dry_run": true, "would_write": { ... }, "total": 20, "letter_grade": "C", "visible_immediately": true }
 ```
 
+A course's `grading_standard_id` is usually an **account** standard the course inherited, and the course-scoped API path 404s on exactly those — so the standard is looked up under the course, then the course's account, then `/accounts/self`. Reading that 404 as "no standard" meant grading against Canvas's built-in scheme (A at 94%) instead of the school's (A at 93%), which is a wrong letter on every borderline grade. The result names the standard and where it came from, and when the built-in default really is in use, `fell_back_because` says what was tried.
+
 **Reading files directly.** `get-submission-documents` and `download-submission-file` return extracted text by default for PDFs, Word (`.docx`), HTML and plain-text files, truncated at 60,000 characters with `truncated: true` (override with `maxChars`). Base64 comes back only for images, media and formats with no extractor, or when `forceBase64: true` is passed — with a 5 MB limit, above which the tool says so rather than returning a placeholder. A 192 KB PDF used to come back as `[FILE_TOO_LARGE_FOR_DISPLAY]`, leaving the caller nothing to grade from.
 
 ### Signals worth a second look
 
 Each extracted file can carry `integrity_signals`: short excerpts a teacher might want to open the work over. They are **prompts, never findings** — not evidence of copying, and not grounds for a lower score. The heuristics fire on artefacts of how text was produced rather than on how it reads, so they stay quiet on ordinary student writing: a footnote number left mid-sentence (`France.12 Now`), wiki page furniture (`[edit]`, `[citation needed]`, `Retrieved from`, `^ `), and an answer to "which X is most like …" that names the same thing the question asked about.
 
-Documents that keep table markup (HTML, and `.docx`) also carry `template_fingerprint` and `template_headers`, taken from the first table's header row. Teachers revise worksheet templates between class periods, and the rubric's meaning depends on which version a student had. `get-grading-packet` with `include: ["queue"]` summarises the versions as `template_variants` — covering the students read so far in the session, since fingerprinting the rest would mean downloading every file.
+Documents also carry `template_fingerprint` and `template_headers`, taken from the first table's header row. HTML and `.docx` have table markup to read it from. A PDF has none, so the header is inferred: from the row Google Docs repeats at the top of every page a table spans, or — on a one-page sheet, where there is nothing to repeat — by rebuilding the first table row from pdf.js's positioned text. Fingerprints are comparable within one assignment, where every student's file comes from the same export, rather than across formats. Teachers revise worksheet templates between class periods, and the rubric's meaning depends on which version a student had. `get-grading-packet` with `include: ["queue"]` summarises the versions as `template_variants`, covering the students read so far in the session. Pass `scanTemplates: true` to fingerprint the rest of the queue as well; that costs one download per student, so it is off by default, and results are cached per attempt (a student already read in this session is not fetched again).
 
 ### Classic vs. New Quizzes
 

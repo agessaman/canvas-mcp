@@ -134,6 +134,7 @@ Starting point for grading an assignment, and the per-student reader that follow
   - `anonymous`: boolean (default: true)
   - `scrubFirstNamesInBody`: boolean (default: false). Redact bare roster first names in body text as well as on name lines. Off by default, because course content is full of words that are also student names.
   - `includePartners`: boolean (default: true). Report classmates named on the work's `Names:`/`Partner:` line.
+  - `scanTemplates`: boolean (default: false). With the queue, download one file per queued student to work out which worksheet version each had, and return `template_variants` plus a `template_scan` count. Off by default because it costs a download per student; results are cached per attempt, and students already read in this session are not refetched.
 - Returns, depending on `include`:
   - Grading instructions the model follows: check for missing materials such as paper sources or handouts, ask once whether resubmissions are accepted and under what conditions ("Revise ..." vs "Next time ..."), keep feedback off by default, get the teacher's approval before writing any grade or feedback, keep feedback brief and actionable, and treat integrity signals as prompts rather than findings
   - The assignment's settings, including `allowed_attempts` and `post_manually`, with `due_at_local`, `lock_at_local` and `unlock_at_local` in the course time zone
@@ -156,7 +157,7 @@ Writes a score, grade, rubric assessment, or comment for a student's submission.
   - `rubric`: array of `{ criterionId, ratingId?, points?, comments? }`. This is checked against the assignment's rubric (unknown IDs, out-of-range points, and points that don't match the chosen rating are rejected) before anything is written.
   - `rubric_assessment`: raw Canvas object (unvalidated; use `rubric` instead)
   - `comment`: string
-  - `dryRun`: boolean (default: false). Validates exactly as a real write does, then returns `{ dry_run, would_write, total, points_possible, letter_grade, grading_standard, visible_immediately, notes }` **without sending anything to Canvas**. The letter comes from the assignment's grading standard, then the course's, then Canvas's default scheme. `visible_immediately` is `!post_manually` — worth checking before the first write on an assignment students see straight away.
+  - `dryRun`: boolean (default: false). Validates exactly as a real write does, then returns `{ dry_run, would_write, total, points_possible, letter_grade, grading_standard, visible_immediately, notes }` **without sending anything to Canvas**. The letter comes from the assignment's grading standard, then the course's, then Canvas's default scheme. Each standard is looked up under the course, its account, and `/accounts/self`, because a course's `grading_standard_id` is usually an inherited account standard that the course-scoped path 404s on. `grading_standard` names the scheme and where it came from, and carries `fell_back_because` when Canvas's built-in scheme was used instead. `visible_immediately` is `!post_manually` — worth checking before the first write on an assignment students see straight away.
 - Returns the resulting score and grade, plus the rubric total. It also notes any criteria left unscored, and points out when the rubric isn't set to calculate the grade.
 
 ### list-assignment-submissions

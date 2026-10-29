@@ -745,10 +745,30 @@ export class CanvasClient {
   }
 
   // --- Grading standards ---
-  // A course sees its own standards and every one its account chain defines,
-  // so the course-scoped path resolves an inherited standard's id too.
-  async getGradingStandard(courseId: string, standardId: string) {
-    return this.get(`/api/v1/courses/${courseId}/grading_standards/${standardId}`);
+  // A course's grading_standard_id is very often an ACCOUNT standard the course
+  // inherited, and the course-scoped path 404s on exactly those: observed live,
+  // /courses/26012/grading_standards/52 is a 404 while the course reports
+  // grading_standard_id 52. The sub-account path 404s too, because the standard
+  // is defined further up the chain. Only /accounts/self resolves it. So this
+  // tries all three rather than reading one 404 as "no standard", which silently
+  // graded against Canvas's built-in scheme (A at 94%) instead of the school's
+  // (A at 93%) — a wrong letter on every borderline grade.
+  async getGradingStandard(courseId: string, standardId: string, accountId?: string) {
+    const paths = [
+      `/api/v1/courses/${courseId}/grading_standards/${standardId}`,
+      ...(accountId ? [`/api/v1/accounts/${accountId}/grading_standards/${standardId}`] : []),
+      `/api/v1/accounts/self/grading_standards/${standardId}`,
+    ];
+    let lastError: any;
+    for (const path of paths) {
+      try {
+        const standard: any = await this.get(path);
+        if (standard?.grading_scheme?.length) return standard;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? new Error(`Grading standard ${standardId} not found in course ${courseId} or its accounts`);
   }
   async listGradingStandards(courseId: string) {
     return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/grading_standards`, { per_page: 100 });

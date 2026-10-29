@@ -26,6 +26,10 @@ DESKTOP_EXTENSION.md
 *.log
 .DS_Store
 coverage/
+/.scratch/
+/openai/
+# Generated reports: these hold real student data and must never be shipped.
+/reports/
 
 # Never ship a previously built bundle inside a new one
 *.mcpb

@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 import { DataAnonymizer } from "../anonymizer.js";
 import { ContentBlock, ImageBudget, extractFile, htmlToText } from "../submissionContent.js";
-import { GRADING_INSTRUCTIONS, describeRubric, getCourseRoster, needsGrading, readSubmissionContent } from "../grading.js";
+import { GRADING_INSTRUCTIONS, describeRubric, getCourseRoster, needsGrading, readSubmissionContent, scanTemplateVariants } from "../grading.js";
 import { formatInZone, resolveCourseZone } from "../courseTime.js";
 import { templateVariants } from "../documentSignals.js";
 
@@ -73,7 +73,7 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
   // Tool: get-grading-packet
   server.tool(
     "get-grading-packet",
-    "Start grading an assignment, then read each student's work. Call it ONCE with no userId to get the grading instructions, the assignment, its linked materials, the rubric with the criterion and rating IDs grade-submission needs, and the queue of students to grade. After that, call it per student with userId (or userIds for up to 5 at once): those calls return only that student's work plus a one-line header, because the instructions, rubric and queue do not change between students and resending them costs thousands of tokens each time. Use `include` to override what comes back. get-submission-content reads one student's work on its own, with more control over images and PDF rendering.",
+    "Start grading an assignment, then read each student's work. Call it ONCE with no userId to get the grading instructions, the assignment, its linked materials, the rubric with the criterion and rating IDs grade-submission needs, and the queue of students to grade. After that, call it per student with userId (or userIds for up to 5 at once): those calls return only that student's work plus a one-line header, because the instructions, rubric and queue do not change between students and resending them costs thousands of tokens each time. Use `include` to override what comes back, and scanTemplates to find out which version of a worksheet each student had. get-submission-content reads one student's work on its own, with more control over images and PDF rendering.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment"),
@@ -85,10 +85,11 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
       includeMaterials: z.boolean().default(true).describe("Read Canvas files linked in the assignment description, such as handouts and sources (default: true)"),
       anonymous: z.boolean().default(true).describe("Use pseudonyms for students (default: true)"),
       scrubFirstNamesInBody: z.boolean().default(false).describe("Also redact bare first names from the roster in body text. Off by default, because course content is full of words that are also student names (a student called Henry would erase \"Prince Henry\"). Names on a \"Names:\" line are always redacted when anonymous."),
-      includePartners: z.boolean().default(true).describe("Report classmates named on the work's \"Names:\"/\"Partner:\" line, with whether they submitted (default: true)")
+      includePartners: z.boolean().default(true).describe("Report classmates named on the work's \"Names:\"/\"Partner:\" line, with whether they submitted (default: true)"),
+      scanTemplates: z.boolean().default(false).describe("With the queue, download one file per queued student to work out which version of the worksheet template each had, and return template_variants. Off by default because it costs a download per student; results are cached per attempt, and students already read in this session are not refetched.")
     },
     { readOnlyHint: true },
-    async ({ courseId, assignmentId, userId, userIds, include, queueLimit = DEFAULT_QUEUE_LIMIT, includeMaterials = true, anonymous = true, scrubFirstNamesInBody = false, includePartners = true }: {
+    async ({ courseId, assignmentId, userId, userIds, include, queueLimit = DEFAULT_QUEUE_LIMIT, includeMaterials = true, anonymous = true, scrubFirstNamesInBody = false, includePartners = true, scanTemplates = false }: {
       courseId: string;
       assignmentId: string;
       userId?: string;
@@ -99,6 +100,7 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
       anonymous?: boolean;
       scrubFirstNamesInBody?: boolean;
       includePartners?: boolean;
+      scanTemplates?: boolean;
     }) => {
       try {
         const students = [...(userId ? [userId] : []), ...(userIds ?? [])]
@@ -177,12 +179,18 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
             summary.queue_truncated = true;
             summary.queue_note = `Showing ${queueLimit} of ${all.length} students needing grading; raise queueLimit for the rest.`;
           }
-          // Only covers students already read in this session — fingerprinting
-          // every submission up front would mean downloading every file.
+          if (scanTemplates) {
+            const scan = await scanTemplateVariants(canvas, courseId, assignmentId, summary.queue, {
+              anonymous, maxFileMB: 25, roster: await getCourseRoster(canvas, courseId),
+            });
+            summary.template_scan = { ...scan, students: summary.queue.length };
+          }
           const variants = templateVariants(String(a.id ?? assignmentId));
           if (variants) {
             summary.template_variants = variants;
-            summary.template_variants_note = "Worksheet versions seen so far, from the students read in this session. Students not yet read are not listed.";
+            summary.template_variants_note = scanTemplates
+              ? "Worksheet versions across the queued students scanned here, plus any read earlier in this session. A student with no readable document is counted in template_scan.skipped."
+              : "Worksheet versions seen so far, from the students read in this session. Pass scanTemplates: true to read the rest of the queue.";
           }
         }
 

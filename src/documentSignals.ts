@@ -21,9 +21,17 @@ const MAX_EXCERPT = 40;
 const MAX_SIGNALS = 8;
 
 function excerptAround(text: string, index: number, length: number): string {
-  const start = Math.max(0, index - 8);
-  const raw = text.slice(start, start + Math.max(length + 16, 24)).replace(/\s+/g, ' ').trim();
-  return raw.length > MAX_EXCERPT ? `${raw.slice(0, MAX_EXCERPT - 1)}…` : raw;
+  // Snap outwards to whitespace: an excerpt cut mid-word ("ncis is most like
+  // Sir Fra") reads as a bug rather than as a quotation.
+  let start = Math.max(0, index - 8);
+  while (start > 0 && !/\s/.test(text[start - 1])) start--;
+  let end = Math.min(text.length, start + Math.max(length + 16, 24));
+  while (end < text.length && !/\s/.test(text[end])) end++;
+  const raw = text.slice(start, end).replace(/\s+/g, ' ').trim();
+  if (raw.length <= MAX_EXCERPT) return raw;
+  const cut = raw.slice(0, MAX_EXCERPT - 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${lastSpace > MAX_EXCERPT / 2 ? cut.slice(0, lastSpace) : cut}…`;
 }
 
 // "France.12 Now" — a footnote number that came along with the sentence.
@@ -38,10 +46,32 @@ const WEB_RESIDUE: { re: RegExp; reason: string }[] = [
   { re: /^\^ /gm, reason: 'Wikipedia reference back-link ("^ ")' },
 ];
 
-// "Which of these is most like the printing press?" followed by an answer that
-// says "the printing press". A chatbot restating the subject as the answer.
+// A comparison that answers itself. Three shapes, because a worksheet asks the
+// question in the stem on one and leaves it implicit on another:
+//
+//   "Which of these is most like the printing press? The printing press ..."
+//   "Drake Francis is most like Sir Francis Drake from Part 1."
+//   "Explorer's name: Francis Drake" ... "most like Sir Francis Drake"
+//
+// The second and third only show up if word ORDER is ignored — a student who
+// has flipped the name round is the signal, not a different answer — so names
+// are compared as sets with titles dropped.
 const COMPARISON_QUESTION = /which\b[^?\n]*?\bmost\s+(?:like|similar\s+to)\s+([^?\n]{3,60})\?/gi;
+const MOST_LIKE = /\bmost\s+(?:like|similar\s+to)\b/gi;
+// A labelled answer naming the thing the rest of the sheet is about.
+const SUBJECT_FIELD = /\b(?:explorer|person|figure|inventor|leader)(?:['’]s)?\s+name\s*[:\-]\s*([^\n.;]{3,60})/gi;
 
+const SELF_REFERENTIAL = 'Comparison answer names the same thing the question asked about';
+
+// Dropped before comparing names: honorifics, the words a worksheet uses to
+// point at its own parts, and anything too short to identify anybody.
+const NAME_NOISE = new Set([
+  'sir', 'prince', 'princess', 'king', 'queen', 'captain', 'lord', 'lady', 'saint', 'don',
+  'mr', 'mrs', 'ms', 'dr', 'the', 'and', 'from', 'part', 'page', 'section', 'number',
+  'explorer', 'person', 'figure', 'mine', 'yours', 'above', 'below', 'answer', 'question',
+]);
+
+/** A phrase reduced to the words that identify it, for a substring check. */
 function normalizeEntity(s: string): string {
   return s
     .toLowerCase()
@@ -49,6 +79,39 @@ function normalizeEntity(s: string): string {
     .replace(/[^\p{L}\p{N}\s]/gu, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function nameWordSet(phrase: string): Set<string> {
+  return new Set(
+    phrase
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !NAME_NOISE.has(w) && !/^\d+$/.test(w)),
+  );
+}
+
+function sameName(a: Set<string>, b: Set<string>): boolean {
+  if (a.size === 0 || a.size !== b.size) return false;
+  for (const w of a) if (!b.has(w)) return false;
+  return true;
+}
+
+/** The clause a comparison is about, reading backwards from "most like". */
+function subjectBefore(text: string, at: number): string {
+  const window = text.slice(Math.max(0, at - 140), at);
+  const clause = window.split(/[.?!\n]/).pop() ?? '';
+  // Drop the copula that joins the subject to the comparison.
+  return clause.replace(/\s+(?:is|are|was|were|seems?|feels?|looks?|would\s+be)\s*$/i, '').trim();
+}
+
+/** The phrase a comparison names, reading forwards from "most like". */
+function answerAfter(text: string, at: number): string {
+  const window = text.slice(at, at + 140);
+  const clause = window.split(/[.?!\n;,]/)[0] ?? '';
+  // "Sir Francis Drake from Part 1" — the trailing phrase points at the
+  // worksheet, not at another person.
+  return clause.replace(/\s+\b(?:from|in|on|at|during|because|since|due|as|who|which|that)\b[\s\S]*$/i, '').trim();
 }
 
 /**
@@ -72,14 +135,28 @@ export function findIntegritySignals(text: string): IntegritySignal[] {
   for (const { re, reason } of WEB_RESIDUE) {
     for (const m of text.matchAll(re)) add(excerptAround(text, m.index ?? 0, m[0].length), reason);
   }
+  // Shape 1: the stem names the thing, and the answer names it straight back.
   for (const m of text.matchAll(COMPARISON_QUESTION)) {
     const subject = normalizeEntity(m[1]);
     if (subject.length < 4) continue;
     const after = text.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 400);
     if (normalizeEntity(after).includes(subject)) {
-      add(excerptAround(text, m.index ?? 0, m[0].length), 'Comparison answer names the same thing the question asked about');
+      add(excerptAround(text, m.index ?? 0, m[0].length), SELF_REFERENTIAL);
     }
   }
+
+  // Shapes 2 and 3: the subject is in the same sentence, or in a labelled
+  // answer earlier on the sheet. Either way the names match as sets.
+  const subjects = [...text.matchAll(SUBJECT_FIELD)].map(m => nameWordSet(m[1]));
+  for (const m of text.matchAll(MOST_LIKE)) {
+    const at = m.index ?? 0;
+    const answer = nameWordSet(answerAfter(text, at + m[0].length));
+    if (answer.size === 0) continue;
+    const own = nameWordSet(subjectBefore(text, at));
+    const matchesSubject = sameName(own, answer) || subjects.some(sub => sameName(sub, answer));
+    if (matchesSubject) add(excerptAround(text, at, m[0].length), SELF_REFERENTIAL);
+  }
+
   return signals;
 }
 
@@ -94,6 +171,54 @@ export interface TemplateFingerprint {
  * (HTML, and .docx converted to HTML) carry one; a PDF's text layer has no
  * table structure to read, so those get no fingerprint.
  */
+/** Hash a normalized header string into the pair callers report. */
+export function makeFingerprint(headers: string): TemplateFingerprint | undefined {
+  const normalized = headers.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (normalized.length < 8) return undefined;
+  return {
+    template_fingerprint: createHash('sha1').update(normalized).digest('hex').slice(0, 8),
+    template_headers: normalized,
+  };
+}
+
+// A page's lines, normalized for comparison across pages.
+function pageLines(page: string): string[] {
+  return page
+    .split('\n')
+    .map(l => l.replace(/\s+/g, ' ').trim().toLowerCase())
+    .filter(Boolean);
+}
+
+// A repeated block longer than this is page furniture, not a header row.
+const MAX_REPEATED_BLOCK = 12;
+
+/**
+ * A PDF's text layer has no table markup, so the header row has to be inferred.
+ * Google Docs — which is what these worksheets are exported from — repeats a
+ * table's header row at the top of every page it spans, so the longest run of
+ * consecutive lines that also appears on another page is that header. Per-page
+ * furniture ("Page 2 of 3") differs page to page and so never qualifies.
+ */
+export function fingerprintFromRepeatedLines(pages: string[]): TemplateFingerprint | undefined {
+  if (!pages || pages.length < 2) return undefined;
+  const normalized = pages.map(pageLines);
+  const elsewhere = new Set<string>();
+  for (let i = 1; i < normalized.length; i++) for (const line of normalized[i]) elsewhere.add(line);
+
+  let best: string[] = [];
+  let run: string[] = [];
+  for (const line of normalized[0]) {
+    if (elsewhere.has(line)) {
+      run.push(line);
+      if (run.length > best.length) best = [...run];
+    } else {
+      run = [];
+    }
+  }
+  if (best.length === 0) return undefined;
+  return makeFingerprint(best.slice(0, MAX_REPEATED_BLOCK).join(' | '));
+}
+
 export function fingerprintFromHtml(html: string): TemplateFingerprint | undefined {
   if (!html) return undefined;
   const table = /<table\b[^>]*>([\s\S]*?)<\/table>/i.exec(html);
@@ -137,4 +262,22 @@ export function templateVariants(assignmentId: string) {
 
 export function clearTemplateVariants(): void {
   registry.clear();
+  scanned.clear();
+}
+
+// One scan result per (assignment, student, attempt). A submission that has
+// not been resubmitted cannot have changed template, so rescanning it would
+// re-download every file for nothing.
+const scanned = new Map<string, TemplateFingerprint | null>();
+
+export function scanKey(assignmentId: string, userId: string, attempt: unknown): string {
+  return `${assignmentId}:${userId}:${attempt ?? 0}`;
+}
+
+export function cachedScan(key: string): TemplateFingerprint | null | undefined {
+  return scanned.get(key);
+}
+
+export function rememberScan(key: string, fp: TemplateFingerprint | null): void {
+  scanned.set(key, fp);
 }

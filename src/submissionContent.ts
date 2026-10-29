@@ -4,7 +4,13 @@
 import { extractText, getDocumentProxy, renderPageAsImage } from 'unpdf';
 import mammoth from 'mammoth';
 import { isMac, macHeicToJpeg, macOcr, macPdfText } from './macNative.js';
-import { IntegritySignal, findIntegritySignals, fingerprintFromHtml } from './documentSignals.js';
+import {
+  IntegritySignal,
+  findIntegritySignals,
+  fingerprintFromHtml,
+  fingerprintFromRepeatedLines,
+  makeFingerprint,
+} from './documentSignals.js';
 import type { RedactionCounts } from './nameRedaction.js';
 
 export type ContentBlock =
@@ -183,6 +189,64 @@ async function prepareImage(
   return null;
 }
 
+// Two text runs further apart than this sit in different table cells. PDF
+// points, so roughly a wide character at 12pt.
+const CELL_GAP = 12;
+// A header row needs this many cells before it is one rather than a sentence
+// the extractor happened to split.
+const MIN_HEADER_CELLS = 3;
+
+/**
+ * The first table row on page 1, rebuilt from positioned text.
+ *
+ * Used when a PDF is a single page, where there is no second page for a
+ * repeated header to be compared against. pdf.js gives each run of text an
+ * x/y, so a row is the runs sharing a baseline and a cell is a group of runs
+ * with no wide gap between them. A title or a sentence comes back as one or
+ * two cells and is rejected; a worksheet's header row comes back as three or
+ * more.
+ */
+async function firstTableRowFromLayout(proxy: any): Promise<string | undefined> {
+  try {
+    const page = await proxy.getPage(1);
+    const content = await page.getTextContent();
+    type Run = { x: number; y: number; width: number; str: string };
+    const runs: Run[] = (content.items ?? [])
+      .filter((it: any) => typeof it.str === 'string' && it.str.trim())
+      .map((it: any) => ({ x: it.transform[4], y: it.transform[5], width: it.width ?? 0, str: it.str.trim() }));
+    if (runs.length === 0) return undefined;
+
+    // Group into rows by baseline, top of the page first.
+    const rows = new Map<number, Run[]>();
+    for (const run of runs) {
+      const key = Math.round(run.y);
+      const row = rows.get(key);
+      if (row) row.push(run);
+      else rows.set(key, [run]);
+    }
+
+    for (const y of [...rows.keys()].sort((a, b) => b - a)) {
+      const row = rows.get(y)!.sort((a: Run, b: Run) => a.x - b.x);
+      const cells: string[] = [];
+      let current = '';
+      let cursor = -Infinity;
+      for (const run of row) {
+        if (current && run.x - cursor > CELL_GAP) {
+          cells.push(current.trim());
+          current = '';
+        }
+        current += (current ? ' ' : '') + run.str;
+        cursor = run.x + run.width;
+      }
+      if (current.trim()) cells.push(current.trim());
+      if (cells.length >= MIN_HEADER_CELLS) return cells.join(' | ');
+    }
+  } catch {
+    // A PDF whose layout can't be read still has its text; no fingerprint.
+  }
+  return undefined;
+}
+
 /** Attach the optional "look closer" fields, when the caller asked for them. */
 function addSignals(summary: FileSummary, text: string, opts: ExtractOptions, html?: string): void {
   if (opts.integritySignals !== false) {
@@ -294,6 +358,14 @@ async function extractPdf(buf: Buffer, filename: string, opts: ExtractOptions, b
     ...(notes.length ? { note: notes.join(' ') } : {}),
   };
   addSignals(summary, body, opts);
+  // A PDF has no table markup, so the worksheet version is inferred: from the
+  // header row Google Docs repeats on every page, or — on a one-page sheet,
+  // where there is nothing to repeat — from the laid-out first table row.
+  if (opts.templateFingerprint !== false) {
+    const fp = fingerprintFromRepeatedLines(pages)
+      ?? makeFingerprint((await firstTableRowFromLayout(await pdfjs()).catch(() => undefined)) ?? '');
+    if (fp) Object.assign(summary, fp);
+  }
   return { summary, blocks };
 }
 

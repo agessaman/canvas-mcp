@@ -33,6 +33,69 @@ export function makeTextPdf(lines, padBytes = 0) {
   return Buffer.from(pdf, 'latin1');
 }
 
+/**
+ * A PDF whose text is laid out in columns, so pdf.js reports distinct x
+ * positions on a shared baseline — what a real worksheet's table looks like to
+ * an extractor. `pages` repeats the header row on every page, the way Google
+ * Docs exports a table that spans pages.
+ */
+export function makeTablePdf({ headers, rows = [], pages = 1, title = null }) {
+  const columnX = headers.map((_, i) => 72 + i * 140);
+  const pageContent = [];
+  for (let page = 0; page < pages; page++) {
+    const ops = ['BT /F1 11 Tf'];
+    let y = 720;
+    if (title && page === 0) {
+      ops.push(`1 0 0 1 72 ${y} Tm (${esc(title)}) Tj`);
+      y -= 24;
+    }
+    // The header row, repeated on every page.
+    headers.forEach((h, i) => ops.push(`1 0 0 1 ${columnX[i]} ${y} Tm (${esc(h)}) Tj`));
+    y -= 18;
+    for (const row of (typeof rows === 'function' ? rows(page) : rows)) {
+      row.forEach((cell, i) => ops.push(`1 0 0 1 ${columnX[i]} ${y} Tm (${esc(String(cell))}) Tj`));
+      y -= 18;
+    }
+    ops.push('ET');
+    pageContent.push(ops.join('\n'));
+  }
+  return buildPdf(pageContent);
+}
+
+function esc(s) {
+  return String(s).replace(/[()\\]/g, '\\$&');
+}
+
+/** Assemble a PDF from one content stream per page. */
+function buildPdf(pageStreams) {
+  const pageCount = pageStreams.length;
+  const objects = [];
+  // 1 catalog, 2 pages, 3..(2+n) page objects, then one content stream each,
+  // then the font.
+  const pageIds = pageStreams.map((_, i) => 3 + i);
+  const contentIds = pageStreams.map((_, i) => 3 + pageCount + i);
+  const fontId = 3 + pageCount * 2;
+  objects.push('<< /Type /Catalog /Pages 2 0 R >>');
+  objects.push(`<< /Type /Pages /Kids [${pageIds.map(id => `${id} 0 R`).join(' ')}] /Count ${pageCount} >>`);
+  pageIds.forEach((_, i) => objects.push(
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentIds[i]} 0 R >>`
+  ));
+  pageStreams.forEach(stream => objects.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`));
+  objects.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [];
+  objects.forEach((body, i) => {
+    offsets.push(pdf.length);
+    pdf += `${i + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+    + offsets.map(o => `${String(o).padStart(10, '0')} 00000 n \n`).join('')
+    + `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, 'latin1');
+}
+
 export const ROSTER = [
   { id: 101, name: 'Avery Nolan', short_name: 'Avery', sortable_name: 'Nolan, Avery' },
   { id: 102, name: 'Jordan Tate', short_name: 'Jordan', sortable_name: 'Tate, Jordan' },

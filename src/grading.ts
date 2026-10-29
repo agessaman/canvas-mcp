@@ -18,7 +18,12 @@ import {
   createRedactor,
   noopRedactor,
 } from './nameRedaction.js';
-import { recordTemplateVariant } from './documentSignals.js';
+import {
+  cachedScan,
+  recordTemplateVariant,
+  rememberScan,
+  scanKey,
+} from './documentSignals.js';
 import { formatInZone, resolveCourseZone } from './courseTime.js';
 
 // What each non-file submission type needs the grader to know
@@ -198,10 +203,14 @@ export async function readSubmissionContent(
           // The header row is document text like any other: on a worksheet
           // whose first table row is the name row, it carries names.
           summary.template_headers = scrub(summary.template_headers ?? '');
-          recordTemplateVariant(String(s.assignment_id ?? assignmentId), alias, {
+          const fp = {
             template_fingerprint: summary.template_fingerprint,
             template_headers: summary.template_headers,
-          });
+          };
+          recordTemplateVariant(String(s.assignment_id ?? assignmentId), alias, fp);
+          // This file is already downloaded and fingerprinted; a later
+          // scanTemplates pass must not fetch it a second time.
+          rememberScan(scanKey(String(s.assignment_id ?? assignmentId), String(s.user_id), a.attempt), fp);
         }
         if (fileBlocks.length) {
           blocks.push({ type: 'text', text: `--- ${label} · ${filename} (${summary.kind}${summary.pages ? `, ${summary.pages} pages` : ''}) ---` });
@@ -345,6 +354,76 @@ async function comparePartnerWork(
   return sameWork(ownFingerprints, theirs);
 }
 
+/**
+ * Fingerprint the worksheet version each queued student used.
+ *
+ * This downloads a file per student, which is the cost the rest of this round
+ * of work exists to avoid — so it is opt-in, capped by the queue the caller
+ * already asked for, and cached per attempt. Only the first attachment is
+ * read: a worksheet's version is decided by the document, and a second file is
+ * nearly always a photo appended to it.
+ */
+export async function scanTemplateVariants(
+  canvas: CanvasClient,
+  courseId: string,
+  assignmentId: string,
+  queue: { user_id: any; attempt?: any }[],
+  options: { anonymous: boolean; maxFileMB: number; roster?: RosterMember[] },
+): Promise<{ scanned: number; skipped: number }> {
+  let count = 0;
+  let skipped = 0;
+  // A header row is document text: on a worksheet whose first table row is the
+  // name row, it carries names, and these go straight into the packet.
+  const roster = options.anonymous ? (options.roster ?? await getCourseRoster(canvas, courseId)) : [];
+  const headerRedactor = options.anonymous ? createRedactor({ roster }) : noopRedactor();
+  const clean = (fp: { template_fingerprint: string; template_headers: string }) => ({
+    template_fingerprint: fp.template_fingerprint,
+    template_headers: headerRedactor.redact(fp.template_headers),
+  });
+  for (const entry of queue) {
+    const userId = String(entry.user_id);
+    const alias = options.anonymous ? DataAnonymizer.pseudonymFor(entry.user_id) : userId;
+    const key = scanKey(String(assignmentId), userId, entry.attempt);
+    const already = cachedScan(key);
+    if (already !== undefined) {
+      if (already) recordTemplateVariant(String(assignmentId), alias, clean(already));
+      else skipped++;
+      continue;
+    }
+    try {
+      const submission: any = await canvas.getSubmission(courseId, assignmentId, userId, { include: ['submission_history'] });
+      const attachment = (submission?.attachments ?? [])[0];
+      if (!attachment || (attachment.size && attachment.size > options.maxFileMB * 1024 * 1024)) {
+        rememberScan(key, null);
+        skipped++;
+        continue;
+      }
+      const { data, contentType } = await canvas.downloadUrl(attachment.url);
+      const { summary } = await extractFile(
+        data,
+        attachment.display_name || attachment.filename || 'file',
+        attachment['content-type'] || attachment.content_type || contentType,
+        { maxCharsPerFile: 20000, renderPdfPages: 'never', maxPdfPagesToRender: 0, ocr: false, integritySignals: false },
+        new ImageBudget(0),
+      );
+      const fp = summary.template_fingerprint
+        ? { template_fingerprint: summary.template_fingerprint, template_headers: summary.template_headers ?? '' }
+        : null;
+      rememberScan(key, fp);
+      if (fp) {
+        recordTemplateVariant(String(assignmentId), alias, clean(fp));
+        count++;
+      } else {
+        skipped++;
+      }
+    } catch {
+      rememberScan(key, null);
+      skipped++;
+    }
+  }
+  return { scanned: count, skipped };
+}
+
 // --- Rubrics ---
 
 export interface RubricScoreInput {
@@ -462,9 +541,12 @@ const DEFAULT_GRADING_SCHEME: [string, number][] = [
 ];
 
 export interface GradingScheme {
+  id?: string | number;
   name: string;
   source: 'assignment' | 'course' | 'default';
   entries: [string, number][];
+  /** Why the default was reached, when it was. */
+  tried?: string[];
 }
 
 function normalizeScheme(data: any[]): [string, number][] {
@@ -494,16 +576,29 @@ export async function resolveGradingScheme(
   }
   if (course?.grading_standard_id) attempts.push({ id: course.grading_standard_id, source: 'course' });
 
+  const accountId = course?.account_id === undefined || course?.account_id === null
+    ? undefined
+    : String(course.account_id);
+
+  const tried: string[] = [];
   for (const { id, source } of attempts) {
     try {
-      const standard: any = await canvas.getGradingStandard(courseId, String(id));
+      const standard: any = await canvas.getGradingStandard(courseId, String(id), accountId);
       const entries = normalizeScheme(standard?.grading_scheme);
-      if (entries.length) return { name: standard?.title ?? `standard ${id}`, source, entries };
-    } catch {
-      // Fall through to the next candidate.
+      if (entries.length) {
+        return { id: standard?.id ?? id, name: standard?.title ?? `standard ${id}`, source, entries };
+      }
+      tried.push(`${source} standard ${id} had no scheme`);
+    } catch (e: any) {
+      tried.push(`${source} standard ${id} could not be read (${e?.message ?? e})`);
     }
   }
-  return { name: 'Canvas default scheme', source: 'default', entries: DEFAULT_GRADING_SCHEME };
+  if (attempts.length === 0) {
+    tried.push('neither the assignment nor the course names a grading standard');
+  }
+  // Canvas's own fallback, and worth saying so: it is not the school's scheme,
+  // and the cutoffs differ by a point in places.
+  return { name: 'Canvas default scheme', source: 'default', entries: DEFAULT_GRADING_SCHEME, tried };
 }
 
 /** The letter a percentage earns under a scheme. */
