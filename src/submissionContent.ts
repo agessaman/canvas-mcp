@@ -50,6 +50,7 @@ export interface FileSummary {
   template_fingerprint?: string;
   template_headers?: string;
   directions_fingerprint?: string;
+  directions_chars?: number;
   // How much anonymization this file needed, and what it couldn't resolve.
   redactions?: RedactionCounts;
   // Why a name on the name line was left as [name], without naming anyone.

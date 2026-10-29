@@ -165,6 +165,8 @@ export interface TemplateFingerprint {
   template_headers: string;
   /** The directions above the table, hashed separately. */
   directions_fingerprint?: string;
+  /** How many characters went into that hash. Zero means nothing was found. */
+  directions_chars?: number;
 }
 
 /**
@@ -178,8 +180,11 @@ function hashable(text: string): string {
   return text
     .normalize('NFD')
     .replace(/\p{M}+/gu, '')
-    .replace(/[^\p{L}\p{N}]+/gu, '')
-    .toLowerCase();
+    .toLowerCase()
+    // Strictly [a-z0-9]. A bullet glyph does not survive a PDF export intact
+    // — "\u25cf" came back as a caron — and anything left of it would put the
+    // same template under two fingerprints depending on the file format.
+    .replace(/[^a-z0-9]+/g, '');
 }
 
 function shortHash(text: string): string {
@@ -193,47 +198,22 @@ function shortHash(text: string): string {
  * table structure to read, so those get no fingerprint.
  */
 /** Hash a normalized header string into the pair callers report. */
-export function makeFingerprint(headers: string, directions?: string): TemplateFingerprint | undefined {
+export function makeFingerprint(headers: string, directions?: { text: string; chars: number }): TemplateFingerprint | undefined {
   const readable = headers.replace(/\s+/g, ' ').trim().toLowerCase();
   const key = hashable(readable);
   if (key.length < 8) return undefined;
-  const directionsKey = directions ? hashable(directions) : '';
+  const directionsKey = directions ? hashable(directions.text) : '';
   return {
     template_fingerprint: shortHash(key),
     template_headers: readable,
     // Teachers edit the directions without touching the table, and the rubric
     // can turn on that edit, so it is tracked as its own hash rather than
     // folded into the template's.
+    // directions_chars says how much was actually hashed, so a region that
+    // collapsed to nothing is visible rather than silently constant.
+    ...(directions ? { directions_chars: directionsKey.length } : {}),
     ...(directionsKey.length >= 16 ? { directions_fingerprint: shortHash(directionsKey) } : {}),
   };
-}
-
-// Where the directions start. Everything from here to the table header is the
-// teacher's instructions; student-entered text is below the header, so none of
-// it is hashed.
-const DIRECTIONS_START = /^.*?\bpart\s*1\b.*$/im;
-
-/**
- * The directions between the first "Part 1" heading and the table header.
- * Returns undefined when either end can't be located, rather than hashing an
- * arbitrary slab of the document.
- */
-export function directionsBlock(text: string, headerLine?: string): string | undefined {
-  if (!text) return undefined;
-  const start = DIRECTIONS_START.exec(text);
-  if (!start) return undefined;
-  const from = start.index;
-  let to = text.length;
-  if (headerLine) {
-    // The header's first cell is enough to find where the table begins.
-    const firstCell = headerLine.split('|')[0].trim();
-    if (firstCell.length >= 3) {
-      const at = text.toLowerCase().indexOf(firstCell.toLowerCase(), from + start[0].length);
-      if (at > from) to = at;
-    }
-  }
-  const block = text.slice(from, to).trim();
-  return block.length >= 16 ? block : undefined;
 }
 
 // A page's lines, normalized for comparison across pages.
@@ -247,14 +227,58 @@ function pageLines(page: string): string[] {
 // A repeated block longer than this is page furniture, not a header row.
 const MAX_REPEATED_BLOCK = 12;
 
+// The name line, and the labels that sit beside it. The directions start
+// after whichever of these comes last near the top of the sheet.
+const HEADER_LABEL = /^.*\b(?:(?:student\s+)?names?|partners?|period|date|class|hour|block)\s*[:\-].*$/gim;
+// Only the top of the document can hold the header; a "Date:" inside a
+// student's answer must not push the directions region past the directions.
+const HEADER_SEARCH_CHARS = 1200;
+
 /**
- * A PDF's text layer has no table markup, so the header row has to be inferred.
- * Google Docs — which is what these worksheets are exported from — repeats a
- * table's header row at the top of every page it spans, so the longest run of
- * consecutive lines that also appears on another page is that header. Per-page
- * furniture ("Page 2 of 3") differs page to page and so never qualifies.
+ * The teacher's directions: everything between the name/period line and the
+ * table header, normalized to letters and digits.
+ *
+ * It was previously anchored on a literal "Part 1", which most sheets do not
+ * have, so it hashed either nothing or the whole document — every PDF came
+ * back with the same fingerprint, which is the giveaway that it was hashing an
+ * empty region. The region is now bounded by two things every worksheet has.
+ * Student-entered text is below the table header, so none of it is included.
  */
-export function fingerprintFromRepeatedLines(pages: string[], directions?: string): TemplateFingerprint | undefined {
+export function directionsBlock(text: string, headerLine?: string): { text: string; chars: number } | undefined {
+  if (!text) return undefined;
+  let from = 0;
+  HEADER_LABEL.lastIndex = 0;
+  for (let m = HEADER_LABEL.exec(text); m; m = HEADER_LABEL.exec(text)) {
+    if (m.index > HEADER_SEARCH_CHARS) break;
+    from = m.index + m[0].length;
+  }
+  // Without a located table header there is no end to the directions, and
+  // running to the end of the document would hash the student's own answers —
+  // and, in a cross-check, treat their whole submission as worksheet text.
+  let to = -1;
+  const headerKey = headerLine ? hashable(headerLine) : '';
+  if (headerKey.length >= 8) {
+    // Matched as a whole LINE, not as a substring: "Answer every question in
+    // complete sentences" contains the first header cell, and searching for
+    // that cut the directions off in the middle of themselves. The header
+    // repeats on every page of a PDF, so the first occurrence is the end.
+    let cursor = from;
+    for (const line of text.slice(from).split('\n')) {
+      const key = hashable(line);
+      if (key.length >= 8 && (key.startsWith(headerKey) || headerKey.startsWith(key))) {
+        to = cursor;
+        break;
+      }
+      cursor += line.length + 1;
+    }
+  }
+  if (to < 0) return undefined;
+  const block = text.slice(from, to);
+  const chars = hashable(block).length;
+  return chars > 0 ? { text: block, chars } : undefined;
+}
+
+export function fingerprintFromRepeatedLines(pages: string[], directions?: { text: string; chars: number }): TemplateFingerprint | undefined {
   if (!pages || pages.length < 2) return undefined;
   const normalized = pages.map(pageLines);
   const elsewhere = new Set<string>();
@@ -274,7 +298,7 @@ export function fingerprintFromRepeatedLines(pages: string[], directions?: strin
   return makeFingerprint(best.slice(0, MAX_REPEATED_BLOCK).join(' | '), directions);
 }
 
-export function fingerprintFromHtml(html: string, directions?: string): TemplateFingerprint | undefined {
+export function fingerprintFromHtml(html: string, directions?: { text: string; chars: number }): TemplateFingerprint | undefined {
   if (!html) return undefined;
   const table = /<table\b[^>]*>([\s\S]*?)<\/table>/i.exec(html);
   if (!table) return undefined;
@@ -346,4 +370,98 @@ export function cachedScan(key: string): TemplateFingerprint | null | undefined 
 
 export function rememberScan(key: string, fp: TemplateFingerprint | null): void {
   scanned.set(key, fp);
+}
+
+// --- Text shared between submissions ---
+
+// Short sentences are shared by coincidence; long ones are not. Twelve words
+// is long enough that two students writing it independently is implausible,
+// and short enough to catch a single pasted line.
+const MIN_SENTENCE_WORDS = 12;
+// A sentence this common across the class came off the worksheet, not a source.
+const TEMPLATE_SHARE = 0.5;
+
+export const SHARED_TEXT_REASON =
+  "Same sentence appears in another student's work (often a shared web source)";
+
+export interface SubmissionText {
+  student: string;
+  text: string;
+  /** Pseudonyms this student named as partners; shared text with them is expected. */
+  partners: Set<string>;
+  /** The directions region, so the worksheet's own words are not flagged. */
+  directions?: string;
+}
+
+export interface SharedTextSignal {
+  students: string[];
+  excerpt: string;
+  reason: string;
+}
+
+/** Sentences of at least MIN_SENTENCE_WORDS, as hash -> first excerpt seen. */
+function sentenceHashes(text: string): Map<string, string> {
+  const found = new Map<string, string>();
+  if (!text) return found;
+  for (const raw of text.split(/(?<=[.!?])\s+|\n+/)) {
+    const sentence = raw.trim();
+    if (sentence.split(/\s+/).filter(w => /[a-z0-9]/i.test(w)).length < MIN_SENTENCE_WORDS) continue;
+    const key = hashable(sentence);
+    if (key.length < 40) continue;
+    if (!found.has(key)) {
+      const flat = sentence.replace(/\s+/g, ' ');
+      found.set(key, flat.length > MAX_EXCERPT ? `${flat.slice(0, MAX_EXCERPT - 1)}…` : flat);
+    }
+  }
+  return found;
+}
+
+/**
+ * Sentences that turn up in two students' work where neither named the other
+ * as a partner.
+ *
+ * This is a prompt, never a finding: the usual explanation is that both
+ * students used the same web page, which is not misconduct and may not even be
+ * discouraged. Two things are excluded so it stays quiet — anything in the
+ * worksheet's own directions, and anything more than half the class wrote,
+ * which is the signature of text copied off the assignment itself.
+ */
+export function sharedTextSignals(submissions: SubmissionText[]): SharedTextSignal[] {
+  if (submissions.length < 2) return [];
+  const perStudent = submissions.map(s => ({
+    student: s.student,
+    partners: s.partners,
+    sentences: sentenceHashes(s.text),
+  }));
+  const fromTemplate = new Set<string>();
+  for (const s of submissions) {
+    if (!s.directions) continue;
+    for (const key of sentenceHashes(s.directions).keys()) fromTemplate.add(key);
+  }
+
+  const byHash = new Map<string, { students: string[]; excerpt: string }>();
+  for (const entry of perStudent) {
+    for (const [key, excerpt] of entry.sentences) {
+      if (fromTemplate.has(key)) continue;
+      const seen = byHash.get(key);
+      if (seen) seen.students.push(entry.student);
+      else byHash.set(key, { students: [entry.student], excerpt });
+    }
+  }
+
+  const partnersOf = new Map(perStudent.map(e => [e.student, e.partners]));
+  const signals: SharedTextSignal[] = [];
+  for (const { students, excerpt } of byHash.values()) {
+    if (students.length < 2) continue;
+    // Off the worksheet, not off a source.
+    if (students.length / submissions.length > TEMPLATE_SHARE) continue;
+    for (let i = 0; i < students.length; i++) {
+      for (let j = i + 1; j < students.length; j++) {
+        const [a, b] = [students[i], students[j]];
+        if (partnersOf.get(a)?.has(b) || partnersOf.get(b)?.has(a)) continue;
+        signals.push({ students: [a, b], excerpt, reason: SHARED_TEXT_REASON });
+      }
+    }
+  }
+  return signals;
 }

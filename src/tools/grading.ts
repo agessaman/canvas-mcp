@@ -86,10 +86,11 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
       anonymous: z.boolean().default(true).describe("Use pseudonyms for students. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true)"),
       scrubFirstNamesInBody: z.boolean().default(false).describe("Also redact bare first names from the roster in body text. Off by default, because course content is full of words that are also student names (a student called Henry would erase \"Prince Henry\"). Names on a \"Names:\" line are always redacted when anonymous."),
       includePartners: z.boolean().default(true).describe("Report classmates named on the work's \"Names:\"/\"Partner:\" line, with whether they submitted (default: true)"),
+      crossCheck: z.boolean().default(false).describe("With scanTemplates, look for whole sentences that turn up in two students' work where neither named the other as a partner. Reported under integrity_signals as prompts for the teacher to look at, never as findings — the usual explanation is a shared web source. Worksheet text and anything more than half the class wrote are excluded (default: false)"),
       scanTemplates: z.boolean().default(false).describe("With the queue, download one file per queued student to work out which version of the worksheet template each had, and return template_variants. Off by default because it costs a download per student; results are cached per attempt, and students already read in this session are not refetched.")
     },
     { readOnlyHint: true },
-    async ({ courseId, assignmentId, userId, userIds, include, queueLimit = DEFAULT_QUEUE_LIMIT, includeMaterials = true, anonymous = true, scrubFirstNamesInBody = false, includePartners = true, scanTemplates = false }: {
+    async ({ courseId, assignmentId, userId, userIds, include, queueLimit = DEFAULT_QUEUE_LIMIT, includeMaterials = true, anonymous = true, scrubFirstNamesInBody = false, includePartners = true, scanTemplates = false, crossCheck = false }: {
       courseId: string;
       assignmentId: string;
       userId?: string;
@@ -101,6 +102,7 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
       scrubFirstNamesInBody?: boolean;
       includePartners?: boolean;
       scanTemplates?: boolean;
+      crossCheck?: boolean;
     }) => {
       try {
         const students = [...(userId ? [userId] : []), ...(userIds ?? [])]
@@ -180,10 +182,16 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
             summary.queue_note = `Showing ${queueLimit} of ${all.length} students needing grading; raise queueLimit for the rest.`;
           }
           if (scanTemplates) {
-            const scan = await scanTemplateVariants(canvas, courseId, assignmentId, summary.queue, {
-              anonymous, maxFileMB: 25, roster: await getCourseRoster(canvas, courseId),
+            const { shared_text, ...scan } = await scanTemplateVariants(canvas, courseId, assignmentId, summary.queue, {
+              anonymous, maxFileMB: 25, roster: await getCourseRoster(canvas, courseId), crossCheck,
             });
             summary.template_scan = { ...scan, students: summary.queue.length };
+            if (shared_text?.length) {
+              summary.integrity_signals = shared_text;
+              summary.integrity_signals_note = "Prompts to look closer, never findings. Two students sharing a sentence most often means a shared web source; open the work before drawing any conclusion.";
+            }
+          } else if (crossCheck) {
+            summary.cross_check_note = "crossCheck needs scanTemplates: true, which is what reads the submissions.";
           }
           const variants = templateVariants(String(a.id ?? assignmentId));
           if (variants) {

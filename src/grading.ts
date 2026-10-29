@@ -19,10 +19,13 @@ import {
   noopRedactor,
 } from './nameRedaction.js';
 import {
+  SubmissionText,
   cachedScan,
+  directionsBlock,
   recordTemplateVariant,
   rememberScan,
   scanKey,
+  sharedTextSignals,
 } from './documentSignals.js';
 import { formatInZone, resolveCourseZone } from './courseTime.js';
 
@@ -84,17 +87,62 @@ interface FileFingerprint {
   bytes: number;
   chars: number;
   head: string;
+  /** Letters and digits only, so a PDF and a DOCX of one document match. */
+  normalized: string;
+  words: string[];
 }
 
 const FINGERPRINT_HEAD = 500;
+const SHINGLE = 5;
 
 function fingerprintOf(bytes: number, text: string): FileFingerprint {
-  return { bytes, chars: text.length, head: text.replace(/\s+/g, ' ').trim().slice(0, FINGERPRINT_HEAD) };
+  // Page markers are the extractor's furniture, not the student's words, and
+  // a PDF carries them where a DOCX does not — comparing with them in says
+  // two copies of one document are different work.
+  const content = text.replace(/\[Page \d+\][^\n]*/g, ' ');
+  return {
+    bytes,
+    chars: text.length,
+    head: text.replace(/\s+/g, ' ').trim().slice(0, FINGERPRINT_HEAD),
+    normalized: content.toLowerCase().replace(/[^a-z0-9]+/g, ''),
+    words: content.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean),
+  };
 }
 
 function sameWork(a: FileFingerprint[], b: FileFingerprint[]): boolean {
   if (a.length === 0 || a.length !== b.length) return false;
   return a.every((f, i) => f.chars === b[i].chars && f.head === b[i].head);
+}
+
+/** Runs of SHINGLE consecutive words, the unit similarity is measured in. */
+function shinglesOf(words: string[]): Set<string> {
+  const out = new Set<string>();
+  for (let i = 0; i + SHINGLE <= words.length; i++) out.add(words.slice(i, i + SHINGLE).join(' '));
+  return out;
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  if (a.size === 0 || b.size === 0) return 0;
+  let shared = 0;
+  for (const s of a) if (b.has(s)) shared++;
+  return shared / (a.size + b.size - shared);
+}
+
+/**
+ * How alike two sets of uploads are, ignoring the file format they arrived in.
+ * The same worksheet submitted by one partner as a PDF and the other as a
+ * DOCX is the same work, and comparing bytes or raw text said it was not.
+ */
+function textAgreement(a: FileFingerprint[], b: FileFingerprint[]): { same_text: boolean; text_similarity: number } {
+  const joinedA = a.map(f => f.normalized).join('');
+  const joinedB = b.map(f => f.normalized).join('');
+  const wordsA = a.flatMap(f => f.words);
+  const wordsB = b.flatMap(f => f.words);
+  return {
+    same_text: joinedA.length > 0 && joinedA === joinedB,
+    text_similarity: Number(jaccard(shinglesOf(wordsA), shinglesOf(wordsB)).toFixed(3)),
+  };
 }
 
 /**
@@ -279,10 +327,15 @@ export async function readSubmissionContent(
         submitted: !!theirs?.submitted_at,
         workflow_state: theirs?.workflow_state,
       };
-      const same = comparePartnerFiles
+      const agreement = comparePartnerFiles
         ? await comparePartnerWork(canvas, theirs, ownFingerprints, maxFileMB, options)
         : undefined;
-      if (same !== undefined) entry.same_file_hash = same;
+      if (agreement) {
+        entry.same_file_hash = agreement.same;
+        // Identical work in two formats: different bytes, same words.
+        entry.same_text = agreement.same_text;
+        entry.text_similarity = agreement.text_similarity;
+      }
       partners.push(entry);
     } catch {
       partners.push({
@@ -323,6 +376,9 @@ export async function readSubmissionContent(
     total_attempts: s.attempt,
     attempts: attemptSummaries,
     ...(partners.length ? { partners } : {}),
+    ...(includePartners && redactor.unresolvedPartners().length
+      ? { partner_unresolved: redactor.unresolvedPartners() }
+      : {}),
     ...(comments.length ? { comments } : {}),
     ...(warnings.length ? { warnings } : {}),
   };
@@ -342,15 +398,12 @@ async function comparePartnerWork(
   ownFingerprints: FileFingerprint[],
   maxFileMB: number,
   opts: ExtractOptions,
-): Promise<boolean | undefined> {
+): Promise<{ same: boolean; same_text: boolean; text_similarity: number } | undefined> {
   const attachments: any[] = theirSubmission?.attachments ?? [];
   if (attachments.length === 0 || ownFingerprints.length === 0) return undefined;
-  if (attachments.length !== ownFingerprints.length) return false;
-  // Unequal bytes cannot be the same file, and saying so costs no download.
-  if (attachments.every(a => typeof a.size === 'number')
-    && attachments.some((a, i) => a.size !== ownFingerprints[i].bytes)) {
-    return false;
-  }
+  // Byte equality used to end it here, but a partner who exported the same
+  // work to a different format has different bytes and the same text, so the
+  // files are read either way.
   const theirs: FileFingerprint[] = [];
   for (const att of attachments) {
     if (att.size && att.size > maxFileMB * 1024 * 1024) return undefined;
@@ -367,7 +420,7 @@ async function comparePartnerWork(
       return undefined;
     }
   }
-  return sameWork(ownFingerprints, theirs);
+  return { same: sameWork(ownFingerprints, theirs), ...textAgreement(ownFingerprints, theirs) };
 }
 
 /**
@@ -384,10 +437,12 @@ export async function scanTemplateVariants(
   courseId: string,
   assignmentId: string,
   queue: { user_id: any; attempt?: any }[],
-  options: { anonymous: boolean; maxFileMB: number; roster?: RosterMember[] },
-): Promise<{ scanned: number; skipped: number }> {
+  options: { anonymous: boolean; maxFileMB: number; roster?: RosterMember[]; crossCheck?: boolean },
+): Promise<{ scanned: number; skipped: number; shared_text?: ReturnType<typeof sharedTextSignals> }> {
   let count = 0;
   let skipped = 0;
+  // Only gathered when crossCheck is on; the downloads are the scan's anyway.
+  const texts: SubmissionText[] = [];
   // A header row is document text: on a worksheet whose first table row is the
   // name row, it carries names, and these go straight into the packet.
   const roster = options.anonymous ? (options.roster ?? await getCourseRoster(canvas, courseId)) : [];
@@ -400,7 +455,9 @@ export async function scanTemplateVariants(
     const userId = String(entry.user_id);
     const alias = options.anonymous ? DataAnonymizer.pseudonymFor(entry.user_id, courseId) : userId;
     const key = scanKey(String(assignmentId), userId, entry.attempt);
-    const already = cachedScan(key);
+    // The cache holds a fingerprint, not the text, so a cross-check has to
+    // read the file even where the template is already known.
+    const already = options.crossCheck ? undefined : cachedScan(key);
     if (already !== undefined) {
       if (already) recordTemplateVariant(String(assignmentId), alias, clean(already));
       else skipped++;
@@ -415,13 +472,28 @@ export async function scanTemplateVariants(
         continue;
       }
       const { data, contentType } = await canvas.downloadUrl(attachment.url);
-      const { summary } = await extractFile(
+      const { summary, blocks } = await extractFile(
         data,
         attachment.display_name || attachment.filename || 'file',
         attachment['content-type'] || attachment.content_type || contentType,
         { maxCharsPerFile: 20000, renderPdfPages: 'never', maxPdfPagesToRender: 0, ocr: false, integritySignals: false },
         new ImageBudget(0),
       );
+      if (options.crossCheck) {
+        // Redacted first: an excerpt from this text can reach the packet, and
+        // the same pass is what says who this student named as a partner.
+        const raw = blocks.filter(b => b.type === 'text').map(b => (b as any).text).join('\n');
+        const reader = options.anonymous
+          ? createRedactor({ roster, submitterId: userId })
+          : noopRedactor();
+        const redacted = reader.redact(raw);
+        texts.push({
+          student: alias,
+          text: redacted,
+          partners: new Set(reader.namedPartners().map(p => p.member.pseudonym)),
+          directions: directionsBlock(redacted, summary.template_headers)?.text,
+        });
+      }
       const fp = summary.template_fingerprint
         ? {
           template_fingerprint: summary.template_fingerprint,
@@ -441,7 +513,8 @@ export async function scanTemplateVariants(
       skipped++;
     }
   }
-  return { scanned: count, skipped };
+  const shared = options.crossCheck ? sharedTextSignals(texts) : undefined;
+  return { scanned: count, skipped, ...(shared && shared.length ? { shared_text: shared } : {}) };
 }
 
 // --- Rubrics ---

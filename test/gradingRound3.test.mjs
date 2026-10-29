@@ -186,18 +186,25 @@ test('fuzzyPartners: false leaves an ambiguous first name alone', async () => {
 
 // --- 3. one template, whatever it was exported as ---
 
-const DIRECTIONS = 'Part 1: Choose an explorer. Read the two sources provided. Answer in complete sentences.';
-const SHORTER = 'Part 1: Choose an explorer. Read the two sources provided.';
+// Long enough to wrap in a PDF, the way a real sheet's directions do, and
+// bulleted — a bullet glyph does not survive a PDF export intact.
+const DIRECTIONS = '\u25cf Choose an explorer from the list your teacher handed out. Read both of the primary'
+  + ' sources provided, and underline anything that tells you why the voyage was funded. Answer every'
+  + ' question in complete sentences, using evidence from the sources rather than from memory.';
+const SHORTER = '\u25cf Choose an explorer from the list your teacher handed out. Read both of the primary'
+  + ' sources provided, and underline anything that tells you why the voyage was funded.';
+const NAME_LINE = 'Names: ______________________ Period: ____';
 const HEADERS = ['Question', 'Evidence', 'Analysis'];
 
 const worksheetHtmlDoc = directions => Buffer.from(
   '<html><body><p>17.1 Worksheet</p>'
+  + `<p>${NAME_LINE}</p>`
   + `<p>${directions}</p>`
   + `<table><tr>${HEADERS.map(h => `<th>${h}</th>`).join('')}</tr><tr><td>1</td><td>a</td><td>b</td></tr></table>`
   + '</body></html>', 'utf-8');
 
 const worksheetPdfDoc = directions => makeTablePdf({
-  title: '17.1 Worksheet', directions, headers: HEADERS, rows: [['1', 'a', 'b']], pages: 1,
+  title: '17.1 Worksheet', nameLine: NAME_LINE, directions, headers: HEADERS, rows: [['1', 'a', 'b']], pages: 1,
 });
 
 async function fingerprintOf(bytes, filename, contentType) {
@@ -205,7 +212,7 @@ async function fingerprintOf(bytes, filename, contentType) {
     const { files, submissions } = oneFile(api.baseUrl, bytes, filename, contentType);
     api.setResponse(router({ baseUrl: api.baseUrl, files, submissions }));
     const file = headerOf(await readWork(api)).attempts[0].files[0];
-    return { template: file.template_fingerprint, directions: file.directions_fingerprint };
+    return { template: file.template_fingerprint, directions: file.directions_fingerprint, chars: file.directions_chars };
   });
 }
 
@@ -214,7 +221,9 @@ test('the same document exported as PDF and as a Word-style export fingerprints 
   const asDoc = await fingerprintOf(worksheetHtmlDoc(DIRECTIONS), 'w.html', 'text/html');
   assert.ok(asPdf.template, 'the PDF must have a fingerprint at all');
   assert.equal(asPdf.template, asDoc.template, 'one template must not split by file format');
-  assert.equal(asPdf.directions, asDoc.directions);
+  assert.equal(asPdf.directions, asDoc.directions, 'and the directions must hash the same in both');
+  assert.ok(asPdf.chars > 200, `expected a real directions region, got ${asPdf.chars} characters`);
+  assert.ok(asDoc.chars > 200, `expected a real directions region, got ${asDoc.chars} characters`);
 });
 
 test('cutting a sentence from the directions moves only the directions fingerprint', async () => {

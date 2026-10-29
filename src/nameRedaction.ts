@@ -54,6 +54,15 @@ export interface PartnerMatch {
   match: 'exact' | 'fuzzy';
 }
 
+/** Why a name on the name line was left as [name]. Names nobody. */
+export interface UnresolvedPartner {
+  /** Which token of the name line it was, counting from zero. */
+  token_index: number;
+  reason: 'no_candidates' | 'multiple_candidates' | 'other_section';
+  /** How many students fitted. Zero for no_candidates. */
+  candidates: number;
+}
+
 // A name label owns the rest of its line, up to one of these.
 const BOUNDARY_LABEL = /\b(?:period|date|class|hour|block)\b\s*[:\-]/i;
 // "Name:", "Names:", "Student Name:", "Partner:" at the start of a line or of
@@ -81,6 +90,11 @@ const INITIAL = /^\p{L}[.)]?$/u;
 // A value that is only underscores, dots or spaces: a blank to be filled in,
 // which in a table means the names are in the next cell.
 const EMPTY_VALUE = /^[\s_.\u2026|-]*$/;
+// How far a name line may run on past its own line. A wrapped surname is a few
+// characters; anything much longer is the document, not the name line.
+const MAX_NAME_SPAN = 300;
+// A heading that always ends the names and starts the worksheet proper.
+const DIRECTIONS_HEADING = /^\s*directions?\b/i;
 
 /** How far into the text a bare "Names:" is still read as a roster line. */
 export function nameZoneEnd(_text: string): number {
@@ -201,6 +215,8 @@ export interface Redactor {
   namedPartners(): PartnerMatch[];
   /** Anything the name-line pass wants the grader to know, drained per file. */
   takeNotes(): string[];
+  /** Name-line tokens that could not be tied to a student, and why. */
+  unresolvedPartners(): UnresolvedPartner[];
 }
 
 /** A redactor that leaves text exactly as it found it (anonymous: false). */
@@ -210,6 +226,7 @@ export function noopRedactor(): Redactor {
     takeCounts: () => ({ nameLine: 0, body: 0, unmatched: 0 }),
     namedPartners: () => [],
     takeNotes: () => [],
+    unresolvedPartners: () => [],
   };
 }
 
@@ -242,7 +259,11 @@ export function createRedactor(options: RedactorOptions): Redactor {
       && m.sectionIds.some(sid => submitter.sectionIds.includes(sid)))
     : [];
   const partners = new Map<string, PartnerMatch>();
+  const unresolved: UnresolvedPartner[] = [];
   const notes: string[] = [];
+  // Position within the current name line, so a report can point at which
+  // token failed without quoting it.
+  let tokenIndex = 0;
   let counts: RedactionCounts = { nameLine: 0, body: 0, unmatched: 0 };
 
   const record = (m: RosterMember, match: 'exact' | 'fuzzy' = 'exact') => {
@@ -269,11 +290,16 @@ export function createRedactor(options: RedactorOptions): Redactor {
    * only when exactly one classmate fits — zero or several is not a match, and
    * the count is reported without naming anybody.
    */
-  function matchPeer(tokens: string[], from: number): { member: RosterMember; length: number } | { candidates: number } | null {
+  function matchPeer(tokens: string[], from: number): { member: RosterMember; length: number } | { candidates: number } | { otherSection: number } | null {
     const first = loose(tokens[from] ?? '');
     if (first.length < 3) return null;
     let fits = peers.filter(m => m.first && loose(m.first) === first);
-    if (fits.length === 0) return null;
+    if (fits.length === 0) {
+      // Known to the course but not to this class: a real student, and still
+      // not a safe guess, so the distinction is reported rather than guessed at.
+      const elsewhere = roster.filter(m => m.userId !== submitterId && m.first && loose(m.first) === first);
+      return elsewhere.length ? { otherSection: elsewhere.length } : null;
+    }
     let length = 1;
     const nextRaw = (tokens[from + 1] ?? '').replace(/_/g, '');
     if (fits.length > 1 && INITIAL.test(nextRaw)) {
@@ -421,7 +447,13 @@ export function createRedactor(options: RedactorOptions): Redactor {
         counts.unmatched++;
         counts.nameLine++;
         if (peer && 'candidates' in peer) {
+          unresolved.push({ token_index: tokenIndex + i, reason: 'multiple_candidates', candidates: peer.candidates });
           notes.push(`A first name on the name line fits ${peer.candidates} students in this section; left as [name] rather than guessing.`);
+        } else if (peer && 'otherSection' in peer) {
+          unresolved.push({ token_index: tokenIndex + i, reason: 'other_section', candidates: peer.otherSection });
+          notes.push(`A first name on the name line matches ${peer.otherSection} student(s) in other sections only; left as [name].`);
+        } else {
+          unresolved.push({ token_index: tokenIndex + i, reason: 'no_candidates', candidates: 0 });
         }
       }
       i++;
@@ -433,10 +465,14 @@ export function createRedactor(options: RedactorOptions): Redactor {
     const stripped = value.replace(/_+/g, ' ');
     const pieces = stripped.split(/\s*(?:,|&|\+|;|\/|\band\b)\s*/i);
     const names: string[] = [];
+    // Counted within this name line, so the index points somewhere a teacher
+    // can actually look.
+    tokenIndex = 0;
     for (const piece of pieces) {
       for (const resolved of resolvePiece(piece)) {
         if (!names.includes(resolved) || resolved === '[name]') names.push(resolved);
       }
+      tokenIndex += piece.trim().split(/\s+/).filter(Boolean).length;
     }
     return names.join(', ');
   }
@@ -448,12 +484,12 @@ export function createRedactor(options: RedactorOptions): Redactor {
    * a table whose label and names are in neighbouring cells, which arrive as
    * separate lines. The caller then feeds the next line back as a value.
    */
-  function redactLine(line: string, inZone: boolean): { text: string; wantsValue: boolean } {
+  function redactLine(line: string, inZone: boolean): { text: string; openSpan: boolean } {
     const label = inZone ? NAME_LABEL_ANYWHERE : NAME_LABEL_ANCHORED;
     label.lastIndex = 0;
     let out = '';
     let idx = 0;
-    let wantsValue = false;
+    let openSpan = false;
     let m: RegExpExecArray | null;
     while ((m = label.exec(line)) !== null) {
       const labelStart = m.index;
@@ -471,13 +507,37 @@ export function createRedactor(options: RedactorOptions): Redactor {
       // or "Name: Avery   Period: 3" collapses into "Name: Student 1Period: 3".
       const trail = /[\s|]*$/.exec(value)?.[0] ?? '';
       out += redactNameValue(value) + trail;
-      wantsValue = EMPTY_VALUE.test(value) && !boundary;
+      // No stop label after the names on this line, so they may wrap onto the
+      // next one — whether the value here is blank (a table cell) or not.
+      openSpan = !boundary;
       idx = valueStart + value.length;
       label.lastIndex = idx;
     }
     out += redactBody(line.slice(idx));
-    return { text: out, wantsValue };
+    return { text: out, openSpan };
   }
+
+/**
+ * Whether the line after a name label is more of that name line.
+ *
+ * A PDF wraps: "Names: Jordan T, Casey Lee, Riley Park, Sam" then "ortega
+ * ______" on the next line, and stopping at the break left the surname in the
+ * output. So the span runs on — but it has to stop before it starts eating the
+ * worksheet, because every token inside a name span that matches nobody is
+ * blanked. A sentence is the signal that the names are over.
+ */
+function nameSpanVerdict(line: string): 'continue' | 'stop' | 'empty' {
+  const trimmed = line.trim();
+  if (!trimmed) return 'empty';
+  if (BOUNDARY_LABEL.test(trimmed) || DIRECTIONS_HEADING.test(trimmed)) return 'stop';
+  const words = trimmed.split(/\s+/).filter(w => /\p{L}/u.test(w));
+  // Underscores, dots, a rule: part of the blank being filled in, not an end.
+  if (words.length === 0) return 'empty';
+  // Punctuated prose, or a run of words too long to be a list of names.
+  if (/[.!?]$/.test(trimmed) && words.length >= 3) return 'stop';
+  if (words.length > 8) return 'stop';
+  return 'continue';
+}
 
   /** A whole line read as the value of a label on the line before it. */
   function redactValueLine(line: string): string {
@@ -495,20 +555,53 @@ export function createRedactor(options: RedactorOptions): Redactor {
       const zoneEnd = nameZoneEnd(text);
       const out: string[] = [];
       let offset = 0;
-      let takeNextAsValue = false;
-      for (const line of lines) {
-        if (takeNextAsValue && line.trim()) {
-          // The label was in the previous cell and its own cell was empty.
-          out.push(redactValueLine(line));
-          takeNextAsValue = false;
-        } else {
-          const { text: redacted, wantsValue } = redactLine(line, offset < zoneEnd);
-          out.push(redacted);
-          // A blank line between the two cells is still the same table row.
-          if (wantsValue) takeNextAsValue = true;
-          else if (line.trim()) takeNextAsValue = false;
-        }
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // The first pass both detects an open span and redacts, so its counts
+        // are rolled back if the line is redone as part of a longer span.
+        const before = { ...counts };
+        const first = redactLine(line, offset < zoneEnd);
         offset += line.length + 1;
+        if (!first.openSpan) {
+          out.push(first.text);
+          continue;
+        }
+        // The names ran to the end of the line with no stop label. Pull in the
+        // lines that are still part of them, then redact the whole span at
+        // once so a surname split across the break is still one name.
+        const extra: string[] = [];
+        let blanks = 0;
+        let spanChars = 0;
+        let j = i + 1;
+        for (; j < lines.length && spanChars < MAX_NAME_SPAN; j++) {
+          const verdict = nameSpanVerdict(lines[j]);
+          if (verdict === 'stop') break;
+          if (verdict === 'empty') {
+            // Two lines with nothing to read mean the name line is over.
+            if (++blanks >= 2) break;
+            extra.push(lines[j]);
+            continue;
+          }
+          blanks = 0;
+          extra.push(lines[j]);
+          spanChars += lines[j].trim().length;
+        }
+        // Trim trailing blanks back out of the span; they belong to the body.
+        while (extra.length && !extra[extra.length - 1].trim()) extra.pop();
+        if (extra.length === 0) {
+          out.push(first.text);
+          continue;
+        }
+        counts = before;
+        const joined = redactLine(`${line} ${extra.join(' ')}`, offset - line.length - 1 < zoneEnd);
+        out.push(joined.text);
+        // The consumed lines held names and fill-in rules, now accounted for
+        // on the line above. Keeping them as blanks preserves the line count.
+        for (let k = 0; k < extra.length; k++) {
+          out.push('');
+          offset += lines[i + 1 + k].length + 1;
+        }
+        i += extra.length;
       }
       return out.join('\n');
     },
@@ -524,6 +617,9 @@ export function createRedactor(options: RedactorOptions): Redactor {
       const taken = [...new Set(notes)];
       notes.length = 0;
       return taken;
+    },
+    unresolvedPartners(): UnresolvedPartner[] {
+      return unresolved;
     },
   };
 }

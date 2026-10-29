@@ -52,6 +52,9 @@ const child = spawn(process.execPath, [entry], {
     ...process.env,
     CANVAS_API_TOKEN: 'verify-token',
     CANVAS_BASE_URL: `http://127.0.0.1:${port}`,
+    // Its own pseudonym store: verifying a build must not write into the
+    // developer's real ~/.canvas-mcp map.
+    CANVAS_MCP_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'canvas-mcp-verify-')),
   },
   stdio: ['pipe', 'pipe', 'pipe'],
 });

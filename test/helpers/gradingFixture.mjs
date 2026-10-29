@@ -39,7 +39,7 @@ export function makeTextPdf(lines, padBytes = 0) {
  * an extractor. `pages` repeats the header row on every page, the way Google
  * Docs exports a table that spans pages.
  */
-export function makeTablePdf({ headers, rows = [], pages = 1, title = null, directions = null }) {
+export function makeTablePdf({ headers, rows = [], pages = 1, title = null, directions = null, nameLine = null }) {
   const columnX = headers.map((_, i) => 72 + i * 140);
   const pageContent = [];
   for (let page = 0; page < pages; page++) {
@@ -49,10 +49,19 @@ export function makeTablePdf({ headers, rows = [], pages = 1, title = null, dire
       ops.push(`1 0 0 1 72 ${y} Tm (${esc(title)}) Tj`);
       y -= 24;
     }
-    // The teacher's instructions, on their own line as a real export has them.
+    // The name line sits between the title and the directions, as on a sheet.
+    if (nameLine && page === 0) {
+      ops.push(`1 0 0 1 72 ${y} Tm (${esc(nameLine)}) Tj`);
+      y -= 20;
+    }
+    // The teacher's instructions, wrapped the way a real export wraps them —
+    // a PDF's text layer only carries what fits on the page.
     if (directions && page === 0) {
-      ops.push(`1 0 0 1 72 ${y} Tm (${esc(directions)}) Tj`);
-      y -= 24;
+      for (const wrapped of wrapText(directions, 70)) {
+        ops.push(`1 0 0 1 72 ${y} Tm (${esc(wrapped)}) Tj`);
+        y -= 14;
+      }
+      y -= 10;
     }
     // The header row, repeated on every page.
     headers.forEach((h, i) => ops.push(`1 0 0 1 ${columnX[i]} ${y} Tm (${esc(h)}) Tj`));
@@ -65,6 +74,22 @@ export function makeTablePdf({ headers, rows = [], pages = 1, title = null, dire
     pageContent.push(ops.join('\n'));
   }
   return buildPdf(pageContent);
+}
+
+/** Break a paragraph into page-width lines, as a PDF export does. */
+function wrapText(text, width) {
+  const lines = [];
+  let current = '';
+  for (const word of String(text).split(/\s+/)) {
+    if (current && (current + ' ' + word).length > width) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = current ? `${current} ${word}` : word;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
 }
 
 function esc(s) {
