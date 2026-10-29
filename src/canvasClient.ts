@@ -309,6 +309,11 @@ export class CanvasClient {
   async getCourse(courseId: string, params: any = {}) {
     return this.get(`/api/v1/courses/${courseId}`, params);
   }
+  // The course's account, for settings a course inherits rather than sets —
+  // the account time zone a grading packet falls back to.
+  async getAccount(accountId: string, params: any = {}) {
+    return this.get(`/api/v1/accounts/${accountId}`, params);
+  }
   // Course attributes: syllabus, settings, and publish state all live here.
   // The syllabus is a course attribute, NOT a wiki page, so the page tools
   // cannot reach it — and unlike a page it has no revision history.
@@ -737,6 +742,16 @@ export class CanvasClient {
   // group and link listings, which put/post's parent invalidation won't reach.
   private invalidateOutcomeLists(courseId: string): void {
     this.cache.invalidatePrefix(`/api/v1/courses/${courseId}/outcome_group`);
+  }
+
+  // --- Grading standards ---
+  // A course sees its own standards and every one its account chain defines,
+  // so the course-scoped path resolves an inherited standard's id too.
+  async getGradingStandard(courseId: string, standardId: string) {
+    return this.get(`/api/v1/courses/${courseId}/grading_standards/${standardId}`);
+  }
+  async listGradingStandards(courseId: string) {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/grading_standards`, { per_page: 100 });
   }
 
   // --- Students ---

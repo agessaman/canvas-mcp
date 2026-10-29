@@ -29,10 +29,17 @@ export async function withMockCanvas(run) {
       //
       // { __headers } adds response headers (a Link header, to paginate), and
       // { __text } answers with that string verbatim instead of JSON — a
-      // generated report is a CSV file, not an API response.
+      // generated report is a CSV file, not an API response. { __buffer }
+      // does the same with bytes, for a submitted file the server downloads
+      // and runs through its document extractor.
       const answer = respondWith({ url: req.url, body: parsed, method: req.method });
       const status = answer?.__status ?? 200;
       const extraHeaders = answer?.__headers ?? {};
+      if (Buffer.isBuffer(answer?.__buffer)) {
+        res.writeHead(status, { 'Content-Type': answer.__contentType ?? 'application/octet-stream', ...extraHeaders });
+        res.end(answer.__buffer);
+        return;
+      }
       if (typeof answer?.__text === 'string') {
         res.writeHead(status, { 'Content-Type': 'text/csv', ...extraHeaders });
         res.end(answer.__text);
@@ -84,7 +91,10 @@ export async function withMockCanvas(run) {
     const id = nextId++;
     const promise = new Promise((resolve, reject) => {
       pending.set(id, resolve);
-      setTimeout(() => reject(new Error(`timed out waiting for ${method}`)), 10000);
+      // Generous, because a document-extracting tool may shell out to the
+      // system PDF and OCR frameworks, which are slow to warm up.
+      const timer = setTimeout(() => reject(new Error(`timed out waiting for ${method}`)), 60000);
+      timer.unref?.();
     });
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
     return promise;

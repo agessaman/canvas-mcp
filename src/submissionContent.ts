@@ -4,6 +4,8 @@
 import { extractText, getDocumentProxy, renderPageAsImage } from 'unpdf';
 import mammoth from 'mammoth';
 import { isMac, macHeicToJpeg, macOcr, macPdfText } from './macNative.js';
+import { IntegritySignal, findIntegritySignals, fingerprintFromHtml } from './documentSignals.js';
+import type { RedactionCounts } from './nameRedaction.js';
 
 export type ContentBlock =
   | { type: 'text'; text: string }
@@ -16,6 +18,10 @@ export interface ExtractOptions {
   maxPdfPagesToRender: number;
   // Run Vision OCR on scanned pages and photos (macOS only)
   ocr: boolean;
+  // Read the first table's header row, to tell worksheet versions apart
+  templateFingerprint?: boolean;
+  // Flag copy/paste and chatbot artefacts worth a second look
+  integritySignals?: boolean;
 }
 
 export interface FileSummary {
@@ -29,6 +35,15 @@ export interface FileSummary {
   text_source?: 'pdfkit' | 'pdf.js';
   ocr_pages?: number[];
   note?: string;
+  // Set when a file needed @napi-rs/canvas and it wasn't installed, so the
+  // warning reaches the grader only on the calls it actually affected.
+  needs_canvas?: boolean;
+  // Prompts to look closer, never findings. See documentSignals.ts.
+  integrity_signals?: IntegritySignal[];
+  template_fingerprint?: string;
+  template_headers?: string;
+  // How much anonymization this file needed, and what it couldn't resolve.
+  redactions?: RedactionCounts;
 }
 
 // Shared across every file in one response so a stack of photos can't
@@ -63,10 +78,6 @@ function loadCanvas(): Promise<any | null> {
     canvasModule = import('@napi-rs/canvas').catch(() => null);
   }
   return canvasModule;
-}
-
-export async function canvasAvailable(): Promise<boolean> {
-  return (await loadCanvas()) !== null;
 }
 
 function extensionOf(filename: string): string {
@@ -131,7 +142,12 @@ export function htmlToText(html: string): string {
 
 // Downscale (and convert HEIC/TIFF/BMP where the decoder allows) to a JPEG
 // Claude can read. Returns null when the image can't be made usable.
-async function prepareImage(buf: Buffer, contentType: string, filename = ''): Promise<{ data: Buffer; mimeType: string } | null> {
+async function prepareImage(
+  buf: Buffer,
+  contentType: string,
+  filename = '',
+  flags?: { needsCanvas: boolean },
+): Promise<{ data: Buffer; mimeType: string } | null> {
   let ct = contentType.toLowerCase().split(';')[0].trim();
   if (ct === 'image/heic' || ct === 'image/heif' || /\.hei[cf]$/i.test(filename)) {
     const jpeg = await macHeicToJpeg(buf);
@@ -162,7 +178,21 @@ async function prepareImage(buf: Buffer, contentType: string, filename = ''): Pr
   if (DIRECT_IMAGE_TYPES.has(ct) && buf.length <= MAX_RAW_IMAGE_BYTES) {
     return { data: buf, mimeType: ct };
   }
+  // Too large to send as-is, or in a format only the decoder can open.
+  if (flags && !canvasLib) flags.needsCanvas = true;
   return null;
+}
+
+/** Attach the optional "look closer" fields, when the caller asked for them. */
+function addSignals(summary: FileSummary, text: string, opts: ExtractOptions, html?: string): void {
+  if (opts.integritySignals !== false) {
+    const signals = findIntegritySignals(text);
+    if (signals.length) summary.integrity_signals = signals;
+  }
+  if (opts.templateFingerprint !== false && html) {
+    const fp = fingerprintFromHtml(html);
+    if (fp) Object.assign(summary, fp);
+  }
 }
 
 async function extractPdf(buf: Buffer, filename: string, opts: ExtractOptions, budget: ImageBudget) {
@@ -187,9 +217,11 @@ async function extractPdf(buf: Buffer, filename: string, opts: ExtractOptions, b
     .filter(page => opts.renderPdfPages === 'always' || (opts.renderPdfPages === 'auto' && sparse.has(page)));
 
   const rendered: { page: number; data: Buffer; mimeType: string }[] = [];
+  let needsCanvas = false;
   if (toRender.length > 0) {
     const canvasLib = await loadCanvas();
     if (!canvasLib) {
+      needsCanvas = true;
       notes.push(`Pages ${toRender.join(', ')} were not rendered as images: install @napi-rs/canvas to enable page rendering.`);
     } else {
       for (const [idx, page] of toRender.entries()) {
@@ -258,8 +290,10 @@ async function extractPdf(buf: Buffer, filename: string, opts: ExtractOptions, b
     images: rendered.length,
     text_source: textSource,
     ...(ocrByPage.size ? { ocr_pages: [...ocrByPage.keys()] } : {}),
+    ...(needsCanvas ? { needs_canvas: true } : {}),
     ...(notes.length ? { note: notes.join(' ') } : {}),
   };
+  addSignals(summary, body, opts);
   return { summary, blocks };
 }
 
@@ -282,26 +316,42 @@ export async function extractFile(
         const result = await mammoth.extractRawText({ buffer: buf });
         const raw = result.value.replace(/\n{3,}/g, '\n\n').trim();
         const { text, truncated } = truncate(raw, opts.maxCharsPerFile);
-        return {
-          summary: { filename, kind, status: 'extracted', chars: raw.length, truncated, note: 'Images, drawings and comments inside the document are not included.' },
-          blocks: [{ type: 'text', text }],
-        };
+        // extractRawText flattens tables, so the header row that identifies a
+        // worksheet version needs the HTML conversion. Only the first table is
+        // read, and only when fingerprinting is on.
+        let html: string | undefined;
+        if (opts.templateFingerprint !== false) {
+          html = await mammoth.convertToHtml({ buffer: buf }).then(r => r.value).catch(() => undefined);
+        }
+        const summary: FileSummary = { filename, kind, status: 'extracted', chars: raw.length, truncated, note: 'Images, drawings and comments inside the document are not included.' };
+        addSignals(summary, raw, opts, html);
+        return { summary, blocks: [{ type: 'text', text }] };
       }
       case 'html':
       case 'text': {
         const decoded = buf.toString('utf-8');
         const raw = kind === 'html' ? htmlToText(decoded) : decoded;
         const { text, truncated } = truncate(raw, opts.maxCharsPerFile);
-        return { summary: { filename, kind, status: 'extracted', chars: raw.length, truncated }, blocks: [{ type: 'text', text }] };
+        const summary: FileSummary = { filename, kind, status: 'extracted', chars: raw.length, truncated };
+        addSignals(summary, raw, opts, kind === 'html' ? decoded : undefined);
+        return { summary, blocks: [{ type: 'text', text }] };
       }
       case 'image': {
         if (!budget.take()) {
           return { summary: { filename, kind, status: 'unsupported', note: 'Image limit for this response reached; request this attempt or file separately.' }, blocks: [] };
         }
-        const img = await prepareImage(buf, contentType, filename);
+        const flags = { needsCanvas: false };
+        const img = await prepareImage(buf, contentType, filename, flags);
         if (!img) {
           budget.remaining++;
-          return { summary: { filename, kind, status: 'unsupported', note: 'Image format could not be decoded (HEIC needs macOS; TIFF/BMP need @napi-rs/canvas) or is too large.' }, blocks: [] };
+          return {
+            summary: {
+              filename, kind, status: 'unsupported',
+              ...(flags.needsCanvas ? { needs_canvas: true } : {}),
+              note: 'Image format could not be decoded (HEIC needs macOS; TIFF/BMP need @napi-rs/canvas) or is too large.',
+            },
+            blocks: [],
+          };
         }
         const blocks: ContentBlock[] = [];
         const ocr = opts.ocr ? (await macOcr([img.data]))?.[0]?.trim() : undefined;
@@ -324,32 +374,84 @@ export async function extractFile(
   }
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// --- Reading one file for the document tools ---
+
+/** Extracted text is truncated here; the tool descriptions quote this number. */
+export const TOOL_TEXT_LIMIT = 60000;
+/** Above this, base64 is more context than any client can use. */
+export const TOOL_BASE64_LIMIT_BYTES = 5 * 1024 * 1024;
+
+export interface ToolFileContent {
+  kind: string;
+  content_encoding: 'text' | 'base64';
+  content?: string;
+  truncated?: boolean;
+  chars?: number;
+  pages?: number;
+  note?: string;
+  error?: string;
+  integrity_signals?: IntegritySignal[];
+  template_fingerprint?: string;
+}
+
+function asBase64(buf: Buffer, kind: string, note?: string): ToolFileContent {
+  if (buf.length > TOOL_BASE64_LIMIT_BYTES) {
+    return {
+      kind,
+      content_encoding: 'base64',
+      error: `File is ${(buf.length / 1048576).toFixed(1)} MB, over the ${(TOOL_BASE64_LIMIT_BYTES / 1048576).toFixed(0)} MB base64 limit. Call again without forceBase64 to get extracted text instead.`,
+      ...(note ? { note } : {}),
+    };
+  }
+  return { kind, content_encoding: 'base64', content: buf.toString('base64'), ...(note ? { note } : {}) };
 }
 
 /**
- * Build a replacer that swaps a student's real name (full name and each
- * part) for their pseudonym in extracted text. Best effort only: nicknames,
- * misspellings and names inside images are not caught.
+ * What the document tools hand back for one file: extracted text by default,
+ * base64 only when the caller asks for it or nothing can read the file.
+ * Images are not returned here — get-submission-content renders those.
  */
-export function buildNameScrubber(user: any, alias: string): (text: string) => string {
-  if (!user) return t => t;
-  const fulls = new Set<string>();
-  const parts = new Set<string>();
-  for (const field of [user.name, user.short_name, user.sortable_name]) {
-    if (typeof field !== 'string' || !field.trim()) continue;
-    const normalized = field.includes(',')
-      ? field.split(',').map((p: string) => p.trim()).reverse().join(' ')
-      : field.trim();
-    fulls.add(normalized);
-    for (const p of normalized.split(/[\s,]+/)) {
-      if (p.length >= 3) parts.add(p);
-    }
+export async function extractFileForTool(
+  buf: Buffer,
+  filename: string,
+  contentType: string,
+  options: { forceBase64?: boolean; maxChars?: number } = {},
+): Promise<ToolFileContent> {
+  const kind = classifyFile(filename, contentType);
+  const maxChars = options.maxChars ?? TOOL_TEXT_LIMIT;
+  if (options.forceBase64) return asBase64(buf, kind);
+
+  // No text to extract: hand back the bytes rather than an empty answer.
+  if (kind === 'image' || kind === 'media') {
+    return asBase64(buf, kind, `${kind === 'image' ? 'Images' : 'Media'} are returned as bytes here; use get-submission-content to read them.`);
   }
-  const terms = [...fulls, ...parts].sort((a, b) => b.length - a.length);
-  if (terms.length === 0) return t => t;
-  // Letter lookarounds rather than \b so "Smith_John_essay.pdf" still matches
-  const re = new RegExp(`(?<!\\p{L})(?:${terms.map(escapeRegExp).join('|')})(?!\\p{L})`, 'giu');
-  return text => text.replace(re, alias);
+
+  const { summary, blocks } = await extractFile(
+    buf, filename, contentType,
+    { maxCharsPerFile: maxChars, renderPdfPages: 'never', maxPdfPagesToRender: 0, ocr: false },
+    new ImageBudget(0),
+  );
+  const text = blocks.filter(b => b.type === 'text').map(b => (b as any).text).join('\n\n');
+  if (summary.status === 'unsupported' || summary.status === 'error' || !text.trim()) {
+    // Nothing readable came out, so send the bytes and say why.
+    return asBase64(buf, kind, summary.note ?? `No text could be extracted from this ${kind} file.`);
+  }
+  // A scan has a text layer in name only. These tools do not render or OCR,
+  // so say where that work can be done rather than returning page headers.
+  const note = summary.status === 'partial'
+    ? `${summary.note ? `${summary.note} ` : ''}Some pages have no text layer (a scan or handwriting). Use get-submission-content to read them as images, with OCR on macOS.`
+    : summary.note;
+  return {
+    kind,
+    content_encoding: 'text',
+    content: text,
+    ...(summary.truncated ? { truncated: true } : {}),
+    ...(summary.chars !== undefined ? { chars: summary.chars } : {}),
+    ...(summary.pages !== undefined ? { pages: summary.pages } : {}),
+    ...(note ? { note } : {}),
+    ...(summary.integrity_signals ? { integrity_signals: summary.integrity_signals } : {}),
+    // The fingerprint only; the header text itself is document text, and
+    // these tools have no name redaction to put it through.
+    ...(summary.template_fingerprint ? { template_fingerprint: summary.template_fingerprint } : {}),
+  };
 }
