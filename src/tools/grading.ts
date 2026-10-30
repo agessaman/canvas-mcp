@@ -17,7 +17,7 @@ import {
   scanTemplateVariants,
   sectionsFor,
 } from "../grading.js";
-import { resolvePreferences } from "../gradingPreferences.js";
+import { decisionOf, resolvePreferences } from "../gradingPreferences.js";
 import { SOURCE_CHECK_NOTE, checkAgainstSources, fetchSources } from "../sourceCheck.js";
 import { formatInZone, resolveCourseZone } from "../courseTime.js";
 import { templateVariants } from "../documentSignals.js";
@@ -90,6 +90,33 @@ async function linkedMaterials(canvas: CanvasClient, descriptionHtml: string, ma
   return { blocks, materials };
 }
 
+/**
+ * What about this assignment bears on whether comparing classmates' work is
+ * worth doing. Facts, not a recommendation: the teacher knows what they set,
+ * and this exists so they are not asked blind.
+ */
+function crossCheckContext(assignment: any, queue: { late?: boolean }[]): string[] {
+  const notes: string[] = [];
+  const description = htmlToText(assignment?.description ?? '');
+  if (assignment?.group_category_id) {
+    notes.push('Canvas has this set up as a group assignment, so students sharing text may be the intended thing.');
+  }
+  if (/\b(partner|partners|group|groups|with a classmate|together|pair up)\b/i.test(description)) {
+    notes.push('The description mentions working with a partner or a group, so shared text may be expected.');
+  }
+  if (/\b(your own words|individually|on your own|do not copy|no copying)\b/i.test(description)) {
+    notes.push('The description asks for individual work or for students\' own words.');
+  }
+  if ((assignment?.submission_types ?? []).some((t: string) => t === 'online_quiz')) {
+    notes.push('This is a quiz; shared answers to fixed questions are not evidence of anything.');
+  }
+  if (!notes.length) {
+    notes.push('Nothing in the assignment says either way — whether matching text would mean anything here is the teacher\'s to judge.');
+  }
+  notes.push(`${queue.length} student(s) are waiting to be graded.`);
+  return notes;
+}
+
 export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
   // Tool: get-grading-packet
   server.tool(
@@ -107,14 +134,14 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
       anonymous: z.boolean().default(true).describe("Use pseudonyms for students. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true)"),
       scrubFirstNamesInBody: z.boolean().default(false).describe("Also redact bare first names from the roster in body text. Off by default, because course content is full of words that are also student names (a student whose name is also a historical figure's would erase that figure). Names on a \"Names:\" line are always redacted when anonymous."),
       includePartners: z.boolean().default(true).describe("Report classmates named on the work's \"Names:\"/\"Partner:\" line, with whether they submitted (default: true)"),
-      crossCheck: z.boolean().default(true).describe(`Look for whole passages that turn up in two students' work where neither named the other as a partner, with each student's section and submission time so same-class partners can be told from cross-section copying. Reported under integrity_signals as prompts for the teacher to look at, never as findings. Worksheet text and anything more than half the class wrote are excluded. Needs the submissions read, so it turns scanTemplates on by itself for queues of ${AUTO_SCAN_QUEUE_LIMIT} or fewer (default: true)`),
+      crossCheck: z.boolean().optional().describe(`Look for whole passages that turn up in two students' work where neither named the other as a partner, with each student's section and submission time so same-class partners can be told from cross-section copying. Reported under integrity_signals as prompts for the teacher to look at, never as findings. Worksheet text and anything more than half the class wrote are excluded. Needs the submissions read, so it turns scanTemplates on by itself for queues of ${AUTO_SCAN_QUEUE_LIMIT} or fewer. LEAVE IT UNSET unless the teacher has said: whether it is worth running depends on what the assignment was, so an unset packet asks them for this assignment rather than deciding, and their answer is remembered against the assignment`),
       scanTemplates: z.boolean().optional().describe("With the queue, download one file per queued student to work out which version of the worksheet template each had, and return template_variants. Costs a download per student; results are cached per attempt, and students already read in this session are not refetched. Left unset, crossCheck turns this on for a queue that is not too long."),
       sourceCheck: z.boolean().default(false).describe("Fetch the web pages the assignment description links to and report the longest runs of consecutive words each student shares with them. Needs the submissions read (as scanTemplates does). Run lengths are reported; what counts as copying is the teacher's call (default: false)"),
       sourceUrls: z.array(z.string()).optional().describe("Extra pages to compare against, on top of the links in the description — the sources a worksheet names but does not link"),
       minMatchWords: z.number().int().min(8).max(100).optional().describe("Shortest run of consecutive words a source match has to reach to be reported. Leave it unset to report everything the detector can see and apply the teacher's own threshold when reading"),
     },
     { readOnlyHint: true },
-    async ({ courseId, assignmentId, userId, userIds, include, queueLimit = DEFAULT_QUEUE_LIMIT, includeMaterials = true, anonymous = true, scrubFirstNamesInBody = false, includePartners = true, scanTemplates, crossCheck = true, sourceCheck = false, sourceUrls, minMatchWords }: {
+    async ({ courseId, assignmentId, userId, userIds, include, queueLimit = DEFAULT_QUEUE_LIMIT, includeMaterials = true, anonymous = true, scrubFirstNamesInBody = false, includePartners = true, scanTemplates, crossCheck, sourceCheck = false, sourceUrls, minMatchWords }: {
       courseId: string;
       assignmentId: string;
       userId?: string;
@@ -149,7 +176,7 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
         const content: ContentBlock[] = [];
 
         if (wanted.has("instructions")) {
-          content.push({ type: "text", text: gradingInstructions(resolvePreferences(courseId)) });
+          content.push({ type: "text", text: gradingInstructions(resolvePreferences(courseId, assignmentId)) });
         }
 
         const summary: any = {};
@@ -247,11 +274,28 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
             summary.queue_note = `Showing ${queueLimit} of ${all.length} students needing grading; raise queueLimit for the rest.`;
           }
 
-          // A cross-check or a source check needs the submissions read, which
-          // is what the template scan already does. Rather than making the
-          // caller know that, the scan is turned on for them — but only for a
-          // queue short enough that the downloads are not a surprise.
-          const needsRead = crossCheck || sourceCheck;
+          // Whether classmates' work should be compared turns on what the
+          // assignment WAS. On partner research, matching text is the point.
+          // On a worksheet with one right answer it means nothing. On an essay
+          // it means everything. One answer cannot cover all three, so an
+          // unset packet asks the teacher about THIS assignment instead of
+          // deciding for them, and their answer is kept against the assignment
+          // so they are asked once.
+          const recorded = resolvePreferences(courseId, assignmentId).find(p => p.key === 'cross_check');
+          const wantsCrossCheck = crossCheck ?? decisionOf(recorded?.answer);
+          if (crossCheck === undefined && wantsCrossCheck === undefined) {
+            summary.cross_check_decision = {
+              question: "Compare these students' submissions against each other for passages they share?",
+              asked_because: recorded?.answer
+                ? `Nothing was decided: the answer on record for this assignment reads "${recorded.answer}", which is not a yes or a no — put it to the teacher again.`
+                : 'Nothing is on record for this assignment, and it is not a decision this server makes on its own.',
+              costs: `Reading ${summary.queue.length} submission(s), one download each.`,
+              worth_weighing: crossCheckContext(a, summary.queue),
+              examples: recorded?.examples ?? [],
+              then: `Call this tool again with crossCheck: true or false, and save the answer with set-grading-preferences (courseId ${courseId}, assignmentId ${assignmentId}, answers: { cross_check: "<what the teacher said>" }) so this assignment does not ask twice.`,
+            };
+          }
+          const needsRead = wantsCrossCheck === true || sourceCheck;
           let scan = scanTemplates;
           let autoScanNote: string | undefined;
           if (scan === undefined) {
@@ -259,13 +303,14 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
             if (needsRead && !scan) {
               autoScanNote = `The queue is longer than ${AUTO_SCAN_QUEUE_LIMIT} students, so the submissions were not read automatically. Pass scanTemplates: true to run the cross-check and source check over it.`;
             } else if (scan) {
-              // A download per student is not free, and the caller did not ask
-              // for it in so many words. Saying so is the difference between a
-              // cost that was chosen and one that was sprung.
-              autoScanNote = `${summary.queue.length} submission(s) were read so the cross-check${sourceCheck ? ' and source check' : ''} could run, which is a download each. Pass scanTemplates: false to skip it.`;
+              // A download per student is not free, and the caller asked for
+              // the check rather than for the reading. Saying so is the
+              // difference between a cost that was chosen and one that was
+              // sprung.
+              autoScanNote = `${summary.queue.length} submission(s) were read so the ${wantsCrossCheck === true ? 'cross-check' : 'source check'}${wantsCrossCheck === true && sourceCheck ? ' and source check' : ''} could run, which is a download each. Pass scanTemplates: false to skip it.`;
             }
           } else if (needsRead && !scan) {
-            autoScanNote = "crossCheck and sourceCheck need the submissions read; scanTemplates: false turned that off, so neither ran.";
+            autoScanNote = "The cross-check and source check need the submissions read; scanTemplates: false turned that off, so neither ran.";
           }
           if (autoScanNote) summary.scan_note = autoScanNote;
 
@@ -291,7 +336,7 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
               anonymous,
               maxFileMB: 25,
               roster,
-              crossCheck,
+              crossCheck: wantsCrossCheck === true,
               sections: sectionNames,
               sources: sources?.sources,
               minMatchWords,
@@ -305,8 +350,8 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
               summary.source_matches = source_matches;
               summary.source_matches_note = SOURCE_CHECK_NOTE;
             }
-          } else if (crossCheck && scanTemplates === false) {
-            summary.cross_check_note = "crossCheck needs the submissions read, which scanTemplates: false turned off.";
+          } else if (wantsCrossCheck === true && scanTemplates === false) {
+            summary.cross_check_note = "The cross-check needs the submissions read, which scanTemplates: false turned off.";
           }
 
           const variants = templateVariants(String(a.id ?? assignmentId));

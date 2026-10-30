@@ -260,18 +260,18 @@ test('scanTemplates reads the queue and summarises the versions in use', async (
     };
     api.setResponse(router({ baseUrl: api.baseUrl, files, submissions }));
 
-    // Reading the queue costs a download per student. The cross-check needs
-    // that, and runs by default, so the way out is explicit — and the packet
-    // says it happened either way.
+    // Reading the queue costs a download per student, and nothing reads it
+    // unasked: a bare packet puts the cross-check to the teacher instead.
+    const byDefault = JSON.parse(textOf(await api.callTool('get-grading-packet', {
+      courseId: '1', assignmentId: '777', include: ['queue'],
+    })).split('\n').find(l => l.startsWith('{')));
+    assert.equal(byDefault.template_variants, undefined, 'nothing is read before the teacher has said so');
+    assert.ok(byDefault.cross_check_decision, 'the packet asks rather than deciding');
+
     const optedOut = JSON.parse(textOf(await api.callTool('get-grading-packet', {
       courseId: '1', assignmentId: '777', include: ['queue'], scanTemplates: false,
     })).split('\n').find(l => l.startsWith('{')));
     assert.equal(optedOut.template_variants, undefined, 'scanTemplates: false reads nothing');
-
-    const byDefault = JSON.parse(textOf(await api.callTool('get-grading-packet', {
-      courseId: '1', assignmentId: '777', include: ['queue'],
-    })).split('\n').find(l => l.startsWith('{')));
-    assert.match(byDefault.scan_note, /download each/, 'a scan the caller did not ask for says so');
 
     const scanned = JSON.parse(textOf(await api.callTool('get-grading-packet', {
       courseId: '1', assignmentId: '777', include: ['queue'], scanTemplates: true,
@@ -282,6 +282,13 @@ test('scanTemplates reads the queue and summarises the versions in use', async (
     const sizes = scanned.template_variants.map(v => v.students.length).sort();
     assert.deepEqual(sizes, [1, 2], 'two students on one version, one on the other');
     assert.ok(scanned.template_variants.every(v => v.students.every(s => /^Student \d+$/.test(s))));
+
+    // Last, because the cross-check re-reads files the cache would otherwise
+    // have served, and that would make the scan count above meaningless.
+    const asked = JSON.parse(textOf(await api.callTool('get-grading-packet', {
+      courseId: '1', assignmentId: '777', include: ['queue'], crossCheck: true,
+    })).split('\n').find(l => l.startsWith('{')));
+    assert.match(asked.scan_note, /download each/, 'a scan the caller asked for still says what it cost');
   });
 });
 

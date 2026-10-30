@@ -423,7 +423,115 @@ test('the rules the description states to students are pulled out of it', async 
   });
 });
 
-// --- 9. nothing identifying ships in the instructions ---
+// --- 9. the cross-check is this assignment's decision, not the server's ---
+
+test('a bare packet asks about the cross-check instead of running it', async () => {
+  await withMockCanvas(async api => {
+    const { files, submissions } = classOf(api);
+    api.setResponse(router({ baseUrl: api.baseUrl, files, submissions }));
+    const summary = summaryOf(textOf(await api.callTool('get-grading-packet', {
+      courseId: '1', assignmentId: '777', include: ['queue'],
+    })));
+    assert.ok(summary.cross_check_decision, 'nothing is compared before the teacher says so');
+    assert.equal(summary.template_scan, undefined, 'and no submission is downloaded to do it');
+    assert.match(summary.cross_check_decision.costs, /one download each/);
+    assert.ok(summary.cross_check_decision.worth_weighing.length, 'the teacher is not asked blind');
+    assert.match(summary.cross_check_decision.then, /set-grading-preferences/);
+    assert.ok(summary.cross_check_decision.examples.length);
+  });
+});
+
+test('what the assignment is gets reported so the teacher can judge it', async () => {
+  await withMockCanvas(async api => {
+    const group = assignment({
+      description: '<p>Work with a partner. Divide the research between you.</p>',
+      group_category_id: 7,
+    });
+    api.setResponse(router({ baseUrl: api.baseUrl, assignment: group, submissions: { 101: submission(101) } }));
+    const summary = summaryOf(textOf(await api.callTool('get-grading-packet', {
+      courseId: '1', assignmentId: '777', include: ['queue'],
+    })));
+    const weighed = summary.cross_check_decision.worth_weighing.join(' ');
+    assert.match(weighed, /group assignment/);
+    assert.match(weighed, /partner or a group/);
+  });
+});
+
+test('an answer saved against the assignment settles it, and does not leak to the next one', async () => {
+  await withMockCanvas(async api => {
+    const { files, submissions } = classOf(api);
+    api.setResponse(router({ baseUrl: api.baseUrl, files, submissions }));
+
+    await api.callTool('set-grading-preferences', {
+      courseId: '1', assignmentId: '777', answers: { cross_check: 'yes, check this one' },
+    });
+    const settled = summaryOf(textOf(await api.callTool('get-grading-packet', {
+      courseId: '1', assignmentId: '777', include: ['queue'],
+    })));
+    assert.equal(settled.cross_check_decision, undefined, 'asked once, not twice');
+    assert.ok(settled.template_scan, 'and the answer is acted on');
+
+    const nextOne = summaryOf(textOf(await api.callTool('get-grading-packet', {
+      courseId: '1', assignmentId: '888', include: ['queue'],
+    })));
+    assert.ok(nextOne.cross_check_decision, 'a different assignment is a different question');
+  });
+});
+
+test('a no is remembered as a no, and nothing is read', async () => {
+  await withMockCanvas(async api => {
+    const { files, submissions } = classOf(api);
+    api.setResponse(router({ baseUrl: api.baseUrl, files, submissions }));
+    await api.callTool('set-grading-preferences', {
+      courseId: '1', assignmentId: '777', answers: { cross_check: 'no, they worked in groups' },
+    });
+    const summary = summaryOf(textOf(await api.callTool('get-grading-packet', {
+      courseId: '1', assignmentId: '777', include: ['queue'],
+    })));
+    assert.equal(summary.cross_check_decision, undefined);
+    assert.equal(summary.template_scan, undefined, 'a no costs no downloads');
+    assert.equal(summary.integrity_signals, undefined);
+  });
+});
+
+test('a per-assignment answer cannot be saved as a course-wide one', async () => {
+  await withMockCanvas(async api => {
+    api.setResponse(router({ baseUrl: api.baseUrl }));
+    const refused = await api.callTool('set-grading-preferences', {
+      courseId: '1', answers: { cross_check: 'yes' },
+    });
+    const text = textOf(refused);
+    assert.match(text, /decided per assignment/);
+    assert.match(text, /not what they would say about the next/);
+  });
+});
+
+test('an answer that is neither yes nor no is handed back, not guessed at', async () => {
+  await withMockCanvas(async api => {
+    const { files, submissions } = classOf(api);
+    api.setResponse(router({ baseUrl: api.baseUrl, files, submissions }));
+    await api.callTool('set-grading-preferences', {
+      courseId: '1', assignmentId: '777', answers: { cross_check: 'depends how the drafts came out' },
+    });
+    const summary = summaryOf(textOf(await api.callTool('get-grading-packet', {
+      courseId: '1', assignmentId: '777', include: ['queue'],
+    })));
+    assert.ok(summary.cross_check_decision, 'an unclear answer is not a decision');
+    assert.match(summary.cross_check_decision.asked_because, /depends how the drafts came out/);
+    assert.equal(summary.template_scan, undefined);
+  });
+});
+
+test('the packet still names the cross-check as something to settle', async () => {
+  await withMockCanvas(async api => {
+    const { files, submissions } = classOf(api);
+    api.setResponse(router({ baseUrl: api.baseUrl, files, submissions }));
+    const text = textOf(await api.callTool('get-grading-packet', { courseId: '1', assignmentId: '777' }));
+    assert.match(text, /cross_check: Should this assignment/);
+  });
+});
+
+// --- 10. nothing identifying ships in the instructions ---
 
 test('no school, course or student of anyone\'s is named in what the tools say', async () => {
   await withMockCanvas(async api => {

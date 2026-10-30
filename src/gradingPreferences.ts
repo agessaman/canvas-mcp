@@ -23,6 +23,13 @@ export interface PreferenceQuestion {
   needed_when: string;
   /** Phrasings other teachers have used. Examples to offer, never defaults. */
   examples: string[];
+  /**
+   * True where the answer belongs to one assignment rather than to the
+   * teacher. Whether classmates' work should be compared turns on what the
+   * assignment was — partner research, an individual essay, a lab everyone
+   * ran the same way — so an answer given once is the wrong shape for it.
+   */
+  per_assignment?: boolean;
 }
 
 // Each entry exists because this decision came up during grading and had no
@@ -83,6 +90,17 @@ export const PREFERENCE_QUESTIONS: PreferenceQuestion[] = [
     ],
   },
   {
+    key: 'cross_check',
+    question: 'Should this assignment\'s submissions be compared against each other for passages two students share?',
+    needed_when: 'Before the queue is read, because the comparison reads every submission — one download each.',
+    examples: [
+      'yes, check this one',
+      'no, they worked in groups and shared text is expected',
+      'no, individual work with a set answer; matching text means nothing here',
+    ],
+    per_assignment: true,
+  },
+  {
     key: 'shared_work',
     question: 'How do you treat students who handed in the same work — and does it change when they are in different class periods?',
     needed_when: 'As soon as two students\' work matches.',
@@ -129,7 +147,12 @@ interface Store {
   version: 1;
   defaults: Scope;
   courses: Record<string, Scope>;
+  /** Keyed "<courseId>:<assignmentId>", for answers that are one assignment's. */
+  assignments?: Record<string, Scope>;
 }
+
+export const assignmentKey = (courseId: unknown, assignmentId: unknown) =>
+  `${String(courseId)}:${String(assignmentId)}`;
 
 let store: Store | null = null;
 let storePath: string | null = null;
@@ -146,7 +169,7 @@ function resolvePath(): string {
 }
 
 function empty(): Store {
-  return { version: 1, defaults: {}, courses: {} };
+  return { version: 1, defaults: {}, courses: {}, assignments: {} };
 }
 
 function load(): Store {
@@ -154,6 +177,9 @@ function load(): Store {
   try {
     const parsed = JSON.parse(fs.readFileSync(resolvePath(), 'utf-8'));
     if (parsed?.version === 1 && parsed.defaults && parsed.courses) {
+      // A file written before assignment answers existed is still one this
+      // version understands; it simply has none.
+      parsed.assignments ??= {};
       store = parsed as Store;
       return store;
     }
@@ -188,48 +214,84 @@ export interface ResolvedPreference {
   /** The teacher's answer, or undefined when it has never been asked. */
   answer?: string;
   /** Where the answer came from, when there is one. */
-  scope?: 'course' | 'default';
+  scope?: 'assignment' | 'course' | 'default';
   recorded_at?: string;
   /** Phrasings to offer when asking. Examples, not defaults. */
   examples?: string[];
+  /** True where this is decided per assignment rather than once. */
+  per_assignment?: boolean;
 }
 
 /**
- * Every question, with the teacher's answer where one exists. A course answer
- * wins over a default one; a question with neither is returned unanswered so
- * the caller can see what is still open rather than inventing it.
+ * Every question, with the teacher's answer where one exists. The narrowest
+ * answer wins — this assignment's over this course's over the default — and a
+ * question with none is returned unanswered so the caller can see what is
+ * still open rather than inventing it.
+ *
+ * A per-assignment question only counts as answered when the answer is THIS
+ * assignment's. A teacher who said yes to comparing one worksheet's
+ * submissions has not said yes to every assignment they will ever set, and
+ * treating it that way is the same mistake as shipping a default.
  */
-export function resolvePreferences(courseId?: string): ResolvedPreference[] {
+export function resolvePreferences(courseId?: string, assignmentId?: string): ResolvedPreference[] {
   const data = load();
   const course = courseId ? (data.courses[String(courseId)] ?? {}) : {};
-  const keys = [...new Set([...PREFERENCE_KEYS, ...Object.keys(data.defaults), ...Object.keys(course)])];
+  const assignment = (courseId && assignmentId)
+    ? ((data.assignments ?? {})[assignmentKey(courseId, assignmentId)] ?? {})
+    : {};
+  const keys = [...new Set([
+    ...PREFERENCE_KEYS,
+    ...Object.keys(data.defaults),
+    ...Object.keys(course),
+    ...Object.keys(assignment),
+  ])];
   return keys.map(key => {
     const q = QUESTION_BY_KEY.get(key);
-    const hit = course[key] ?? data.defaults[key];
-    const scope: 'course' | 'default' | undefined = course[key] ? 'course' : (data.defaults[key] ? 'default' : undefined);
+    const perAssignment = !!q?.per_assignment;
+    const hit = perAssignment
+      ? assignment[key]
+      : (assignment[key] ?? course[key] ?? data.defaults[key]);
+    const scope: ResolvedPreference['scope'] | undefined = hit
+      ? (assignment[key] === hit ? 'assignment' : (course[key] === hit ? 'course' : 'default'))
+      : undefined;
     return {
       key,
       question: q?.question ?? `A practice recorded under "${key}".`,
       needed_when: q?.needed_when ?? 'Whenever it applies.',
+      ...(perAssignment ? { per_assignment: true } : {}),
       ...(hit ? { answer: hit.value, scope, recorded_at: hit.recorded_at } : {}),
       ...(hit ? {} : { examples: q?.examples ?? [] }),
     };
   });
 }
 
-export function unansweredPreferences(courseId?: string): ResolvedPreference[] {
-  return resolvePreferences(courseId).filter(p => p.answer === undefined);
+export function unansweredPreferences(courseId?: string, assignmentId?: string): ResolvedPreference[] {
+  return resolvePreferences(courseId, assignmentId).filter(p => p.answer === undefined);
+}
+
+/** Yes, no, or nothing said — for a question whose answer is a decision. */
+export function decisionOf(answer: string | undefined): boolean | undefined {
+  if (!answer) return undefined;
+  const text = answer.trim().toLowerCase();
+  if (/^(no|n|never|skip|don'?t|do not|off|false)\b/.test(text)) return false;
+  if (/^(yes|y|sure|ok|okay|please|do|run|on|true)\b/.test(text)) return true;
+  // Anything else is the teacher saying something this code should not be
+  // reducing to a boolean — report it and let the grader read it.
+  return undefined;
 }
 
 /** Record answers. A blank value forgets that answer rather than storing one. */
 export function setPreferences(
   answers: Record<string, string>,
   courseId?: string,
+  assignmentId?: string,
 ): { saved: string[]; cleared: string[]; warning?: string } {
   const data = load();
-  const scope: Scope = courseId
-    ? (data.courses[String(courseId)] ??= {})
-    : data.defaults;
+  const scope: Scope = (courseId && assignmentId)
+    ? ((data.assignments ??= {})[assignmentKey(courseId, assignmentId)] ??= {})
+    : courseId
+      ? (data.courses[String(courseId)] ??= {})
+      : data.defaults;
   const saved: string[] = [];
   const cleared: string[] = [];
   const now = new Date().toISOString();
@@ -247,9 +309,10 @@ export function setPreferences(
   return { saved, cleared, ...(readOnlyReason ? { warning: readOnlyReason } : {}) };
 }
 
-export function forgetPreferences(courseId?: string): void {
+export function forgetPreferences(courseId?: string, assignmentId?: string): void {
   const data = load();
-  if (courseId) delete data.courses[String(courseId)];
+  if (courseId && assignmentId) delete (data.assignments ?? {})[assignmentKey(courseId, assignmentId)];
+  else if (courseId) delete data.courses[String(courseId)];
   else data.defaults = {};
   persist();
 }

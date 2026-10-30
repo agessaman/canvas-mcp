@@ -27,6 +27,7 @@ import {
 } from "../grading.js";
 
 const KNOWN_KEYS = PREFERENCE_QUESTIONS.map(q => q.key).join(', ');
+const PER_ASSIGNMENT_KEYS = PREFERENCE_QUESTIONS.filter(q => q.per_assignment).map(q => q.key).join(', ');
 
 export function registerGradingPracticeTools(server: McpServer, canvas: CanvasClient) {
   // Tool: get-grading-preferences
@@ -35,21 +36,23 @@ export function registerGradingPracticeTools(server: McpServer, canvas: CanvasCl
     "Read the grading practices this teacher has recorded, and the questions that are still open. This server ships no grading preferences of its own: comment length, what copied work is worth, how long a run of copied words has to be, whether a criterion may go below its lowest rating and the rest are the teacher's to decide. Call this before drafting scores or feedback, ask the teacher about anything unanswered when it first matters, and save the answer with set-grading-preferences so no later session asks again.",
     {
       courseId: z.string().optional().describe("Read the practices for one course, falling back to the teacher's defaults where the course says nothing. Omit for the defaults alone"),
+      assignmentId: z.string().optional().describe("With courseId, also read the answers recorded against this assignment. Needed for the questions marked per_assignment, which are only ever answered for one assignment at a time"),
       unansweredOnly: z.boolean().default(false).describe("Return only the questions with no answer yet (default: false)"),
     },
     { readOnlyHint: true },
-    async ({ courseId, unansweredOnly = false }: { courseId?: string; unansweredOnly?: boolean }) => {
-      const preferences = unansweredOnly ? unansweredPreferences(courseId) : resolvePreferences(courseId);
+    async ({ courseId, assignmentId, unansweredOnly = false }: { courseId?: string; assignmentId?: string; unansweredOnly?: boolean }) => {
+      const preferences = unansweredOnly ? unansweredPreferences(courseId, assignmentId) : resolvePreferences(courseId, assignmentId);
       const open = preferences.filter(p => p.answer === undefined).length;
       return {
         content: [{
           type: "text",
           text: JSON.stringify({
             ...(courseId ? { course_id: courseId } : {}),
+            ...(assignmentId ? { assignment_id: assignmentId } : {}),
             preferences,
             open_questions: open,
             note: open
-              ? "Ask about an open question at the moment it matters — one short question, with the examples as options the teacher can pick from or talk past — then record the answer. Never fill one in by guessing, and never carry an answer over from another teacher or another server."
+              ? "Ask about an open question at the moment it matters — one short question, with the examples as options the teacher can pick from or talk past — then record the answer. A question marked per_assignment is settled for one assignment only: an answer given for last week's worksheet says nothing about this one, so ask again and save it with that assignment's id. Never fill one in by guessing, and never carry an answer over from another teacher or another server."
               : "Everything on record. Apply these without re-asking unless the teacher reopens one.",
             stored_at: preferencesStorePath(),
           }),
@@ -61,25 +64,41 @@ export function registerGradingPracticeTools(server: McpServer, canvas: CanvasCl
   // Tool: set-grading-preferences
   server.tool(
     "set-grading-preferences",
-    `Record how this teacher grades, in their own words, so later sessions apply it instead of asking again. Save an answer only after the teacher has given it — never a guess, an inference from one assignment, or a default. Known keys: ${KNOWN_KEYS}. Any other key is stored too, for a practice this list does not cover. Pass a course id to record something that holds for one course only; without it the answer becomes the teacher's default. An empty value forgets that answer.`,
+    `Record how this teacher grades, in their own words, so later sessions apply it instead of asking again. Save an answer only after the teacher has given it — never a guess, an inference from one assignment, or a default. Known keys: ${KNOWN_KEYS}. Any other key is stored too, for a practice this list does not cover. Pass a course id to record something that holds for one course only; without it the answer becomes the teacher's default. Pass a course id AND an assignment id for a decision that belongs to one assignment — ${PER_ASSIGNMENT_KEYS} are only ever saved that way, because what the teacher said about one assignment is not what they would say about the next. An empty value forgets that answer.`,
     {
       answers: z.record(z.string()).describe(`The teacher's answers, keyed by practice. Known keys: ${KNOWN_KEYS}. Values are the teacher's own words, not a code — "two or three sentences: one strength, the problem named, one next step" rather than "brief"`),
       courseId: z.string().optional().describe("Record these for one course only. Omit to record them as the teacher's default across courses"),
+      assignmentId: z.string().optional().describe("With courseId, record these against this assignment alone. Required for the questions marked per_assignment, such as cross_check — an answer about one assignment is not an answer about the next"),
     },
     { destructiveHint: false },
-    async ({ answers, courseId }: { answers: Record<string, string>; courseId?: string }) => {
+    async ({ answers, courseId, assignmentId }: { answers: Record<string, string>; courseId?: string; assignmentId?: string }) => {
       if (!answers || Object.keys(answers).length === 0) {
         throw new Error("Nothing to record: pass at least one answer.");
       }
-      const result = setPreferences(answers, courseId);
+      if (assignmentId && !courseId) {
+        throw new Error("assignmentId needs courseId: an assignment is only identified within its course.");
+      }
+      // A per-assignment answer saved at a wider scope would never be read
+      // back, and would look recorded while the question kept being asked.
+      const perAssignment = PREFERENCE_QUESTIONS.filter(q => q.per_assignment).map(q => q.key);
+      const misplaced = Object.keys(answers).filter(k => perAssignment.includes(k) && !assignmentId);
+      if (misplaced.length) {
+        throw new Error(
+          `${misplaced.join(', ')} ${misplaced.length === 1 ? 'is' : 'are'} decided per assignment, so the answer has to be saved with a courseId and an assignmentId. `
+          + 'What the teacher said about one assignment is not what they would say about the next.'
+        );
+      }
+      const result = setPreferences(answers, courseId, assignmentId);
       return {
         content: [{
           type: "text",
           text: JSON.stringify({
-            ...(courseId ? { course_id: courseId, scope: 'course' } : { scope: 'default' }),
+            ...(assignmentId
+              ? { course_id: courseId, assignment_id: assignmentId, scope: 'assignment' }
+              : courseId ? { course_id: courseId, scope: 'course' } : { scope: 'default' }),
             saved: result.saved,
             ...(result.cleared.length ? { cleared: result.cleared } : {}),
-            still_open: unansweredPreferences(courseId).map(p => p.key),
+            still_open: unansweredPreferences(courseId, assignmentId).map(p => p.key),
             ...(result.warning ? { warning: result.warning } : {}),
             stored_at: preferencesStorePath(),
           }),
