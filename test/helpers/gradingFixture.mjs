@@ -148,6 +148,13 @@ export const ROSTER = [
 ];
 
 /** Every real name in the roster, for "did anything leak?" assertions. */
+// Two invented class periods, so a match between two students can say whether
+// they sit in the same room.
+export const SECTIONS = [
+  { id: 1, name: 'Period 1' },
+  { id: 2, name: 'Period 2' },
+];
+
 export const REAL_NAMES = ROSTER.flatMap(u => u.name.split(' '));
 
 export const RUBRIC = [
@@ -250,7 +257,7 @@ export function attachment(baseUrl, id, filename, size, contentType = 'applicati
  * Anything unrouted comes back as an empty object, which is what an unused
  * Canvas endpoint looks like to this server.
  */
-export function router({ baseUrl, files = {}, assignment: a = assignment(), course: c = course(), submissions = {}, queue = null, gradingStandard = null, roster = ROSTER }) {
+export function router({ baseUrl, files = {}, assignment: a = assignment(), course: c = course(), submissions = {}, queue = null, gradingStandard = null, roster = ROSTER, sections = SECTIONS, latePolicy = null }) {
   return ({ url, method }) => {
     const path = url.split('?')[0];
     const download = /^\/download\/(\d+)$/.exec(path);
@@ -261,6 +268,7 @@ export function router({ baseUrl, files = {}, assignment: a = assignment(), cour
         : { __status: 404, __body: { errors: [{ message: 'no such file' }] } };
     }
     if (/^\/api\/v1\/courses\/\d+\/users$/.test(path)) return roster;
+    if (/^\/api\/v1\/courses\/\d+\/sections$/.test(path)) return sections;
     if (/^\/api\/v1\/courses\/\d+\/grading_standards\/\d+$/.test(path)) return gradingStandard ?? { __status: 404, __body: { errors: [] } };
     if (/^\/api\/v1\/courses\/\d+\/assignments\/\d+\/submissions\/\d+$/.test(path)) {
       const uid = path.split('/').pop();
@@ -270,6 +278,7 @@ export function router({ baseUrl, files = {}, assignment: a = assignment(), cour
       return queue ?? Object.values(submissions);
     }
     if (/^\/api\/v1\/courses\/\d+\/assignments\/\d+$/.test(path)) return a;
+    if (/^\/api\/v1\/courses\/\d+\/late_policy$/.test(path)) return latePolicy ?? { __status: 404, __body: { errors: [] } };
     if (/^\/api\/v1\/accounts\/\d+$/.test(path)) return { id: 9, default_time_zone: 'America/New_York' };
     if (/^\/api\/v1\/courses\/\d+$/.test(path)) return c;
     if (/^\/api\/v1\/files\/\d+$/.test(path)) {

@@ -36,7 +36,7 @@ test('an override must target students or a section, never both', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('create-assignment-override', {
-      courseId: '18473', assignmentId: '371566',
+      courseId: '202020', assignmentId: '371566',
       studentIds: ['6199'], sectionId: '42', dueAt: '2026-09-20T23:59:00Z',
     });
     // Canvas would accept this and silently use only the most specific target.
@@ -48,7 +48,7 @@ test('an override with no dates is refused rather than created as a no-op', asyn
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('create-assignment-override', {
-      courseId: '18473', assignmentId: '371566', studentIds: ['6199'],
+      courseId: '202020', assignmentId: '371566', studentIds: ['6199'],
     });
     assert.match(JSON.stringify(result), /at least one of dueAt, unlockAt or lockAt/);
   });
@@ -58,7 +58,7 @@ test('a student-targeted override always carries a title, which Canvas requires'
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     await canvas.callTool('create-assignment-override', {
-      courseId: '18473', assignmentId: '371566',
+      courseId: '202020', assignmentId: '371566',
       studentIds: ['6199'], dueAt: '2026-09-20T23:59:00Z',
     });
     const sent = canvas.lastRequest().body.assignment_override;
@@ -76,7 +76,7 @@ test('a student Canvas silently dropped is reported as having no accommodation',
       distort: override => ({ ...override, student_ids: ['6199'] }),
     }));
     const result = await canvas.callTool('create-assignment-override', {
-      courseId: '18473', assignmentId: '371566',
+      courseId: '202020', assignmentId: '371566',
       studentIds: ['6199', '9999'], dueAt: '2026-09-20T23:59:00Z',
     });
     const text = canvas.textOf(result);
@@ -92,7 +92,7 @@ test('a due date Canvas stored differently is reported', async () => {
       distort: override => ({ ...override, due_at: '2026-01-01T00:00:00Z' }),
     }));
     const result = await canvas.callTool('create-assignment-override', {
-      courseId: '18473', assignmentId: '371566',
+      courseId: '202020', assignmentId: '371566',
       sectionId: '42', dueAt: '2026-09-20T23:59:00Z',
     });
     assert.match(canvas.textOf(result), /WARNING[\s\S]*due_at/);
@@ -106,7 +106,7 @@ test('"only visible to overrides" is surfaced, because it hides the assignment',
       overrides: [{ id: 1, title: 'IEP', student_ids: [6199], due_at: '2026-09-20T23:59:00Z' }],
     }));
     const result = await canvas.callTool('list-assignment-overrides', {
-      courseId: '18473', assignmentId: '371566',
+      courseId: '202020', assignmentId: '371566',
     });
     const text = canvas.textOf(result);
     assert.match(text, /WARNING/);
@@ -118,7 +118,7 @@ test('with no overrides, the base due date is stated plainly', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('list-assignment-overrides', {
-      courseId: '18473', assignmentId: '371566',
+      courseId: '202020', assignmentId: '371566',
     });
     assert.match(canvas.textOf(result), /No overrides/);
     assert.match(canvas.textOf(result), /2026-09-10/);
@@ -133,7 +133,7 @@ test('extend-due-date reuses an override covering exactly those students', async
       overrides: [{ id: 55, title: 'IEP', student_ids: [6199], due_at: '2026-09-15T23:59:00Z' }],
     }));
     const result = await canvas.callTool('extend-due-date', {
-      courseId: '18473', assignmentId: '371566',
+      courseId: '202020', assignmentId: '371566',
       studentIds: ['6199'], dueAt: '2026-09-25T23:59:00Z',
     });
     const write = canvas.requests.find(r => r.method === 'PUT');
@@ -150,7 +150,7 @@ test('extend-due-date creates a new override when nothing covers those students'
       overrides: [{ id: 55, title: 'Other', student_ids: [1234], due_at: '2026-09-15T23:59:00Z' }],
     }));
     await canvas.callTool('extend-due-date', {
-      courseId: '18473', assignmentId: '371566',
+      courseId: '202020', assignmentId: '371566',
       studentIds: ['6199'], dueAt: '2026-09-25T23:59:00Z',
     });
     const write = canvas.requests.find(r => r.method === 'POST');
@@ -166,7 +166,7 @@ test('extend-due-date refuses to move a deadline for students it was not given',
       overrides: [{ id: 55, title: 'Group ext', student_ids: [6199, 1234], due_at: '2026-09-15T23:59:00Z' }],
     }));
     const result = await canvas.callTool('extend-due-date', {
-      courseId: '18473', assignmentId: '371566',
+      courseId: '202020', assignmentId: '371566',
       studentIds: ['6199'], dueAt: '2026-09-25T23:59:00Z',
     });
     assert.match(JSON.stringify(result), /already share an override/);
@@ -183,7 +183,7 @@ test('an overlapping section override is pointed out', async () => {
       overrides: [{ id: 60, title: 'Extra Time', course_section_id: 42, due_at: '2026-09-30T23:59:00Z' }],
     }));
     const result = await canvas.callTool('extend-due-date', {
-      courseId: '18473', assignmentId: '371566',
+      courseId: '202020', assignmentId: '371566',
       studentIds: ['6199'], dueAt: '2026-09-25T23:59:00Z',
     });
     const text = canvas.textOf(result);
@@ -202,7 +202,7 @@ test('the base due date comes from all_dates, not the assignment due_at', async 
       overrides: [{ id: 55, title: 'IEP', student_ids: [6199], due_at: '2026-09-25T23:59:00Z' }],
     }));
     const result = await canvas.callTool('list-assignment-overrides', {
-      courseId: '18473', assignmentId: '371566',
+      courseId: '202020', assignmentId: '371566',
     });
     const text = canvas.textOf(result);
 
@@ -242,12 +242,12 @@ test('an override write drops the cached assignments listing the due dates come 
       return { id: 371870, name: 'MCP Late Policy Probe', due_at: dueAt, points_possible: 10 };
     });
 
-    await canvas.callTool('list-missing-submissions', { courseId: '18473' });
+    await canvas.callTool('list-missing-submissions', { courseId: '202020' });
     await canvas.callTool('create-assignment-override', {
-      courseId: '18473', assignmentId: '371870',
+      courseId: '202020', assignmentId: '371870',
       studentIds: ['6199'], dueAt: '2026-08-20T23:59:00Z',
     });
-    const after = await canvas.callTool('list-missing-submissions', { courseId: '18473' });
+    const after = await canvas.callTool('list-missing-submissions', { courseId: '202020' });
 
     // Served from cache this still says 2026-08-01, and the report contradicts
     // itself: work flagged missing against a deadline that has not passed.

@@ -68,6 +68,9 @@ export async function withMockCanvas(run, { stateDir: callerStateDir } = {}) {
       CANVAS_API_TOKEN: 'test-token',
       CANVAS_BASE_URL: `http://127.0.0.1:${port}`,
       CANVAS_MCP_STATE_DIR: stateDir,
+      // The mock source pages a grading test serves run on loopback, which the
+      // source check refuses by default.
+      CANVAS_MCP_ALLOW_LOCAL_SOURCES: '1',
     },
     stdio: ['pipe', 'pipe', 'ignore'],
   });

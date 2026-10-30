@@ -185,7 +185,7 @@ export function buildItemEntry(input: BuildItemInput): Record<string, any> {
       }
 
       // This shape is copied from a matching question authored in the Canvas UI
-      // and read back with get-new-quiz-item (course 18473, item 9092). Do not
+      // and read back with get-new-quiz-item (course 202020, item 9092). Do not
       // "improve" it from the API appendix — an earlier version derived that way
       // stored and read back perfectly while making the Canvas editor throw
       // "React error #31: Objects are not valid as a React child", which takes

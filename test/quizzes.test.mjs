@@ -28,7 +28,7 @@ test('a time limit is sent in minutes under quiz[time_limit]', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(echoQuiz());
     const result = await canvas.callTool('create-quiz', {
-      courseId: '18473', title: 'Timed', time_limit: 60,
+      courseId: '202020', title: 'Timed', time_limit: 60,
     });
 
     const write = canvas.requests.find(r => r.method === 'POST');
@@ -41,7 +41,7 @@ test('0 clears the time limit by sending null, not 0', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(echoQuiz({ time_limit: null }));
     const result = await canvas.callTool('update-quiz', {
-      courseId: '18473', quizId: '111372', time_limit: 0,
+      courseId: '202020', quizId: '111372', time_limit: 0,
     });
 
     const write = canvas.requests.find(r => r.method === 'PUT');
@@ -56,7 +56,7 @@ test('an omitted time limit is not sent at all', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(echoQuiz());
     const result = await canvas.callTool('update-quiz', {
-      courseId: '18473', quizId: '111372', title: 'Renamed',
+      courseId: '202020', quizId: '111372', title: 'Renamed',
     });
 
     const write = canvas.requests.find(r => r.method === 'PUT');
@@ -71,7 +71,7 @@ test('a time limit Canvas did not store is reported, not assumed', async () => {
     // Gotcha 11: Canvas answers 200 and drops what it does not support.
     canvas.setResponse(echoQuiz({ time_limit: null }));
     const result = await canvas.callTool('create-quiz', {
-      courseId: '18473', title: 'Timed', time_limit: 60,
+      courseId: '202020', title: 'Timed', time_limit: 60,
     });
 
     const text = canvas.textOf(result);
@@ -86,7 +86,7 @@ test('no time-limit warning is emitted when none was requested', async () => {
     // call that never mentioned one — the update-syllabus lesson (gotcha 16).
     canvas.setResponse(echoQuiz({ time_limit: 30 }));
     const result = await canvas.callTool('update-quiz', {
-      courseId: '18473', quizId: '111372', title: 'Renamed',
+      courseId: '202020', quizId: '111372', title: 'Renamed',
     });
 
     assert.doesNotMatch(canvas.textOf(result), /WARNING/);
@@ -97,7 +97,7 @@ test('a non-Item entryType is refused before Canvas sees it', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: '9300', entry_type: 'Item' }));
     const result = await canvas.callTool('create-new-quiz-item', {
-      courseId: '18473', assignmentId: '371566', entryType: 'Stimulus',
+      courseId: '202020', assignmentId: '371566', entryType: 'Stimulus',
       interactionType: 'essay', body: 'A short passage.',
     });
 
@@ -116,7 +116,7 @@ test('attaching a question to a stimulus is refused on create when the private A
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: '9320', entry_type: 'Item', stimulus_quiz_entry_id: '' }));
     const result = await canvas.callTool('create-new-quiz-item', {
-      courseId: '18473', assignmentId: '371872',
+      courseId: '202020', assignmentId: '371872',
       interactionType: 'essay', body: 'A question about the passage.',
       stimulusQuizEntryId: '9307',
     });
@@ -132,7 +132,7 @@ test('the same attach is refused on update when the private API is off', async (
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: '9310', stimulus_quiz_entry_id: '' }));
     const result = await canvas.callTool('update-new-quiz-item', {
-      courseId: '18473', assignmentId: '371872', itemId: '9310',
+      courseId: '202020', assignmentId: '371872', itemId: '9310',
       stimulusQuizEntryId: '9307',
     });
 
@@ -165,7 +165,7 @@ test("an empty access code clears it by sending null, as time_limit does", async
   await withMockCanvas(async canvas => {
     canvas.setResponse(echoQuiz({ access_code: null }));
     await canvas.callTool('update-quiz', {
-      courseId: '18473', quizId: '111372', access_code: '',
+      courseId: '202020', quizId: '111372', access_code: '',
     });
 
     const write = canvas.requests.find(r => r.method === 'PUT');
@@ -177,13 +177,13 @@ test("an access code is sent as given, and an omitted one is not sent", async ()
   await withMockCanvas(async canvas => {
     canvas.setResponse(echoQuiz());
     await canvas.callTool('update-quiz', {
-      courseId: '18473', quizId: '111372', access_code: 'letmein',
+      courseId: '202020', quizId: '111372', access_code: 'letmein',
     });
     let write = canvas.requests.find(r => r.method === 'PUT');
     assert.equal(write.body.quiz.access_code, 'letmein');
 
     canvas.requests.length = 0;
-    await canvas.callTool('update-quiz', { courseId: '18473', quizId: '111372', title: 'x' });
+    await canvas.callTool('update-quiz', { courseId: '202020', quizId: '111372', title: 'x' });
     write = canvas.requests.find(r => r.method === 'PUT');
     // Sending null on a rename would strip a quiz's password.
     assert.ok(!('access_code' in write.body.quiz));
@@ -197,7 +197,7 @@ test('cant_go_back without one-question-at-a-time is refused, not sent', async (
   await withMockCanvas(async canvas => {
     canvas.setResponse(echoQuiz());
     const result = await canvas.callTool('create-quiz', {
-      courseId: '18473', title: 'Exam', cant_go_back: true,
+      courseId: '202020', title: 'Exam', cant_go_back: true,
     });
 
     assert.ok(result.isError);
@@ -210,7 +210,7 @@ test('cant_go_back is allowed when the same call turns one-at-a-time on', async 
   await withMockCanvas(async canvas => {
     canvas.setResponse(echoQuiz());
     const result = await canvas.callTool('create-quiz', {
-      courseId: '18473', title: 'Exam',
+      courseId: '202020', title: 'Exam',
       cant_go_back: true, one_question_at_a_time: true,
     });
 
@@ -230,7 +230,7 @@ test('cant_go_back is allowed when the quiz already has one-at-a-time on', async
         ? { id: 111372, one_question_at_a_time: true }
         : echoQuiz()({ body: { quiz: { cant_go_back: true } } }));
     const result = await canvas.callTool('update-quiz', {
-      courseId: '18473', quizId: '111372', cant_go_back: true,
+      courseId: '202020', quizId: '111372', cant_go_back: true,
     });
 
     assert.ok(!result.isError, canvas.textOf(result));

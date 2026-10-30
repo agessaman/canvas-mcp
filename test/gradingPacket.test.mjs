@@ -76,7 +76,7 @@ test('userIds returns each student in the order asked, with matching user IDs', 
     const ids = ['103', '101', '105', '102', '104'];
     const result = await api.callTool('get-grading-packet', { courseId: '1', assignmentId: '777', userIds: ids });
     const text = textOf(result);
-    const separators = [...text.matchAll(/--- Student work · user (\d+) ---/g)].map(m => m[1]);
+    const separators = [...text.matchAll(/--- Student work · user (\d+)(?: · [^-]+)? ---/g)].map(m => m[1]);
     assert.deepEqual(separators, ids, 'one block per student, in the order given');
     const headers = text.split('--- Student work').slice(1)
       .map(block => JSON.parse(block.slice(block.indexOf('{'), block.indexOf('}\n') + 1 || undefined).split('\n')[0]));
@@ -111,7 +111,7 @@ test('include overrides the defaults in both directions', async () => {
       courseId: '1', assignmentId: '777', userId: '101', include: ['queue', 'work'],
     }));
     assert.match(withQueue, /"queue":/);
-    assert.match(withQueue, /--- Student work · user 101 ---/);
+    assert.match(withQueue, /--- Student work · user 101(?: · [^-]+)? ---/);
   });
 });
 
@@ -179,7 +179,10 @@ test('the resubmission instruction covers conditional policies and the local loc
     assert.match(text, /and under what conditions/);
     assert.match(text, /can apply to only some students/);
     assert.match(text, /lock_at_local/);
-    assert.match(text, /"Revise \.\.\." wording for students who are eligible/);
+    // Which wording a teacher uses for work that falls short is theirs to
+    // set, so the instructions ask for it rather than deciding it.
+    assert.match(text, /revision_wording/);
+    assert.doesNotMatch(text, /brief \(2.3 sentences\)/, 'no comment length is shipped as a rule');
   });
 });
 
@@ -201,7 +204,7 @@ test('one unreadable student does not take the rest of the batch down', async ()
     const text = textOf(await api.callTool('get-grading-packet', {
       courseId: '1', assignmentId: '777', userIds: ['101', '103', '102'],
     }));
-    const separators = [...text.matchAll(/--- Student work · user (\d+) ---/g)].map(m => m[1]);
+    const separators = [...text.matchAll(/--- Student work · user (\d+)(?: · [^-]+)? ---/g)].map(m => m[1]);
     assert.deepEqual(separators, ['101', '103', '102']);
     assert.match(text, /"user_id":"103","error"/);
     assert.match(text, /"user_id":101/);
@@ -221,11 +224,13 @@ test('the queue reports the worksheet versions of the students read so far', asy
     api.setResponse(router({ baseUrl: api.baseUrl, files, submissions, queue }));
 
     await api.callTool('get-grading-packet', { courseId: '1', assignmentId: '777', userIds: ['101', '102'] });
-    const summary = JSON.parse(textOf(await api.callTool('get-grading-packet', { courseId: '1', assignmentId: '777', include: ['queue'] })).split('\n').find(l => l.startsWith('{')));
+    const summary = JSON.parse(textOf(await api.callTool('get-grading-packet', {
+      courseId: '1', assignmentId: '777', include: ['queue'], scanTemplates: false,
+    })).split('\n').find(l => l.startsWith('{')));
     assert.equal(summary.template_variants.length, 2);
     const headers = summary.template_variants.map(v => v.template_headers).sort();
     assert.deepEqual(headers, ['question | evidence | analysis', 'question | evidence | analysis | source']);
     assert.ok(summary.template_variants.every(v => v.students.every(s => /^Student \d+$/.test(s))));
-    assert.match(summary.template_variants_note, /students read in this session/);
+    assert.match(summary.template_variants_note, /students read/);
   });
 });

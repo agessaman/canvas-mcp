@@ -2,7 +2,8 @@ import { z } from "zod";
 import { jsonObjectParam } from "../jsonObjectParam.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
-import { buildRubricAssessment, getCourseRoster, letterFor, readSubmissionContent, resolveGradingScheme } from "../grading.js";
+import { LatePolicyStatus, belowLowestRating, buildRubricAssessment, getCourseRoster, letterFor, previewLateDeduction, readSubmissionContent, resolveGradingScheme } from "../grading.js";
+import { resolvePreferences } from "../gradingPreferences.js";
 import { createRedactor, noopRedactor } from "../nameRedaction.js";
 import { TOOL_BASE64_LIMIT_BYTES, TOOL_TEXT_LIMIT, extractFileForTool } from "../submissionContent.js";
 
@@ -54,7 +55,7 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
   // Tool: grade-submission
   server.tool(
     "grade-submission",
-    "Write a score, grade, rubric assessment and/or comment to a student's submission. Only call this after the teacher has approved the grade, and only include comment or rubric comments when the teacher has approved that exact feedback text. Prefer `rubric` (validated against the assignment's rubric; get IDs from get-grading-packet) over the raw `rubric_assessment`. Pass dryRun: true to validate a draft and see its total and letter grade without writing anything to Canvas.",
+    "Write a score, grade, rubric assessment and/or comment to a student's submission, and set or clear its late/missing marker. Only call this after the teacher has approved the grade, and only include comment or rubric comments when the teacher has approved that exact feedback text. Prefer `rubric` (validated against the assignment's rubric; get IDs from get-grading-packet) over the raw `rubric_assessment`. Pass dryRun: true to see the rubric total, the letter grade from the course's own scale, what the late policy will deduct, the score the student ends up with, and any criterion scored below its lowest rating — without writing anything to Canvas.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment"),
@@ -69,10 +70,13 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
       })).optional().describe("Rubric scores, checked against the assignment's rubric before anything is written"),
       rubric_assessment: jsonObjectParam("Raw Canvas rubric_assessment object, keyed by criterion id (advanced; unvalidated): {\"criterion_id\": {\"points\": 5, \"comments\": \"...\"}}").optional(),
       comment: z.string().optional().describe("Submission comment students can see. Include only text the teacher approved"),
-      dryRun: z.boolean().default(false).describe("Validate and price the grade without writing it: returns would_write, the rubric total, the letter grade from the grading standard, and whether students would see it immediately. Makes no changes in Canvas (default: false)"),
+      latePolicyStatus: z.enum(["none", "late", "missing", "extended"]).optional().describe("Set the submission's late marker. \"none\" clears it, so the course's late deduction stops applying to this student — the Gradebook's own \"remove the late penalty\". \"extended\" means the deadline was extended for them. Leave unset to keep whatever Canvas has."),
+      secondsLateOverride: z.number().int().min(0).optional().describe("Override how late Canvas treats this submission, in seconds, which is what the deduction is computed from. Usually only needed with latePolicyStatus: \"late\""),
+      excused: z.boolean().optional().describe("Excuse the submission (true) or un-excuse it (false). An excused submission is left out of the student's grade entirely"),
+      dryRun: z.boolean().default(false).describe("Validate and price the grade without writing it: returns would_write, the rubric total, the letter grade from the course's grading standard, what the late policy deducts and the final score a student would see, any criterion scored below its lowest rating, and whether students would see it immediately. Makes no changes in Canvas (default: false)"),
     },
     { idempotentHint: true },
-    async ({ courseId, assignmentId, userId, posted_grade, score, rubric, rubric_assessment, comment, dryRun = false }: {
+    async ({ courseId, assignmentId, userId, posted_grade, score, rubric, rubric_assessment, comment, latePolicyStatus, secondsLateOverride, excused, dryRun = false }: {
       courseId: string;
       assignmentId: string;
       userId: string;
@@ -81,6 +85,9 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
       rubric?: { criterionId: string; ratingId?: string; points?: number; comments?: string }[];
       rubric_assessment?: any;
       comment?: string;
+      latePolicyStatus?: LatePolicyStatus;
+      secondsLateOverride?: number;
+      excused?: boolean;
       dryRun?: boolean;
     }) => {
       try {
@@ -95,6 +102,17 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
         const payload: any = {};
         const grade = posted_grade ?? (score !== undefined ? String(score) : undefined);
         if (grade !== undefined) payload.submission = { posted_grade: grade };
+        // Canvas takes all three on submission[], and silently ignores them
+        // anywhere else on the body.
+        if (latePolicyStatus !== undefined) {
+          payload.submission = { ...payload.submission, late_policy_status: latePolicyStatus };
+        }
+        if (secondsLateOverride !== undefined) {
+          payload.submission = { ...payload.submission, seconds_late_override: secondsLateOverride };
+        }
+        if (excused !== undefined) {
+          payload.submission = { ...payload.submission, excuse: excused };
+        }
         if (comment !== undefined) payload.comment = { text_comment: comment };
 
         const notes: string[] = [];
@@ -112,7 +130,18 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
           payload.rubric_assessment = rubric_assessment;
         }
         if (Object.keys(payload).length === 0) {
-          throw new Error("Nothing to write: pass posted_grade, score, rubric, rubric_assessment or comment.");
+          throw new Error("Nothing to write: pass posted_grade, score, rubric, rubric_assessment, comment, latePolicyStatus or excused.");
+        }
+        if (rubric) {
+          const assignment: any = await canvas.getAssignment(courseId, assignmentId);
+          const floor = belowLowestRating(assignment, payload.rubric_assessment ?? {});
+          if (floor.length) {
+            const recorded = resolvePreferences(courseId).find(p => p.key === 'below_lowest_rating')?.answer;
+            notes.push(...floor.map(f => `Below the lowest rating — ${f}`));
+            notes.push(recorded
+              ? `The teacher's recorded practice on this: ${recorded}`
+              : 'The teacher has not said whether a score below a criterion\'s lowest rating is allowed. Ask them before writing this, and record the answer with set-grading-preferences.');
+          }
         }
 
         if (dryRun) {
@@ -135,6 +164,32 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
               ...(resolved.tried ? { fell_back_because: resolved.tried } : {}),
             };
           }
+          // What the policy takes off between the number entered here and the
+          // number the student sees. The dry run used to report the entered
+          // score, and a whole class was posted a deduction lower than the
+          // preview had shown.
+          let late: ReturnType<typeof previewLateDeduction> | undefined;
+          if (Number.isFinite(total)) {
+            const [submission, policy] = await Promise.all([
+              canvas.getSubmission(courseId, assignmentId, userId).catch(() => null) as Promise<any>,
+              canvas.getLatePolicy(courseId).catch(() => null) as Promise<any>,
+            ]);
+            late = previewLateDeduction(
+              policy?.late_policy ?? policy,
+              assignment,
+              submission ?? {},
+              total,
+              latePolicyStatus,
+            );
+            if (late.points_deducted > 0 && Number.isFinite(points) && points > 0) {
+              // The letter follows the score the student sees, not the one typed.
+              const resolved = await resolveGradingScheme(canvas, courseId, assignment);
+              const afterLetter = letterFor(late.final_score / points, resolved);
+              if (afterLetter && afterLetter !== letter) {
+                notes.push(`The late deduction changes the letter from ${letter} to ${afterLetter}.`);
+              }
+            }
+          }
           const preview = {
             dry_run: true,
             would_write: payload,
@@ -143,6 +198,10 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
             letter_grade: letter,
             grading_type: assignment?.grading_type,
             ...(scheme ? { grading_standard: scheme } : {}),
+            ...(late ? { late } : {}),
+            ...(late && late.points_deducted > 0
+              ? { final_score_after_late_policy: late.final_score }
+              : {}),
             visible_immediately: !assignment?.post_manually,
             ...(notes.length ? { notes } : {}),
           };
@@ -155,6 +214,12 @@ export function registerSubmissionTools(server: McpServer, canvas: CanvasClient)
           score: s.score,
           grade: s.grade,
           workflow_state: s.workflow_state,
+          // Read back rather than echoed: the deduction lands here, and this
+          // is the only place the difference shows.
+          ...(s.late_policy_status !== undefined && s.late_policy_status !== null ? { late_policy_status: s.late_policy_status } : {}),
+          ...(s.points_deducted ? { points_deducted: s.points_deducted } : {}),
+          ...(s.entered_score !== undefined && s.entered_score !== s.score ? { entered_score: s.entered_score } : {}),
+          ...(s.excused ? { excused: true } : {}),
           ...(rubricTotal !== undefined ? { rubric_total: rubricTotal } : {}),
           ...(comment !== undefined ? { comment_posted: true } : {}),
           ...(notes.length ? { notes } : {}),

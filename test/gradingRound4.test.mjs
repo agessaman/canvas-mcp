@@ -307,13 +307,14 @@ test('the worksheet directions are never flagged as shared text', async () => {
   });
 });
 
-test('crossCheck without scanTemplates says what it needs', async () => {
+test('crossCheck turned off at the scan says so rather than going quiet', async () => {
   await withMockCanvas(async api => {
     const { files, submissions } = crossCheckClass(api, { sharedBy: [] });
     api.setResponse(router({ baseUrl: api.baseUrl, files, submissions, roster: CLASS }));
     const summary = JSON.parse(textOf(await api.callTool('get-grading-packet', {
-      courseId: '1', assignmentId: '777', include: ['queue'], crossCheck: true,
+      courseId: '1', assignmentId: '777', include: ['queue'], crossCheck: true, scanTemplates: false,
     })).split('\n').find(l => l.startsWith('{')));
-    assert.match(summary.cross_check_note, /needs scanTemplates/);
+    assert.match(summary.cross_check_note, /needs the submissions read/);
+    assert.match(summary.scan_note, /neither ran/);
   });
 });

@@ -333,7 +333,7 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | Students | 1 | `list-students` |
 | Assignments | 6 | `list-assignments`, `get-assignment`, `create-assignment`, `update-assignment`, `delete-assignment`, `duplicate-assignment` |
 | Assignment Groups | 3 | `list-assignment-groups`, `create-assignment-group`, `bulk-update-assignment-dates` |
-| Grading | 1 | `get-grading-packet` |
+| Grading | 7 | `get-grading-packet`, `get-grading-preferences`, `set-grading-preferences`, `save-grading-plan`, `get-grading-plan`, `post-grading-plan`, `delete-grading-plan` |
 | Submissions | 7 | `list-assignment-submissions`, `grade-submission`, `post-submission-comment`, `get-submission-content`, `get-submission-documents`, `get-submission-file-info`, `download-submission-file` |
 | Sections | 2 | `list-sections`, `list-section-submissions` |
 | Rubrics | 8 | `list-rubrics`, `get-rubric`, `create-rubric`, `update-rubric`, `set-rubric-criterion-outcome`, `get-rubric-statistics`, `list-rubric-assessments`, `attach-rubric-to-assignment` |
@@ -385,19 +385,44 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 
 **Dates.** `due_at: "2026-10-27T05:00:00Z"` is 10pm Pacific on the 26th, which is easy to misread as the 27th — and the day is what decides whether work was late or a revision window has closed. Every `due_at`, `lock_at`, `unlock_at` and `submitted_at` therefore comes back with a `_local` twin formatted in the course's own time zone (falling back to the account's): `"due_at_local": "2026-10-26 22:00 PDT"`.
 
-**Drafting a grade.** `grade-submission` takes `dryRun: true`, which validates the rubric exactly as a real write does, computes the total and the letter grade from the assignment's or course's grading standard, and reports whether students would see it immediately — without sending anything to Canvas:
+**Drafting a grade.** `grade-submission` takes `dryRun: true`, which validates the rubric exactly as a real write does, computes the total and the letter grade from the assignment's or course's grading standard, prices the course late policy against it, and reports whether students would see it immediately — without sending anything to Canvas:
 
 ```json
-{ "dry_run": true, "would_write": { ... }, "total": 20, "letter_grade": "C", "visible_immediately": true }
+{ "dry_run": true, "would_write": { ... }, "total": 23, "letter_grade": "B",
+  "late": { "late": true, "seconds_late": 90000, "points_deducted": 5, "final_score": 18,
+            "explanation": "2 days late at 10% of 25 points. Estimated from the course policy; Canvas computes the stored value." },
+  "final_score_after_late_policy": 18, "visible_immediately": true }
 ```
+
+The entered score and the stored score are not the same number when a late policy is in force, and the dry run used to report only the first — a class went out with a deduction the preview had not shown. `latePolicyStatus` sets or clears the marker on one submission (`none` is the Gradebook's "remove the late penalty"), `secondsLateOverride` changes what the deduction is computed from, and `excused` takes the submission out of the grade entirely. A criterion scored below its lowest rating is reported too: Canvas accepts a 0 on a criterion whose lowest rating is worth a point and shows that rating, which may be what the teacher wants but should not be a surprise.
 
 A course's `grading_standard_id` is usually an **account** standard the course inherited, and the course-scoped API path 404s on exactly those — so the standard is looked up under the course, then the course's account, then `/accounts/self`. Reading that 404 as "no standard" meant grading against Canvas's built-in scheme (A at 94%) instead of the school's (A at 93%), which is a wrong letter on every borderline grade. The result names the standard and where it came from, and when the built-in default really is in use, `fell_back_because` says what was tried.
 
 **Reading files directly.** `get-submission-documents` and `download-submission-file` return extracted text by default for PDFs, Word (`.docx`), HTML and plain-text files, truncated at 60,000 characters with `truncated: true` (override with `maxChars`). Base64 comes back only for images, media and formats with no extractor, or when `forceBase64: true` is passed — with a 5 MB limit, above which the tool says so rather than returning a placeholder. A 192 KB PDF used to come back as `[FILE_TOO_LARGE_FOR_DISPLAY]`, leaving the caller nothing to grade from.
 
+### Whose grading practices these are
+
+This server ships **no grading preferences**. How long a comment runs, what copied work is worth, how many consecutive words amount to copying, whether a criterion may be scored below its lowest rating, whether grades are held and released together — all of it belongs to the teacher, and a server that hard-codes one teacher's answers hands them silently to every other teacher.
+
+What it ships instead is the list of questions those decisions are, with example phrasings and no defaults. `get-grading-preferences` returns every question with the teacher's answer where one exists and `examples` where one does not; `set-grading-preferences` records an answer in the teacher's own words, as a default or scoped to a single course. The grading packet appends both lists to its instructions block — "On record (apply these; do not ask again)" and "Not yet answered — ask when each first matters, then save it" — so a session applies what is known, asks about what is not, at the point it matters, and never guesses. Answers live in `~/.canvas-mcp/grading-preferences.json` (`CANVAS_MCP_STATE_DIR` to move it), user-readable only.
+
+### A grading plan that outlives the session
+
+Grading a class runs over several sittings, and the rules move partway through. The plan used to be a markdown file the assistant wrote for itself, which the next session could not always open — one run rebuilt a whole class's scores from a transcript.
+
+`save-grading-plan` stores each student's criterion points, comment, late marker and flags for an assignment, merging by user id so one student can be revised without resending the rest. `get-grading-plan` reads it back **priced**: each student's total, the letter from this course's own cutoffs, what the late policy deducts, the score the student ends up seeing, and the distribution across the class — plus `changed_since_plan`, which reports a late policy that no longer matches, a grading standard that changed, students who submitted after the plan was posted for them, and students in Canvas who are not in the plan at all. `post-grading-plan` writes it in one call instead of one per student; a student whose write fails does not stop the others, and the plan records who posted and who is left, so a second call finishes the job. `hold: true` switches the assignment to manual posting first, so a class can be released together.
+
+### Checking work against the sources it was sent to
+
+The integrity signals catch the wreckage of a copy/paste — a footnote number, wiki furniture — but a student who cleaned that up leaves nothing to catch. `get-grading-packet` with `sourceCheck: true` fetches the web pages the assignment description links to (plus anything in `sourceUrls`) and reports, per student, the longest runs of consecutive words shared with any of them, with the run length, the page and the student's own words.
+
+**It reports run lengths and leaves the line to the teacher.** How many words in a row amount to copying is a grading practice, not a constant: a name, a date and a place in a row are unavoidable on a research worksheet and damning on an essay. The worksheet's own directions and headers are excluded, so the sheet's text does not match every page on the subject and flag the whole class equally. A page that cannot be fetched is named in `sources_failed` rather than silently skipped — sites that refuse an automated fetch are common, and the teacher can paste the working address into `sourceUrls`. Addresses inside the local network are refused by default, because the links come out of a description this server did not write (`CANVAS_MCP_ALLOW_LOCAL_SOURCES=1` for a local mirror).
+
 ### Text shared between submissions
 
 `get-grading-packet` with `scanTemplates: true, crossCheck: true` looks for runs of text — twelve words or more — that turn up in two students' work where neither named the other as a partner. The worksheet's own words are excluded two ways: anything inside the directions region, and anything more than half the class wrote.
+
+Every match carries the two facts that decided what it meant: whether the pair share a Canvas **section**, and who submitted first. Two students in one class period who did not name each other are usually partners who forgot the name line; two in different periods who never meet are a different conversation. The section comes from Canvas, not from the period written on the sheet — that was left blank, abbreviated and miswritten often enough to be useless. `crossCheck` is on by default and reads the queue to do it, which costs a download per student: the packet says so in `scan_note`, and `scanTemplates: false` opts out.
 
 It works on **word windows, not sentences**. A PDF's text layer ends a table cell wherever the cell ended, so a cell's last sentence frequently has no full stop and runs straight into the next row — which made sentence hashing miss copied text outright. Every eight-word window is hashed instead, consecutive matching windows are merged back into one passage, and a passage is reported once with its word count rather than once per overlapping window.
 

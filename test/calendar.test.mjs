@@ -11,7 +11,7 @@ const EVENT = {
   start_at: '2026-09-14T17:00:00Z',
   end_at: '2026-09-14T18:00:00Z',
   location_name: 'Room 214',
-  context_code: 'course_18473',
+  context_code: 'course_202020',
 };
 
 function canvasWith({ event = EVENT, events = [EVENT], distort = (x) => x } = {}) {
@@ -31,7 +31,7 @@ test('an event is created against the course context code', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('create-calendar-event', {
-      courseId: '18473',
+      courseId: '202020',
       title: 'Midterm review session',
       startAt: '2026-09-14T17:00:00Z',
       endAt: '2026-09-14T18:00:00Z',
@@ -39,7 +39,7 @@ test('an event is created against the course context code', async () => {
     });
 
     const write = canvas.requests.find(r => r.method === 'POST');
-    assert.equal(write.body.calendar_event.context_code, 'course_18473');
+    assert.equal(write.body.calendar_event.context_code, 'course_202020');
     assert.equal(write.body.calendar_event.title, 'Midterm review session');
     assert.equal(write.body.calendar_event.location_name, 'Room 214');
     // No draft state exists, so this must be said rather than assumed known.
@@ -51,7 +51,7 @@ test('a recurring series sends the duplicate block and says how many events it m
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('create-calendar-event', {
-      courseId: '18473',
+      courseId: '202020',
       title: 'Office hours',
       startAt: '2026-09-01T16:00:00Z',
       repeatCount: 9,
@@ -69,7 +69,7 @@ test('a repeat count with no frequency is refused rather than silently made once
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('create-calendar-event', {
-      courseId: '18473', title: 'Office hours', startAt: '2026-09-01T16:00:00Z', repeatCount: 9,
+      courseId: '202020', title: 'Office hours', startAt: '2026-09-01T16:00:00Z', repeatCount: 9,
     });
     assert.match(JSON.stringify(result), /needs repeatFrequency/);
     assert.ok(!canvas.requests.some(r => r.method === 'POST'));
@@ -82,7 +82,7 @@ test('a frequency with no count is refused too', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('create-calendar-event', {
-      courseId: '18473', title: 'Office hours', startAt: '2026-09-01T16:00:00Z', repeatFrequency: 'weekly',
+      courseId: '202020', title: 'Office hours', startAt: '2026-09-01T16:00:00Z', repeatFrequency: 'weekly',
     });
     assert.match(JSON.stringify(result), /needs repeatCount/);
     assert.ok(!canvas.requests.some(r => r.method === 'POST'));
@@ -97,7 +97,7 @@ test('a start time Canvas stored differently is reported', async () => {
       distort: event => ({ ...event, start_at: '2026-09-15T17:00:00Z' }),
     }));
     const result = await canvas.callTool('create-calendar-event', {
-      courseId: '18473', title: 'Exam', startAt: '2026-09-14T17:00:00Z',
+      courseId: '202020', title: 'Exam', startAt: '2026-09-14T17:00:00Z',
     });
     const text = canvas.textOf(result);
     assert.match(text, /WARNING/);
@@ -108,10 +108,10 @@ test('a start time Canvas stored differently is reported', async () => {
 test('listing defaults to a date window and reports it', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
-    const result = await canvas.callTool('list-calendar-events', { courseId: '18473' });
+    const result = await canvas.callTool('list-calendar-events', { courseId: '202020' });
 
     const read = canvas.requests.find(r => r.method === 'GET');
-    assert.match(read.url, /context_codes%5B%5D=course_18473|context_codes\[\]=course_18473/);
+    assert.match(read.url, /context_codes%5B%5D=course_202020|context_codes\[\]=course_202020/);
     assert.match(read.url, /type=event/);
     assert.match(read.url, /start_date=/);
     assert.match(canvas.textOf(result), /Midterm review session/);
@@ -121,7 +121,7 @@ test('listing defaults to a date window and reports it', async () => {
 test('allEvents drops the date filter instead of quietly keeping it', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
-    await canvas.callTool('list-calendar-events', { courseId: '18473', allEvents: true });
+    await canvas.callTool('list-calendar-events', { courseId: '202020', allEvents: true });
     const read = canvas.requests.find(r => r.method === 'GET');
     assert.match(read.url, /all_events=true/);
     assert.ok(!/start_date=/.test(read.url), 'a date filter would contradict allEvents');
@@ -131,7 +131,7 @@ test('allEvents drops the date filter instead of quietly keeping it', async () =
 test('an empty calendar suggests widening the window rather than just saying none', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ events: [] }));
-    const result = await canvas.callTool('list-calendar-events', { courseId: '18473' });
+    const result = await canvas.callTool('list-calendar-events', { courseId: '202020' });
     assert.match(canvas.textOf(result), /Widen the range/);
   });
 });
@@ -211,7 +211,7 @@ test('creating repeating events warns that they are independent, not a series', 
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('create-calendar-event', {
-      courseId: '18473', title: 'Office hours', startAt: '2026-09-01T16:00:00Z',
+      courseId: '202020', title: 'Office hours', startAt: '2026-09-01T16:00:00Z',
       repeatCount: 3, repeatFrequency: 'weekly',
     });
     const text = canvas.textOf(result);
@@ -247,7 +247,7 @@ test('duplicating an assignment reports the unpublished copy', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(duplicating());
     const result = await canvas.callTool('duplicate-assignment', {
-      courseId: '18473', assignmentId: '900',
+      courseId: '202020', assignmentId: '900',
     });
     assert.ok(canvas.requests.some(r => /\/assignments\/900\/duplicate/.test(r.url)));
     const text = canvas.textOf(result);
@@ -264,7 +264,7 @@ test('a New Quiz is duplicated with result_type=Quiz, detected not asked', async
       original: { ...ASSIGNMENT, name: 'Unit 3 Quiz', is_quiz_lti_assignment: true },
     }));
     const result = await canvas.callTool('duplicate-assignment', {
-      courseId: '18473', assignmentId: '900',
+      courseId: '202020', assignmentId: '900',
     });
     const call = canvas.requests.find(r => /\/duplicate/.test(r.url));
     assert.match(call.url, /result_type=Quiz/);
@@ -275,7 +275,7 @@ test('a New Quiz is duplicated with result_type=Quiz, detected not asked', async
 test('a plain assignment is duplicated without result_type', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(duplicating());
-    await canvas.callTool('duplicate-assignment', { courseId: '18473', assignmentId: '900' });
+    await canvas.callTool('duplicate-assignment', { courseId: '202020', assignmentId: '900' });
     assert.ok(!/result_type/.test(canvas.requests.find(r => /\/duplicate/.test(r.url)).url));
   });
 });
@@ -284,7 +284,7 @@ test('a rename and due date are applied to the copy in the same call', async () 
   await withMockCanvas(async canvas => {
     canvas.setResponse(duplicating());
     await canvas.callTool('duplicate-assignment', {
-      courseId: '18473', assignmentId: '900',
+      courseId: '202020', assignmentId: '900',
       newName: 'Week 2 Reflection', dueAt: '2026-09-08T23:59:00Z', publish: true,
     });
 
@@ -304,7 +304,7 @@ test('an asynchronous duplicate is not edited mid-flight', async () => {
       copy: { id: 901, name: 'Weekly Reflection Copy', workflow_state: 'duplicating' },
     }));
     const result = await canvas.callTool('duplicate-assignment', {
-      courseId: '18473', assignmentId: '900', newName: 'Week 2 Reflection',
+      courseId: '202020', assignmentId: '900', newName: 'Week 2 Reflection',
     });
 
     assert.ok(!canvas.requests.some(r => r.method === 'PUT'), 'must not edit an assignment mid-duplication');

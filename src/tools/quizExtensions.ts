@@ -198,7 +198,7 @@ function verifyNewQuiz(requested: any[], response: any): string {
  * difference between them is the whole diagnosis — Canvas documents both as
  * "the course or assignment was not found", which they are not.
  *
- * Established live in course 18473, against a student who was already an active
+ * Established live in course 202020, against a student who was already an active
  * enrollment with an assignment override and a working Classic extension:
  *
  *   "Users with IDs N were not found"

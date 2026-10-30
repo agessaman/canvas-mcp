@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { withMockCanvas } from './helpers/mockCanvas.mjs';
 
 const COURSE = {
-  id: 18473,
+  id: 202020,
   name: "Sandbox '23",
   workflow_state: 'unpublished',
   syllabus_body: '<p>Week 1: Introduction</p>',
@@ -48,7 +48,7 @@ test('replacing a syllabus backs the old one up to an unpublished page first', a
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('update-syllabus', {
-      courseId: '18473', body: '<p>Entirely new</p>',
+      courseId: '202020', body: '<p>Entirely new</p>',
     });
 
     const backup = canvas.requests.find(r => r.url.includes('/pages/'));
@@ -70,7 +70,7 @@ test('replacing a syllabus backs the old one up to an unpublished page first', a
 test('the backup is written before the syllabus is overwritten', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
-    await canvas.callTool('update-syllabus', { courseId: '18473', body: '<p>New</p>' });
+    await canvas.callTool('update-syllabus', { courseId: '202020', body: '<p>New</p>' });
 
     const backupIndex = canvas.requests.findIndex(r => r.url.includes('/pages/'));
     const writeIndex = canvas.requests.findIndex(r => r.body?.course);
@@ -88,7 +88,7 @@ test('a failed backup stops the syllabus from being replaced', async () => {
       return COURSE;
     });
     const result = await canvas.callTool('update-syllabus', {
-      courseId: '18473', body: '<p>Entirely new</p>',
+      courseId: '202020', body: '<p>Entirely new</p>',
     });
 
     assert.match(JSON.stringify(result), /Failed to update syllabus/);
@@ -107,7 +107,7 @@ test('a backup page Canvas published anyway aborts the replacement', async () =>
       page: { title: 'Syllabus - Backup', url: 'syllabus-backup', page_id: 9, published: true },
     }));
     const result = await canvas.callTool('update-syllabus', {
-      courseId: '18473', body: '<p>Entirely new</p>',
+      courseId: '202020', body: '<p>Entirely new</p>',
     });
     assert.match(JSON.stringify(result), /came back PUBLISHED/);
     assert.ok(!canvas.requests.some(r => r.body?.course), 'the syllabus must not be changed');
@@ -118,7 +118,7 @@ test('backup: false skips the page and says the old syllabus is gone', async () 
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('update-syllabus', {
-      courseId: '18473', body: '<p>Entirely new</p>', backup: false,
+      courseId: '202020', body: '<p>Entirely new</p>', backup: false,
     });
     assert.ok(!canvas.requests.some(r => r.url.includes('/pages/')), 'no backup page should be written');
     assert.match(canvas.textOf(result), /previous syllabus is gone/);
@@ -129,7 +129,7 @@ test('append adds to the syllabus and needs no backup, since nothing is destroye
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     await canvas.callTool('update-syllabus', {
-      courseId: '18473', body: '<p>Week 2: Methods</p>', mode: 'append',
+      courseId: '202020', body: '<p>Week 2: Methods</p>', mode: 'append',
     });
 
     const write = canvas.requests.find(r => r.body?.course);
@@ -143,7 +143,7 @@ test('prepend puts the new content above what was already there', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     await canvas.callTool('update-syllabus', {
-      courseId: '18473', body: '<p>Read this first</p>', mode: 'prepend',
+      courseId: '202020', body: '<p>Read this first</p>', mode: 'prepend',
     });
     const stored = canvas.requests.find(r => r.body?.course).body.course.syllabus_body;
     assert.ok(
@@ -157,7 +157,7 @@ test('a first syllabus is written as-is, with nothing to back up', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ course: { ...COURSE, syllabus_body: null } }));
     const result = await canvas.callTool('update-syllabus', {
-      courseId: '18473', body: '<p>Week 1</p>',
+      courseId: '202020', body: '<p>Week 1</p>',
     });
     assert.equal(canvas.requests.find(r => r.body?.course).body.course.syllabus_body, '<p>Week 1</p>');
     assert.ok(!canvas.requests.some(r => r.url.includes('/pages/')), 'an empty syllabus needs no backup');
@@ -179,12 +179,12 @@ test('a successful write is verified by re-reading, and does not warn', async ()
       if (method === 'PUT' && body?.course) {
         written = true;
         // The PUT response omits syllabus_body entirely, the way Canvas does.
-        return { id: 18473, name: "Sandbox '23" };
+        return { id: 202020, name: "Sandbox '23" };
       }
       return { ...COURSE, syllabus_body: written ? '<p>Week 2</p>' : COURSE.syllabus_body };
     });
     const result = await canvas.callTool('update-syllabus', {
-      courseId: '18473', body: '<p>Week 2</p>',
+      courseId: '202020', body: '<p>Week 2</p>',
     });
 
     assert.ok(
@@ -199,12 +199,12 @@ test('a syllabus Canvas did not store is still reported', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(({ url, method, body }) => {
       if (url.includes('/pages/')) return { page_id: 42, url: 'syllabus-backup', published: false };
-      if (method === 'PUT') return { id: 18473 };
+      if (method === 'PUT') return { id: 202020 };
       // Re-read shows the write did not land.
       return { ...COURSE, syllabus_body: '' };
     });
     const result = await canvas.callTool('update-syllabus', {
-      courseId: '18473', body: '<p>Week 2</p>',
+      courseId: '202020', body: '<p>Week 2</p>',
     });
     assert.match(canvas.textOf(result), /WARNING[\s\S]*empty after this write/);
   });
@@ -216,10 +216,10 @@ test('deliberately clearing the syllabus does not warn', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(({ url, method }) => {
       if (url.includes('/pages/')) return { page_id: 42, url: 'syllabus-backup', published: false };
-      if (method === 'PUT') return { id: 18473 };
+      if (method === 'PUT') return { id: 202020 };
       return { ...COURSE, syllabus_body: '' };
     });
-    const result = await canvas.callTool('update-syllabus', { courseId: '18473', body: '' });
+    const result = await canvas.callTool('update-syllabus', { courseId: '202020', body: '' });
     assert.doesNotMatch(canvas.textOf(result), /WARNING/);
   });
 });
@@ -227,7 +227,7 @@ test('deliberately clearing the syllabus does not warn', async () => {
 test('the syllabus is read from the course, not from a page', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
-    const result = await canvas.callTool('get-syllabus', { courseId: '18473' });
+    const result = await canvas.callTool('get-syllabus', { courseId: '202020' });
     assert.ok(
       canvas.requests.some(r => /syllabus_body/.test(r.url)),
       'must request include[]=syllabus_body'
@@ -240,7 +240,7 @@ test('publishing a course sends event=offer and reports the new state', async ()
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('set-course-publish-state', {
-      courseId: '18473', state: 'published',
+      courseId: '202020', state: 'published',
     });
     assert.equal(canvas.requests.find(r => r.method === 'PUT').body.course.event, 'offer');
     assert.match(canvas.textOf(result), /now available/);
@@ -251,7 +251,7 @@ test('publishing a course sends event=offer and reports the new state', async ()
 test('concluding a course sends event=conclude', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
-    await canvas.callTool('set-course-publish-state', { courseId: '18473', state: 'concluded' });
+    await canvas.callTool('set-course-publish-state', { courseId: '202020', state: 'concluded' });
     assert.equal(canvas.requests.find(r => r.method === 'PUT').body.course.event, 'conclude');
   });
 });
@@ -265,7 +265,7 @@ test('a publish state Canvas refused to change is reported', async () => {
       distort: course => ({ ...course, workflow_state: 'available' }),
     }));
     const result = await canvas.callTool('set-course-publish-state', {
-      courseId: '18473', state: 'unpublished',
+      courseId: '202020', state: 'unpublished',
     });
     const text = canvas.textOf(result);
     assert.match(text, /WARNING/);
@@ -293,7 +293,7 @@ test('setting a front page marks the page and can move the landing page', async 
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('set-front-page', {
-      courseId: '18473', pageUrl: 'welcome', makeLandingPage: true,
+      courseId: '202020', pageUrl: 'welcome', makeLandingPage: true,
     });
 
     const pageWrite = canvas.requests.find(r => r.url.includes('/pages/'));
@@ -308,7 +308,7 @@ test('a page Canvas refused to make the front page is an error, not a success', 
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ page: { title: 'Draft', url: 'draft', front_page: false } }));
     const result = await canvas.callTool('set-front-page', {
-      courseId: '18473', pageUrl: 'draft',
+      courseId: '202020', pageUrl: 'draft',
     });
     assert.match(JSON.stringify(result), /unpublished page cannot be the front page/);
   });
@@ -318,7 +318,7 @@ test('a wiki landing page warns that it needs a front page to exist', async () =
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('update-course-settings', {
-      courseId: '18473', defaultView: 'wiki',
+      courseId: '202020', defaultView: 'wiki',
     });
     assert.match(canvas.textOf(result), /students land on an error/);
   });
@@ -330,7 +330,7 @@ test('a setting Canvas silently ignored is reported', async () => {
       distort: course => ({ ...course, name: "Sandbox '23" }),
     }));
     const result = await canvas.callTool('update-course-settings', {
-      courseId: '18473', name: 'Renamed Course',
+      courseId: '202020', name: 'Renamed Course',
     });
     const text = canvas.textOf(result);
     assert.match(text, /WARNING/);
@@ -341,7 +341,7 @@ test('a setting Canvas silently ignored is reported', async () => {
 test('an empty settings call changes nothing rather than sending an empty write', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
-    const result = await canvas.callTool('update-course-settings', { courseId: '18473' });
+    const result = await canvas.callTool('update-course-settings', { courseId: '202020' });
     assert.match(canvas.textOf(result), /nothing was changed/);
     assert.ok(!canvas.requests.some(r => r.method === 'PUT'));
   });

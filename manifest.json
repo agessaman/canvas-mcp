@@ -2,7 +2,7 @@
   "manifest_version": "0.1",
   "name": "canvas-mcp",
   "display_name": "Canvas LMS Integration",
-  "version": "1.27.0",
+  "version": "1.28.0",
   "description": "Comprehensive Canvas LMS integration for course management, assignments, pages, students, and rubric analysis",
   "long_description": "This extension provides full Canvas LMS integration capabilities including course management, assignment creation and grading, page editing with styleguide support, student management with privacy controls, module organization, submission tracking, and comprehensive rubric statistics analysis. It also covers the instructor grading queue (what needs grading across every course), Classic quiz results (per-student answers, item statistics, reports and regrading), New Quizzes authoring and item analysis on the separate /api/quiz/v1 API, course-wide grades with missing-work and engagement reports for intervention planning, and read-only Canvas inbox triage. Perfect for educators who want to streamline their Canvas workflows directly from Claude Desktop. Developed by Adam Gessaman based on work by R.Huijts.",
   "author": {
@@ -126,7 +126,31 @@
     },
     {
       "name": "grade-submission",
-      "description": "Write approved scores, validated rubric assessments and feedback"
+      "description": "Write approved scores, validated rubric assessments, feedback and the late marker"
+    },
+    {
+      "name": "get-grading-preferences",
+      "description": "The teacher's recorded grading practices, and the questions still open"
+    },
+    {
+      "name": "set-grading-preferences",
+      "description": "Record how this teacher grades, so later sessions apply it instead of asking again"
+    },
+    {
+      "name": "save-grading-plan",
+      "description": "Save drafted grades for an assignment so a later session can price and post them"
+    },
+    {
+      "name": "get-grading-plan",
+      "description": "Read a saved plan back, priced against the course scale and late policy, with what has changed"
+    },
+    {
+      "name": "post-grading-plan",
+      "description": "Write an approved grading plan to Canvas in one call"
+    },
+    {
+      "name": "delete-grading-plan",
+      "description": "Forget a saved grading plan; grades already in Canvas are untouched"
     },
     {
       "name": "post-submission-comment",

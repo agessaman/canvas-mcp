@@ -207,7 +207,7 @@ export function registerAssignmentGroupTools(server: McpServer, canvas: CanvasCl
           }]
         };
       } catch (error: any) {
-        // never_drop reliably answers a bare 500 on gfalls.instructure.com —
+        // never_drop reliably answers a bare 500 on example.instructure.com —
         // tested 2026-08-05 with the assignment published and unpublished,
         // with and without a drop rule alongside it, and with more assignments
         // in the group than the rules could consume. drop_lowest and

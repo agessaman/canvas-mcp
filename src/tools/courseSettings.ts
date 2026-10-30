@@ -148,7 +148,7 @@ export function registerCourseSettingsTools(server: McpServer, canvas: CanvasCli
         // so checking the response reported "Canvas returned an empty syllabus"
         // after every successful write. A warning that cries wolf on every call
         // is worse than none — it teaches the reader to skip the warnings that
-        // do mean something. Caught live on course 18473.
+        // do mean something. Caught live on course 202020.
         const readback: any = await canvas.getCourse(courseId, { 'include[]': 'syllabus_body' });
         const stored: string = readback?.syllabus_body ?? '';
 

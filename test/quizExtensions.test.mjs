@@ -50,11 +50,11 @@ test('a New Quiz gets a bare accommodations array, not a Classic extension', asy
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'new' }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
     });
 
     const write = canvas.requests.find(r => r.method === 'POST');
-    assert.match(write.url, /^\/api\/quiz\/v1\/courses\/18473\/quizzes\/371566\/accommodations/);
+    assert.match(write.url, /^\/api\/quiz\/v1\/courses\/202020\/quizzes\/371566\/accommodations/);
     // The body is a bare array here — every other write on this server wraps.
     assert.deepEqual(write.body, [{ user_id: 6199, extra_time: 30 }]);
     assert.match(canvas.textOf(result), /30 extra minute/);
@@ -65,11 +65,11 @@ test('a Classic quiz gets a wrapped quiz_extensions array on the v1 endpoint', a
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'classic' }));
     await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '900', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '900', studentIds: ['6199'], extraMinutes: 30,
     });
 
     const write = canvas.requests.find(r => r.method === 'POST');
-    assert.match(write.url, /^\/api\/v1\/courses\/18473\/quizzes\/900\/extensions/);
+    assert.match(write.url, /^\/api\/v1\/courses\/202020\/quizzes\/900\/extensions/);
     assert.deepEqual(write.body, { quiz_extensions: [{ user_id: 6199, extra_time: 30 }] });
   });
 });
@@ -80,7 +80,7 @@ test('an ID that names a quiz under both engines is refused, not guessed', async
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'both' }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '900', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '900', studentIds: ['6199'], extraMinutes: 30,
     });
 
     assert.match(JSON.stringify(result), /ambiguous/);
@@ -92,7 +92,7 @@ test('an ambiguous ID is resolved by naming the engine', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'both' }));
     await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '900', studentIds: ['6199'], extraMinutes: 30, engine: 'classic',
+      courseId: '202020', quizId: '900', studentIds: ['6199'], extraMinutes: 30, engine: 'classic',
     });
     assert.match(canvas.requests.find(r => r.method === 'POST').url, /\/api\/v1\/.*\/extensions/);
   });
@@ -104,7 +104,7 @@ test('a New Quizzes-only option on a Classic quiz is refused rather than dropped
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'classic' }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '900', studentIds: ['6199'], extraMinutes: 30, reduceChoices: true,
+      courseId: '202020', quizId: '900', studentIds: ['6199'], extraMinutes: 30, reduceChoices: true,
     });
     assert.match(JSON.stringify(result), /reduceChoices is a New Quizzes accommodation/);
     assert.ok(!canvas.requests.some(r => r.method === 'POST'));
@@ -115,7 +115,7 @@ test('a Classic-only option on a New Quiz is refused rather than dropped', async
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'new' }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30, manuallyUnlocked: true,
+      courseId: '202020', quizId: '371566', studentIds: ['6199'], extraMinutes: 30, manuallyUnlocked: true,
     });
     assert.match(JSON.stringify(result), /manuallyUnlocked is a Classic Quizzes extension/);
     assert.ok(!canvas.requests.some(r => r.method === 'POST'));
@@ -131,7 +131,7 @@ test('extra time on a quiz with no time limit is warned about', async () => {
       newQuiz: { ...NEW_QUIZ, quiz_settings: { has_time_limit: false, session_time_limit_in_seconds: 0 } },
     }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
     });
     const text = canvas.textOf(result);
     assert.match(text, /WARNING/);
@@ -144,7 +144,7 @@ test('a timed quiz reports the total clock the students end up with', async () =
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'classic' }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '900', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '900', studentIds: ['6199'], extraMinutes: 30,
     });
     assert.match(canvas.textOf(result), /time limit is 60 minutes, so these students get 90/);
   });
@@ -156,7 +156,7 @@ test('extra attempts are named in the result, not just the minutes', async () =>
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'classic' }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '900', studentIds: ['6199'], extraMinutes: 30, extraAttempts: 2,
+      courseId: '202020', quizId: '900', studentIds: ['6199'], extraMinutes: 30, extraAttempts: 2,
     });
     const text = canvas.textOf(result);
     assert.match(text, /30 extra minute\(s\) and 2 extra attempt\(s\)/);
@@ -167,7 +167,7 @@ test('clearing attempts while keeping time says which was removed', async () => 
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'classic' }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '900', studentIds: ['6199'], extraMinutes: 30, extraAttempts: 0,
+      courseId: '202020', quizId: '900', studentIds: ['6199'], extraMinutes: 30, extraAttempts: 0,
     });
     const text = canvas.textOf(result);
     assert.match(text, /30 extra minute\(s\), and removed extra attempts/);
@@ -183,7 +183,7 @@ test('a section is expanded to its students, with the snapshot said out loud', a
       enrollments: [{ user_id: 6199 }, { user_id: 1234 }],
     }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', sectionId: '38485', extraMinutes: 30,
+      courseId: '202020', quizId: '371566', sectionId: '38485', extraMinutes: 30,
     });
 
     const write = canvas.requests.find(r => r.method === 'POST');
@@ -196,7 +196,7 @@ test('an empty section is refused instead of granting to nobody', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'new', enrollments: [] }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', sectionId: '38485', extraMinutes: 30,
+      courseId: '202020', quizId: '371566', sectionId: '38485', extraMinutes: 30,
     });
     assert.match(JSON.stringify(result), /no currently-enrolled students/);
     assert.ok(!canvas.requests.some(r => r.method === 'POST'));
@@ -207,7 +207,7 @@ test('targeting both a section and students is refused', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'new' }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199'], sectionId: '38485', extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['6199'], sectionId: '38485', extraMinutes: 30,
     });
     assert.match(JSON.stringify(result), /exactly one of studentIds or sectionId/);
   });
@@ -221,7 +221,7 @@ test('a student Canvas dropped from a Classic extension is reported', async () =
       extensionResponse: { quiz_extensions: [{ user_id: 6199, extra_time: 30 }] },
     }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '900', studentIds: ['6199', '9999'], extraMinutes: 30,
+      courseId: '202020', quizId: '900', studentIds: ['6199', '9999'], extraMinutes: 30,
     });
     const text = canvas.textOf(result);
     assert.match(text, /WARNING/);
@@ -237,7 +237,7 @@ test('a Classic extension stored with the wrong number of minutes is reported', 
       extensionResponse: { quiz_extensions: [{ user_id: 6199, extra_time: 0 }] },
     }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '900', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '900', studentIds: ['6199'], extraMinutes: 30,
     });
     assert.match(canvas.textOf(result), /WARNING[\s\S]*asked for 30 extra minutes, Canvas stored 0/);
   });
@@ -252,7 +252,7 @@ test('a New Quizzes accommodation Canvas rejected is surfaced', async () => {
       accommodationResponse: { message: 'partial', successful: [{ user_id: 6199 }], failed: [{ user_id: 9999, error: 'not enrolled' }] },
     }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199', '9999'], extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['6199', '9999'], extraMinutes: 30,
     });
     const text = canvas.textOf(result);
     assert.match(text, /WARNING/);
@@ -267,7 +267,7 @@ test('a student in neither the successful nor the failed list is reported as hav
       accommodationResponse: { message: 'ok', successful: [{ user_id: 6199 }], failed: [] },
     }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199', '9999'], extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['6199', '9999'], extraMinutes: 30,
     });
     assert.match(canvas.textOf(result), /9999.*NO accommodation|NO accommodation: 9999/);
   });
@@ -283,7 +283,7 @@ test('a 200 that confirms nobody is reported as nobody having the accommodation'
       accommodationResponse: { message: 'Accommodations processed', successful: [], failed: [] },
     }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
     });
     const text = canvas.textOf(result);
     assert.match(text, /WARNING/);
@@ -300,7 +300,7 @@ test('a message-only response is not turned into a false alarm', async () => {
       accommodationResponse: { message: 'Accommodations processed' },
     }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
     });
     assert.doesNotMatch(canvas.textOf(result), /WARNING — Canvas did not apply/);
   });
@@ -318,7 +318,7 @@ test('the real Canvas success body produces no warning', async () => {
       },
     }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371565', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '371565', studentIds: ['6199'], extraMinutes: 30,
     });
     assert.doesNotMatch(canvas.textOf(result), /WARNING — Canvas did not apply/);
   });
@@ -331,7 +331,7 @@ test('a New Quiz grant says it adds to a course-wide accommodation rather than r
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'new' }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
     });
     assert.match(canvas.textOf(result), /ADDS this to any course-wide accommodation/);
   });
@@ -341,7 +341,7 @@ test('clearing a grant does not carry the stacking note, which would only confus
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'new' }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 0,
+      courseId: '202020', quizId: '371566', studentIds: ['6199'], extraMinutes: 0,
     });
     assert.doesNotMatch(canvas.textOf(result), /ADDS this/);
   });
@@ -351,7 +351,7 @@ test('the absence of a New Quizzes readback endpoint is stated, not implied', as
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'new' }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
     });
     assert.match(canvas.textOf(result), /no endpoint for reading New Quizzes accommodations back/);
   });
@@ -363,7 +363,7 @@ test('list-quiz-extensions says New Quizzes cannot be read rather than reporting
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'new' }));
     const result = await canvas.callTool('list-quiz-extensions', {
-      courseId: '18473', quizId: '371566',
+      courseId: '202020', quizId: '371566',
     });
     const text = canvas.textOf(result);
     assert.match(text, /no endpoint for reading its accommodations back|only be written/);
@@ -383,7 +383,7 @@ test('list-quiz-extensions reports Classic extensions from the quiz submissions'
       },
     }));
     const result = await canvas.callTool('list-quiz-extensions', {
-      courseId: '18473', quizId: '900',
+      courseId: '202020', quizId: '900',
     });
     const text = canvas.textOf(result);
     assert.match(text, /"user_id": 6199/);
@@ -396,7 +396,7 @@ test('a non-numeric student ID is refused before anything is written', async () 
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'new' }));
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['adam@example.com'], extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['adam@example.com'], extraMinutes: 30,
     });
     assert.match(JSON.stringify(result), /must be numeric Canvas user IDs/);
     assert.ok(!canvas.requests.some(r => r.method === 'POST'));
@@ -415,7 +415,7 @@ test('a user the New Quizzes service does not know is explained, not passed thro
       return url.startsWith('/api/quiz/v1/') ? NEW_QUIZ : { __status: 404, __body: {} };
     });
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
     });
     const text = JSON.stringify(result);
     assert.match(text, /keeps its own record of users/);
@@ -439,7 +439,7 @@ test('a per-quiz grant refused for non-participants points at the course-level t
       return url.startsWith('/api/quiz/v1/') ? NEW_QUIZ : { __status: 404, __body: {} };
     });
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
     });
     const text = JSON.stringify(result);
     assert.match(text, /set-course-quiz-accommodations/);
@@ -459,7 +459,7 @@ test('an unrelated accommodations failure is not dressed up as a missing user', 
       return url.startsWith('/api/quiz/v1/') ? NEW_QUIZ : { __status: 404, __body: {} };
     });
     const result = await canvas.callTool('extend-quiz-time', {
-      courseId: '18473', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
+      courseId: '202020', quizId: '371566', studentIds: ['6199'], extraMinutes: 30,
     });
     assert.match(JSON.stringify(result), /extra_time must be an integer/);
     assert.doesNotMatch(JSON.stringify(result), /keeps its own record of users/);
@@ -470,11 +470,11 @@ test('the course-wide accommodation posts to the course endpoint and says Classi
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ engine: 'new' }));
     const result = await canvas.callTool('set-course-quiz-accommodations', {
-      courseId: '18473', studentIds: ['6199'], extraMinutes: 45, applyToInProgressSessions: true,
+      courseId: '202020', studentIds: ['6199'], extraMinutes: 45, applyToInProgressSessions: true,
     });
 
     const write = canvas.requests.find(r => r.method === 'POST');
-    assert.match(write.url, /^\/api\/quiz\/v1\/courses\/18473\/accommodations/);
+    assert.match(write.url, /^\/api\/quiz\/v1\/courses\/202020\/accommodations/);
     assert.deepEqual(write.body, [{ user_id: 6199, extra_time: 45, apply_to_in_progress_quiz_sessions: true }]);
     assert.match(canvas.textOf(result), /Classic quizzes in this course are unaffected/);
   });

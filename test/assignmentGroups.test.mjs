@@ -13,7 +13,7 @@ test('assignment group fields go out flat, not wrapped in assignment_group', asy
       id: 25050, name: body?.name, position: body?.position, group_weight: body?.group_weight,
     }));
     await canvas.callTool('create-assignment-group', {
-      courseId: '18473', name: 'Homework', group_weight: 20,
+      courseId: '202020', name: 'Homework', group_weight: 20,
     });
     const write = canvas.requests.find(r => r.method === 'POST');
     assert.equal(write.body.name, 'Homework', 'name must be a top-level field');
@@ -28,7 +28,7 @@ test('a name Canvas did not apply is reported, not presented as success', async 
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: 25051, name: 'Assignments', position: 2, group_weight: 0 }));
     const result = await canvas.callTool('create-assignment-group', {
-      courseId: '18473', name: 'Homework', group_weight: 20,
+      courseId: '202020', name: 'Homework', group_weight: 20,
     });
     const text = canvas.textOf(result);
     assert.match(text, /WARNING/);
@@ -43,7 +43,7 @@ test('no warning when Canvas stored what it was asked for', async () => {
       id: 25052, name: body?.name, position: 1, group_weight: body?.group_weight,
     }));
     const result = await canvas.callTool('create-assignment-group', {
-      courseId: '18473', name: 'Homework', group_weight: 20,
+      courseId: '202020', name: 'Homework', group_weight: 20,
     });
     assert.doesNotMatch(canvas.textOf(result), /WARNING/);
   });
@@ -71,7 +71,7 @@ test('update sends flat fields, and rules as a newline-separated string', async 
       rules: { drop_lowest: 1, never_drop: [101, 102] },
     }));
     await canvas.callTool('update-assignment-group', {
-      courseId: '18473', assignmentGroupId: '25049', name: 'Homework',
+      courseId: '202020', assignmentGroupId: '25049', name: 'Homework',
       rules: { drop_lowest: 1, never_drop: [101, 102] },
     });
     const write = canvas.requests.find(r => r.method === 'PUT');
@@ -87,7 +87,7 @@ test('an empty rules object clears the rules rather than being ignored', async (
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: 25049, name: 'Homework', position: 1, group_weight: 20, rules: {} }));
     await canvas.callTool('update-assignment-group', {
-      courseId: '18473', assignmentGroupId: '25049', rules: {},
+      courseId: '202020', assignmentGroupId: '25049', rules: {},
     });
     const write = canvas.requests.find(r => r.method === 'PUT');
     assert.equal(write.body.rules, '');
@@ -98,7 +98,7 @@ test('omitting rules does not send the parameter at all', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: 25049, name: 'Homework', position: 1, group_weight: 20 }));
     await canvas.callTool('update-assignment-group', {
-      courseId: '18473', assignmentGroupId: '25049', name: 'Homework',
+      courseId: '202020', assignmentGroupId: '25049', name: 'Homework',
     });
     const write = canvas.requests.find(r => r.method === 'PUT');
     assert.equal('rules' in write.body, false, 'sending rules would clear existing ones');
@@ -111,7 +111,7 @@ test('rules Canvas did not store are reported', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: 25049, name: 'Homework', position: 1, group_weight: 20, rules: {} }));
     const result = await canvas.callTool('update-assignment-group', {
-      courseId: '18473', assignmentGroupId: '25049', rules: { drop_lowest: 2 },
+      courseId: '202020', assignmentGroupId: '25049', rules: { drop_lowest: 2 },
     });
     const text = canvas.textOf(result);
     assert.match(text, /WARNING/);
@@ -126,7 +126,7 @@ test('a never_drop list Canvas did not store is reported', async () => {
       rules: { never_drop: [101] },
     }));
     const result = await canvas.callTool('update-assignment-group', {
-      courseId: '18473', assignmentGroupId: '25049', rules: { never_drop: [101, 102] },
+      courseId: '202020', assignmentGroupId: '25049', rules: { never_drop: [101, 102] },
     });
     assert.match(canvas.textOf(result), /asked to never drop \[101, 102\], Canvas stored \[101\]/);
   });
@@ -139,7 +139,7 @@ test('no warning when Canvas stored the rules asked for', async () => {
       rules: { drop_lowest: 1, never_drop: [101] },
     }));
     const result = await canvas.callTool('update-assignment-group', {
-      courseId: '18473', assignmentGroupId: '25049', rules: { drop_lowest: 1, never_drop: [101] },
+      courseId: '202020', assignmentGroupId: '25049', rules: { drop_lowest: 1, never_drop: [101] },
     });
     assert.doesNotMatch(canvas.textOf(result), /WARNING/);
   });
@@ -151,7 +151,7 @@ test('an unknown rule key is refused rather than silently dropped', async () => 
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: 25049 }));
     const result = await canvas.callTool('update-assignment-group', {
-      courseId: '18473', assignmentGroupId: '25049', rules: { drop_smallest: 1 },
+      courseId: '202020', assignmentGroupId: '25049', rules: { drop_smallest: 1 },
     });
     assert.match(JSON.stringify(result), /only supports drop_lowest, drop_highest and never_drop/);
     assert.equal(canvas.requests.some(r => r.method === 'PUT'), false, 'nothing should be written');
@@ -162,7 +162,7 @@ test('an update with no fields is refused instead of writing nothing', async () 
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => ({ id: 25049 }));
     const result = await canvas.callTool('update-assignment-group', {
-      courseId: '18473', assignmentGroupId: '25049',
+      courseId: '202020', assignmentGroupId: '25049',
     });
     assert.match(JSON.stringify(result), /Nothing to update/);
   });
@@ -178,7 +178,7 @@ test('a 500 on never_drop is explained rather than passed through raw', async ()
       __body: [{ message: 'An error occurred.', error_code: 'internal_server_error' }],
     }));
     const result = await canvas.callTool('update-assignment-group', {
-      courseId: '18473', assignmentGroupId: '25050',
+      courseId: '202020', assignmentGroupId: '25050',
       rules: { drop_lowest: 1, never_drop: [371877] },
     });
     const text = JSON.stringify(result);
@@ -197,7 +197,7 @@ test('a 500 without never_drop is not blamed on never_drop', async () => {
       __body: [{ message: 'An error occurred.', error_code: 'internal_server_error' }],
     }));
     const result = await canvas.callTool('update-assignment-group', {
-      courseId: '18473', assignmentGroupId: '25050', rules: { drop_lowest: 1 },
+      courseId: '202020', assignmentGroupId: '25050', rules: { drop_lowest: 1 },
     });
     assert.doesNotMatch(JSON.stringify(result), /known never_drop failure/);
   });
@@ -211,7 +211,7 @@ test('a descriptive 400 on never_drop is left to speak for itself', async () => 
       __body: { rules: [{ message: 'Drop rules cannot be higher than the number of assignments' }] },
     }));
     const result = await canvas.callTool('update-assignment-group', {
-      courseId: '18473', assignmentGroupId: '25050', rules: { never_drop: [371877] },
+      courseId: '202020', assignmentGroupId: '25050', rules: { never_drop: [371877] },
     });
     const text = JSON.stringify(result);
     assert.match(text, /Drop rules cannot be higher/);

@@ -44,11 +44,11 @@ test('a copy into an empty shell sends course_copy_importer and the source cours
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('copy-course-content', {
-      sourceCourseId: '16477', destinationCourseId: '18473',
+      sourceCourseId: '16477', destinationCourseId: '202020',
     });
 
     const write = canvas.requests.find(r => r.method === 'POST');
-    assert.match(write.url, /\/courses\/18473\/content_migrations/);
+    assert.match(write.url, /\/courses\/202020\/content_migrations/);
     assert.equal(write.body.migration_type, 'course_copy_importer');
     assert.equal(write.body.settings.source_course_id, '16477');
     assert.match(canvas.textOf(result), /Migration 771/);
@@ -64,7 +64,7 @@ test('a destination that already has content is refused', async () => {
       modules: [{ id: 3 }],
     }));
     const result = await canvas.callTool('copy-course-content', {
-      sourceCourseId: '16477', destinationCourseId: '18473',
+      sourceCourseId: '16477', destinationCourseId: '202020',
     });
 
     const text = JSON.stringify(result);
@@ -79,7 +79,7 @@ test('allowExistingContent proceeds, and says duplicates are coming', async () =
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ assignments: [{ id: 1 }] }));
     const result = await canvas.callTool('copy-course-content', {
-      sourceCourseId: '16477', destinationCourseId: '18473', allowExistingContent: true,
+      sourceCourseId: '16477', destinationCourseId: '202020', allowExistingContent: true,
     });
     assert.ok(canvas.requests.some(r => r.method === 'POST'));
     assert.match(canvas.textOf(result), /Expect duplicates/);
@@ -90,7 +90,7 @@ test('copying a course into itself is refused', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('copy-course-content', {
-      sourceCourseId: '18473', destinationCourseId: '18473',
+      sourceCourseId: '202020', destinationCourseId: '202020',
     });
     assert.match(JSON.stringify(result), /cannot be copied into itself/);
     assert.ok(!canvas.requests.some(r => r.method === 'POST'));
@@ -101,7 +101,7 @@ test('date shifting reaches Canvas in the nested shape it expects', async () => 
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     await canvas.callTool('copy-course-content', {
-      sourceCourseId: '16477', destinationCourseId: '18473',
+      sourceCourseId: '16477', destinationCourseId: '202020',
       shiftDates: true,
       oldStartDate: '2026-01-06', newStartDate: '2026-08-24',
       oldEndDate: '2026-05-22', newEndDate: '2026-12-18',
@@ -123,7 +123,7 @@ test('a date shift says that Canvas preserves the weekday rather than the exact 
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('copy-course-content', {
-      sourceCourseId: '16477', destinationCourseId: '18473',
+      sourceCourseId: '16477', destinationCourseId: '202020',
       shiftDates: true, oldStartDate: '2026-01-06', newStartDate: '2026-08-24',
     });
     const text = canvas.textOf(result);
@@ -138,7 +138,7 @@ test('shiftDates without the start dates is refused rather than sent', async () 
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('copy-course-content', {
-      sourceCourseId: '16477', destinationCourseId: '18473', shiftDates: true,
+      sourceCourseId: '16477', destinationCourseId: '202020', shiftDates: true,
     });
     assert.match(JSON.stringify(result), /needs oldStartDate and newStartDate/);
     assert.ok(!canvas.requests.some(r => r.method === 'POST'));
@@ -149,7 +149,7 @@ test('shiftDates and removeDates together are refused', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('copy-course-content', {
-      sourceCourseId: '16477', destinationCourseId: '18473',
+      sourceCourseId: '16477', destinationCourseId: '202020',
       shiftDates: true, removeDates: true,
       oldStartDate: '2026-01-06', newStartDate: '2026-08-24',
     });
@@ -161,7 +161,7 @@ test('removeDates strips dates instead of shifting them', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('copy-course-content', {
-      sourceCourseId: '16477', destinationCourseId: '18473', removeDates: true,
+      sourceCourseId: '16477', destinationCourseId: '202020', removeDates: true,
     });
     assert.deepEqual(canvas.requests.find(r => r.method === 'POST').body.date_shift_options, { remove_dates: true });
     assert.match(canvas.textOf(result), /arrive undated/);
@@ -175,7 +175,7 @@ test('day substitutions survive as an object, whether given as one or as a strin
     await withMockCanvas(async canvas => {
       canvas.setResponse(canvasWith());
       const result = await canvas.callTool('copy-course-content', {
-        sourceCourseId: '16477', destinationCourseId: '18473',
+        sourceCourseId: '16477', destinationCourseId: '202020',
         shiftDates: true, oldStartDate: '2026-01-06', newStartDate: '2026-08-24',
         daySubstitutions: value,
       });
@@ -190,7 +190,7 @@ test('a copy with no date handling says the old due dates are coming with it', a
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith());
     const result = await canvas.callTool('copy-course-content', {
-      sourceCourseId: '16477', destinationCourseId: '18473',
+      sourceCourseId: '16477', destinationCourseId: '202020',
     });
     assert.match(canvas.textOf(result), /still carry last term's due dates/);
   });
@@ -210,9 +210,9 @@ test('a migration status is never served from cache', async () => {
       return {};
     });
 
-    await canvas.callTool('get-content-migration', { courseId: '18473', migrationId: '771' });
+    await canvas.callTool('get-content-migration', { courseId: '202020', migrationId: '771' });
     state = 'completed';
-    const result = await canvas.callTool('get-content-migration', { courseId: '18473', migrationId: '771' });
+    const result = await canvas.callTool('get-content-migration', { courseId: '202020', migrationId: '771' });
 
     // Two network reads, and the second must see the new state.
     const statusReads = canvas.requests.filter(r =>
@@ -234,7 +234,7 @@ test('an in-flight migration reports its progress percentage', async () => {
       },
     }));
     const result = await canvas.callTool('get-content-migration', {
-      courseId: '18473', migrationId: '771',
+      courseId: '202020', migrationId: '771',
     });
     assert.match(canvas.textOf(result), /running now — 40% complete/);
   });
@@ -249,7 +249,7 @@ test('a completed migration still reports what it failed to bring across', async
       issues: [{ issue_type: 'warning', description: 'Couldn\'t find the linked file for page "Welcome"' }],
     }));
     const result = await canvas.callTool('get-content-migration', {
-      courseId: '18473', migrationId: '771',
+      courseId: '202020', migrationId: '771',
     });
     const text = canvas.textOf(result);
     assert.match(text, /finished/);
@@ -262,7 +262,7 @@ test('a clean completed migration says so explicitly', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ migration: { ...MIGRATION, workflow_state: 'completed' } }));
     const result = await canvas.callTool('get-content-migration', {
-      courseId: '18473', migrationId: '771',
+      courseId: '202020', migrationId: '771',
     });
     assert.match(canvas.textOf(result), /no migration issues/);
   });
@@ -275,7 +275,7 @@ test('a failed migration is called a failure, not a status', async () => {
       issues: [{ issue_type: 'error', description: 'Source course not found' }],
     }));
     const result = await canvas.callTool('get-content-migration', {
-      courseId: '18473', migrationId: '771',
+      courseId: '202020', migrationId: '771',
     });
     const text = canvas.textOf(result);
     assert.match(text, /FAILED/);
@@ -289,7 +289,7 @@ test('a migration waiting for a selection says this server cannot finish it', as
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasWith({ migration: { ...MIGRATION, workflow_state: 'waiting_for_select' } }));
     const result = await canvas.callTool('get-content-migration', {
-      courseId: '18473', migrationId: '771',
+      courseId: '202020', migrationId: '771',
     });
     assert.match(canvas.textOf(result), /finish it in the Canvas UI/);
   });
@@ -298,7 +298,7 @@ test('a migration waiting for a selection says this server cannot finish it', as
 test('a course with no migrations says so plainly', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(({ url }) => (url.includes('/content_migrations') ? [] : {}));
-    const result = await canvas.callTool('list-content-migrations', { courseId: '18473' });
+    const result = await canvas.callTool('list-content-migrations', { courseId: '202020' });
     assert.match(canvas.textOf(result), /No content has ever been copied/);
   });
 });

@@ -1,5 +1,5 @@
 // The expected shapes here were read back off a live Canvas instance on
-// 2026-08-02 (course 18473, quiz 371566), one item per supported type.
+// 2026-08-02 (course 202020, quiz 371566), one item per supported type.
 //
 // Readback alone is NOT proof of correctness: it only shows Canvas stored what
 // it was sent. Matching round-tripped cleanly for a whole session and still
@@ -73,7 +73,7 @@ test('numeric: margin of error is sent as strings, as Canvas stores it', () => {
 });
 
 // Asserted against a matching question authored in the Canvas UI and read back
-// with get-new-quiz-item (course 18473, quiz 371566, item 9092). An earlier
+// with get-new-quiz-item (course 202020, quiz 371566, item 9092). An earlier
 // version of this test asserted the opposite of nearly every line below and
 // passed the whole time, because the item it described round-tripped through
 // the API cleanly while making the Canvas editor throw React error #31.
@@ -321,7 +321,7 @@ test('hot-spot matches the shape the Canvas editor writes', () => {
   const entry = buildItemEntry({
     interactionType: 'hot-spot',
     body: 'Click on Washington State',
-    imageUrl: 'https://gfalls.instructure.com/courses/18473/files/1235586/preview',
+    imageUrl: 'https://example.instructure.com/courses/202020/files/404040/preview',
     hotspotRect: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 },
   });
 
@@ -329,7 +329,7 @@ test('hot-spot matches the shape the Canvas editor writes', () => {
   assert.equal(entry.scoring_algorithm, 'HotSpot');
   assert.equal(entry.calculator_type, 'none');
   assert.deepEqual(entry.interaction_data, {
-    image_url: 'https://gfalls.instructure.com/courses/18473/files/1235586/preview',
+    image_url: 'https://example.instructure.com/courses/202020/files/404040/preview',
     hotspots_count: 1,
   });
   // The UI writes no user_response_type on this type, unlike most others.

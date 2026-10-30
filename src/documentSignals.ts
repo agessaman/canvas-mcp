@@ -418,7 +418,7 @@ export function rememberScan(key: string, fp: TemplateFingerprint | null): void 
 // The window everything is measured in. Eight words is short enough to survive
 // a table cell that a PDF ran into the next row, and long enough that two
 // students hitting the same one by chance is not worth a teacher's time.
-const SHINGLE_WORDS = 8;
+export const SHINGLE_WORDS = 8;
 // A run of matching windows has to reach this many words before it is worth
 // reporting. Below it, shared phrasing is just how the question was worded.
 const MIN_SPAN_WORDS = 12;
@@ -435,6 +435,10 @@ export interface SubmissionText {
   partners: Set<string>;
   /** The directions region, so the worksheet's own words are not flagged. */
   directions?: string;
+  /** Canvas sections, which decide whether a match is a partner or not. */
+  sections?: string[];
+  /** When this attempt arrived, so a match can say which copy came first. */
+  submitted_at?: string;
 }
 
 export interface SharedTextSignal {
@@ -442,6 +446,14 @@ export interface SharedTextSignal {
   excerpt: string;
   words: number;
   reason: string;
+  /** Whether the two share a Canvas section, and which. */
+  same_section?: boolean;
+  sections?: Record<string, string[]>;
+  /** Who submitted first, where both times are known. */
+  submitted_first?: string;
+  submitted_at?: Record<string, string>;
+  /** What the pair most likely is, given the section and the times. */
+  reading?: string;
 }
 
 /**
@@ -454,7 +466,7 @@ export interface SharedTextSignal {
  * each a 14-to-17-word sentence ending at a cell edge. Words do not care where
  * the cell ended.
  */
-function contentWords(text: string): string[] {
+export function contentWords(text: string): string[] {
   if (!text) return [];
   return text
     .replace(/\[Page \d+\][^\n]*/g, ' ')
@@ -466,7 +478,7 @@ function contentWords(text: string): string[] {
 }
 
 /** Every SHINGLE_WORDS-long window, in order. */
-function windowsOf(words: string[]): string[] {
+export function windowsOf(words: string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i + SHINGLE_WORDS <= words.length; i++) {
     out.push(words.slice(i, i + SHINGLE_WORDS).join(' '));
@@ -477,6 +489,42 @@ function windowsOf(words: string[]): string[] {
 function excerptOf(words: string[], from: number, count: number): string {
   const phrase = words.slice(from, from + count).join(' ');
   return phrase.length > MAX_EXCERPT ? `${phrase.slice(0, MAX_EXCERPT - 1)}…` : phrase;
+}
+
+
+interface PairSide {
+  student: string;
+  sections: string[];
+  submitted_at?: string;
+}
+
+/**
+ * The two facts that decided what a match meant, every time one came up:
+ * whether the students sit in the same class, and who handed in first.
+ *
+ * Neither is a verdict. Two students in one period who did not name each other
+ * are most often partners who forgot the name line; two in different periods
+ * who never meet are a different conversation. The teacher has both, instead
+ * of asking for them pair by pair.
+ */
+function pairContext(left: PairSide, right: PairSide): Partial<SharedTextSignal> {
+  const out: Partial<SharedTextSignal> = {};
+  const known = left.sections.length > 0 && right.sections.length > 0;
+  if (known) {
+    const shared = left.sections.filter(s => right.sections.includes(s));
+    out.same_section = shared.length > 0;
+    out.sections = { [left.student]: left.sections, [right.student]: right.sections };
+  }
+  if (left.submitted_at && right.submitted_at && left.submitted_at !== right.submitted_at) {
+    out.submitted_first = left.submitted_at < right.submitted_at ? left.student : right.student;
+    out.submitted_at = { [left.student]: left.submitted_at, [right.student]: right.submitted_at };
+  }
+  if (known) {
+    out.reading = out.same_section
+      ? 'Same section: often partners who did not write each other on the name line.'
+      : 'Different sections: the two did not work side by side, so a shared source or a passed-on file is the likelier explanation.';
+  }
+  return out;
 }
 
 /**
@@ -495,7 +543,15 @@ export function sharedTextSignals(submissions: SubmissionText[]): SharedTextSign
   const entries = submissions.map(s => {
     const words = contentWords(s.text);
     const list = windowsOf(words);
-    return { student: s.student, partners: s.partners, words, list, set: new Set(list) };
+    return {
+      student: s.student,
+      partners: s.partners,
+      sections: s.sections ?? [],
+      submitted_at: s.submitted_at,
+      words,
+      list,
+      set: new Set(list),
+    };
   });
 
   // Windows to ignore: the worksheet's own directions, and anything most of
@@ -543,6 +599,7 @@ export function sharedTextSignals(submissions: SubmissionText[]): SharedTextSign
                 excerpt,
                 words: count,
                 reason: SHARED_TEXT_REASON,
+                ...pairContext(left, right),
               });
             }
           }

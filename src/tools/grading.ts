@@ -3,7 +3,22 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 import { DataAnonymizer } from "../anonymizer.js";
 import { ContentBlock, ImageBudget, extractFile, htmlToText } from "../submissionContent.js";
-import { GRADING_INSTRUCTIONS, describeRubric, getCourseRoster, needsGrading, readSubmissionContent, scanTemplateVariants } from "../grading.js";
+import {
+  assignmentTerms,
+  describeRubric,
+  describeScheme,
+  descriptionLinks,
+  getCourseRoster,
+  getSectionNames,
+  gradingInstructions,
+  needsGrading,
+  readSubmissionContent,
+  resolveGradingScheme,
+  scanTemplateVariants,
+  sectionsFor,
+} from "../grading.js";
+import { resolvePreferences } from "../gradingPreferences.js";
+import { SOURCE_CHECK_NOTE, checkAgainstSources, fetchSources } from "../sourceCheck.js";
 import { formatInZone, resolveCourseZone } from "../courseTime.js";
 import { templateVariants } from "../documentSignals.js";
 
@@ -28,6 +43,11 @@ function maxUserIds(): number {
 const DEFAULT_QUEUE_LIMIT = 50;
 
 const MAX_LINKED_FILES = 5;
+
+// Above this many students, a scan that downloads a file each is a long wait
+// the caller did not ask for, so it stays opt-in rather than being turned on
+// by the cross-check default.
+const AUTO_SCAN_QUEUE_LIMIT = 60;
 
 // Files and links the teacher put in the assignment description: handouts,
 // readings, source documents. Canvas files are pulled in; other links are
@@ -60,11 +80,12 @@ async function linkedMaterials(canvas: CanvasClient, descriptionHtml: string, ma
     materials.push({ note: `${fileIds.length - MAX_LINKED_FILES} more linked file(s) not read: ${fileIds.slice(MAX_LINKED_FILES).join(', ')}` });
   }
 
-  const links = [...descriptionHtml.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)]
-    .filter(m => !/\/files\/\d+/.test(m[1]))
-    .map(m => ({ label: m[2].replace(/<[^>]+>/g, '').trim(), url: m[1] }));
+  const links = descriptionLinks(descriptionHtml);
   if (links.length) {
-    materials.push({ links, note: "Links in the description were not fetched. Ask the teacher if they are needed for grading." });
+    materials.push({
+      links,
+      note: "Links in the description were not fetched. Pass sourceCheck: true to compare student work against them.",
+    });
   }
   return { blocks, materials };
 }
@@ -73,7 +94,7 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
   // Tool: get-grading-packet
   server.tool(
     "get-grading-packet",
-    "Start grading an assignment, then read each student's work. Call it ONCE with no userId to get the grading instructions, the assignment, its linked materials, the rubric with the criterion and rating IDs grade-submission needs, and the queue of students to grade. After that, call it per student with userId (or userIds for up to 5 at once): those calls return only that student's work plus a one-line header, because the instructions, rubric and queue do not change between students and resending them costs thousands of tokens each time. Use `include` to override what comes back, and scanTemplates to find out which version of a worksheet each student had. get-submission-content reads one student's work on its own, with more control over images and PDF rendering.",
+    "Start grading an assignment, then read each student's work. Call it ONCE with no userId to get the grading instructions, the teacher's recorded grading practices and the questions still open, the assignment with any rules it states, the course's letter-grade cutoffs and late policy, the rubric with the criterion and rating IDs grade-submission needs, and the queue of students to grade with the section each is in. After that, call it per student with userId (or userIds for up to 5 at once): those calls return only that student's work plus a one-line header, because the shared sections do not change between students and resending them costs thousands of tokens each time. Use `include` to override what comes back, scanTemplates to find out which version of a worksheet each student had, and sourceCheck to compare work against the pages the assignment links to. get-submission-content reads one student's work on its own, with more control over images and PDF rendering.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentId: z.string().describe("The ID of the assignment"),
@@ -84,13 +105,16 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
       queueLimit: z.number().int().min(1).max(500).default(DEFAULT_QUEUE_LIMIT).describe(`Maximum students listed in the grading queue (default: ${DEFAULT_QUEUE_LIMIT}); queue_truncated is set when there are more`),
       includeMaterials: z.boolean().default(true).describe("Read Canvas files linked in the assignment description, such as handouts and sources (default: true)"),
       anonymous: z.boolean().default(true).describe("Use pseudonyms for students. Pseudonyms are per course and stable across sessions: the same student keeps the same number. (default: true)"),
-      scrubFirstNamesInBody: z.boolean().default(false).describe("Also redact bare first names from the roster in body text. Off by default, because course content is full of words that are also student names (a student called Henry would erase \"Prince Henry\"). Names on a \"Names:\" line are always redacted when anonymous."),
+      scrubFirstNamesInBody: z.boolean().default(false).describe("Also redact bare first names from the roster in body text. Off by default, because course content is full of words that are also student names (a student whose name is also a historical figure's would erase that figure). Names on a \"Names:\" line are always redacted when anonymous."),
       includePartners: z.boolean().default(true).describe("Report classmates named on the work's \"Names:\"/\"Partner:\" line, with whether they submitted (default: true)"),
-      crossCheck: z.boolean().default(false).describe("With scanTemplates, look for whole sentences that turn up in two students' work where neither named the other as a partner. Reported under integrity_signals as prompts for the teacher to look at, never as findings — the usual explanation is a shared web source. Worksheet text and anything more than half the class wrote are excluded (default: false)"),
-      scanTemplates: z.boolean().default(false).describe("With the queue, download one file per queued student to work out which version of the worksheet template each had, and return template_variants. Off by default because it costs a download per student; results are cached per attempt, and students already read in this session are not refetched.")
+      crossCheck: z.boolean().default(true).describe(`Look for whole passages that turn up in two students' work where neither named the other as a partner, with each student's section and submission time so same-class partners can be told from cross-section copying. Reported under integrity_signals as prompts for the teacher to look at, never as findings. Worksheet text and anything more than half the class wrote are excluded. Needs the submissions read, so it turns scanTemplates on by itself for queues of ${AUTO_SCAN_QUEUE_LIMIT} or fewer (default: true)`),
+      scanTemplates: z.boolean().optional().describe("With the queue, download one file per queued student to work out which version of the worksheet template each had, and return template_variants. Costs a download per student; results are cached per attempt, and students already read in this session are not refetched. Left unset, crossCheck turns this on for a queue that is not too long."),
+      sourceCheck: z.boolean().default(false).describe("Fetch the web pages the assignment description links to and report the longest runs of consecutive words each student shares with them. Needs the submissions read (as scanTemplates does). Run lengths are reported; what counts as copying is the teacher's call (default: false)"),
+      sourceUrls: z.array(z.string()).optional().describe("Extra pages to compare against, on top of the links in the description — the sources a worksheet names but does not link"),
+      minMatchWords: z.number().int().min(8).max(100).optional().describe("Shortest run of consecutive words a source match has to reach to be reported. Leave it unset to report everything the detector can see and apply the teacher's own threshold when reading"),
     },
     { readOnlyHint: true },
-    async ({ courseId, assignmentId, userId, userIds, include, queueLimit = DEFAULT_QUEUE_LIMIT, includeMaterials = true, anonymous = true, scrubFirstNamesInBody = false, includePartners = true, scanTemplates = false, crossCheck = false }: {
+    async ({ courseId, assignmentId, userId, userIds, include, queueLimit = DEFAULT_QUEUE_LIMIT, includeMaterials = true, anonymous = true, scrubFirstNamesInBody = false, includePartners = true, scanTemplates, crossCheck = true, sourceCheck = false, sourceUrls, minMatchWords }: {
       courseId: string;
       assignmentId: string;
       userId?: string;
@@ -103,6 +127,9 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
       includePartners?: boolean;
       scanTemplates?: boolean;
       crossCheck?: boolean;
+      sourceCheck?: boolean;
+      sourceUrls?: string[];
+      minMatchWords?: number;
     }) => {
       try {
         const students = [...(userId ? [userId] : []), ...(userIds ?? [])]
@@ -122,11 +149,12 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
         const content: ContentBlock[] = [];
 
         if (wanted.has("instructions")) {
-          content.push({ type: "text", text: GRADING_INSTRUCTIONS });
+          content.push({ type: "text", text: gradingInstructions(resolvePreferences(courseId)) });
         }
 
         const summary: any = {};
         if (wanted.has("assignment")) {
+          const descriptionText = htmlToText(a.description ?? '');
           summary.assignment = {
             id: a.id,
             name: a.name,
@@ -145,6 +173,30 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
             published: !!a.published,
           };
           summary.time_zone = { zone: timeZone, from: zoneSource };
+          // What students were told, so a plan can be held against it.
+          const terms = assignmentTerms(descriptionText);
+          if (terms.length) {
+            summary.assignment_terms = terms;
+            summary.assignment_terms_note = "Rules the description states to students. Hold the plan against them, and say so before grading departs from what students were told.";
+          }
+          // The scale the letters in a plan must come from. Assuming a standard
+          // one put a letter in a plan that the gradebook did not show.
+          try {
+            const scheme = await resolveGradingScheme(canvas, courseId, a);
+            summary.grading_standard = describeScheme(scheme, a.points_possible);
+          } catch {
+            // A plan without cutoffs is still usable; a failed packet is not.
+          }
+          // The policy silently moves every score between the plan and Canvas.
+          try {
+            const policy: any = await canvas.getLatePolicy(courseId);
+            summary.late_policy = policy?.late_policy ?? policy ?? null;
+          } catch {
+            summary.late_policy = null;
+          }
+          summary.late_policy_note = summary.late_policy?.late_submission_deduction_enabled
+            ? "Late work is deducted automatically. grade-submission's dryRun shows what a score becomes after the deduction, and latePolicyStatus can clear or set the marker on one submission."
+            : "No automatic late deduction is in force. If this changes mid-grading, a plan built now will price differently.";
           if (!a.published) {
             summary.warning = "This assignment is unpublished. Canvas won't accept grades until it's published; ask the teacher before publishing it.";
           }
@@ -168,35 +220,99 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
             not_submitted: subs.filter(s => !s.submitted_at && !s.excused).length,
             excused: subs.filter(s => s.excused).length,
           };
-          summary.queue = all.slice(0, queueLimit).map(s => ({
-            user_id: s.user_id,
-            student: anonymous ? DataAnonymizer.pseudonymFor(s.user_id, courseId) : undefined,
-            submitted_at: s.submitted_at,
-            ...(local(s.submitted_at) ? { submitted_at_local: local(s.submitted_at) } : {}),
-            attempt: s.attempt,
-            late: s.late || false,
-            ...(s.grade_matches_current_submission === false ? { resubmitted_after_grading: true } : {}),
-          }));
+          // Sections come from Canvas, not from the period a student wrote on
+          // the sheet: that was blank or written three different ways often
+          // enough to be useless, and it decides how shared work is graded.
+          const roster = await getCourseRoster(canvas, courseId);
+          const sectionNames = await getSectionNames(canvas, courseId);
+          const byUser = new Map(roster.map(m => [m.userId, m]));
+          const sectionsOf = (id: unknown) => sectionsFor(byUser.get(String(id)), sectionNames);
+          summary.queue = all.slice(0, queueLimit).map(s => {
+            const sections = sectionsOf(s.user_id);
+            return {
+              user_id: s.user_id,
+              student: anonymous ? DataAnonymizer.pseudonymFor(s.user_id, courseId) : undefined,
+              ...(sections.length ? { sections } : {}),
+              submitted_at: s.submitted_at,
+              ...(local(s.submitted_at) ? { submitted_at_local: local(s.submitted_at) } : {}),
+              attempt: s.attempt,
+              late: s.late || false,
+              ...(s.late_policy_status ? { late_policy_status: s.late_policy_status } : {}),
+              ...(s.seconds_late ? { seconds_late: s.seconds_late } : {}),
+              ...(s.grade_matches_current_submission === false ? { resubmitted_after_grading: true } : {}),
+            };
+          });
           if (all.length > queueLimit) {
             summary.queue_truncated = true;
             summary.queue_note = `Showing ${queueLimit} of ${all.length} students needing grading; raise queueLimit for the rest.`;
           }
-          if (scanTemplates) {
-            const { shared_text, ...scan } = await scanTemplateVariants(canvas, courseId, assignmentId, summary.queue, {
-              anonymous, maxFileMB: 25, roster: await getCourseRoster(canvas, courseId), crossCheck,
+
+          // A cross-check or a source check needs the submissions read, which
+          // is what the template scan already does. Rather than making the
+          // caller know that, the scan is turned on for them — but only for a
+          // queue short enough that the downloads are not a surprise.
+          const needsRead = crossCheck || sourceCheck;
+          let scan = scanTemplates;
+          let autoScanNote: string | undefined;
+          if (scan === undefined) {
+            scan = needsRead && summary.queue.length <= AUTO_SCAN_QUEUE_LIMIT;
+            if (needsRead && !scan) {
+              autoScanNote = `The queue is longer than ${AUTO_SCAN_QUEUE_LIMIT} students, so the submissions were not read automatically. Pass scanTemplates: true to run the cross-check and source check over it.`;
+            } else if (scan) {
+              // A download per student is not free, and the caller did not ask
+              // for it in so many words. Saying so is the difference between a
+              // cost that was chosen and one that was sprung.
+              autoScanNote = `${summary.queue.length} submission(s) were read so the cross-check${sourceCheck ? ' and source check' : ''} could run, which is a download each. Pass scanTemplates: false to skip it.`;
+            }
+          } else if (needsRead && !scan) {
+            autoScanNote = "crossCheck and sourceCheck need the submissions read; scanTemplates: false turned that off, so neither ran.";
+          }
+          if (autoScanNote) summary.scan_note = autoScanNote;
+
+          // The pages the assignment sends students to, fetched once for the
+          // whole queue.
+          let sources: Awaited<ReturnType<typeof fetchSources>> | undefined;
+          if (sourceCheck && scan) {
+            const links = [...descriptionLinks(a.description ?? ''), ...(sourceUrls ?? []).map(url => ({ url }))];
+            if (links.length === 0) {
+              summary.source_check_note = "sourceCheck was asked for, but the assignment description links to no web pages. Pass sourceUrls with the pages the worksheet names.";
+            } else {
+              sources = await fetchSources(links);
+              summary.sources_read = sources.sources.map(s => ({ url: s.url, ...(s.label ? { label: s.label } : {}), chars: s.chars }));
+              if (sources.failures.length) {
+                summary.sources_failed = sources.failures;
+                summary.sources_failed_note = "These pages were not compared against. A site that refuses an automated fetch often has the article at a different address than the one linked; the teacher can paste the right address into sourceUrls.";
+              }
+            }
+          }
+
+          if (scan) {
+            const { shared_text, source_matches, ...rest } = await scanTemplateVariants(canvas, courseId, assignmentId, summary.queue, {
+              anonymous,
+              maxFileMB: 25,
+              roster,
+              crossCheck,
+              sections: sectionNames,
+              sources: sources?.sources,
+              minMatchWords,
             });
-            summary.template_scan = { ...scan, students: summary.queue.length };
+            summary.template_scan = { ...rest, students: summary.queue.length };
             if (shared_text?.length) {
               summary.integrity_signals = shared_text;
-              summary.integrity_signals_note = "Prompts to look closer, never findings. Two students sharing a sentence most often means a shared web source; open the work before drawing any conclusion.";
+              summary.integrity_signals_note = "Prompts to look closer, never findings. Each pair says whether the two share a section and who submitted first: two students in one class who did not name each other are usually partners who forgot, and two in different classes are a different conversation. A shared sentence most often means a shared web source; open the work before drawing any conclusion.";
             }
-          } else if (crossCheck) {
-            summary.cross_check_note = "crossCheck needs scanTemplates: true, which is what reads the submissions.";
+            if (source_matches?.length) {
+              summary.source_matches = source_matches;
+              summary.source_matches_note = SOURCE_CHECK_NOTE;
+            }
+          } else if (crossCheck && scanTemplates === false) {
+            summary.cross_check_note = "crossCheck needs the submissions read, which scanTemplates: false turned off.";
           }
+
           const variants = templateVariants(String(a.id ?? assignmentId));
           if (variants) {
             summary.template_variants = variants;
-            summary.template_variants_note = scanTemplates
+            summary.template_variants_note = scan
               ? "Worksheet versions across the queued students scanned here, plus any read earlier in this session. A student with no readable document is counted in template_scan.skipped."
               : "Worksheet versions seen so far, from the students read in this session. Pass scanTemplates: true to read the rest of the queue.";
           }
@@ -228,13 +344,18 @@ export function registerGradingTools(server: McpServer, canvas: CanvasClient) {
           }
           // Built once for the whole batch rather than per student.
           const roster = (anonymous || includePartners) ? await getCourseRoster(canvas, courseId) : [];
+          const sectionNames = await getSectionNames(canvas, courseId);
           for (const id of students) {
-            content.push({ type: "text", text: `--- Student work · user ${id} ---` });
+            const sections = sectionsFor(roster.find(m => m.userId === String(id)), sectionNames);
+            content.push({
+              type: "text",
+              text: `--- Student work · user ${id}${sections.length ? ` · ${sections.join(', ')}` : ''} ---`,
+            });
             try {
               content.push(...await readSubmissionContent(canvas, courseId, assignmentId, id, {
                 maxCharsPerFile: 60000, renderPdfPages: 'auto', maxPdfPagesToRender: 10, ocr: true,
                 maxImages: 15, maxFileMB: 25, anonymous, scrubFirstNamesInBody, includePartners,
-                roster, timeZone,
+                roster, timeZone, sections: sectionNames,
               }));
             } catch (e: any) {
               // One unreadable student must not lose the rest of the batch.

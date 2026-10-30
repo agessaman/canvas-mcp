@@ -25,7 +25,7 @@ test('published is sent to Canvas as wiki_page[published]', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     await canvas.callTool('update-page-content', {
-      courseId: '18473', pageUrl: 'unit-1', title: 'Unit 1', body: '<p>hi</p>', published: true,
+      courseId: '202020', pageUrl: 'unit-1', title: 'Unit 1', body: '<p>hi</p>', published: true,
     });
     const write = canvas.requests.find(r => r.method !== 'GET');
     assert.equal(write.body.wiki_page.published, true);
@@ -36,7 +36,7 @@ test('a page left unpublished is warned about, since students cannot see it', as
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     const result = await canvas.callTool('update-page-content', {
-      courseId: '18473', pageUrl: 'unit-1', title: 'Unit 1', body: '<p>hi</p>',
+      courseId: '202020', pageUrl: 'unit-1', title: 'Unit 1', body: '<p>hi</p>',
     });
     const text = canvas.textOf(result);
     assert.match(text, /UNPUBLISHED/);
@@ -50,7 +50,7 @@ test('no unpublished warning when a draft was asked for explicitly', async () =>
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     const result = await canvas.callTool('update-page-content', {
-      courseId: '18473', pageUrl: 'unit-1', title: 'Unit 1', body: '<p>hi</p>', published: false,
+      courseId: '202020', pageUrl: 'unit-1', title: 'Unit 1', body: '<p>hi</p>', published: false,
     });
     assert.doesNotMatch(canvas.textOf(result), /WARNING/);
   });
@@ -60,7 +60,7 @@ test('no unpublished warning on a page that is published', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     const result = await canvas.callTool('update-page-content', {
-      courseId: '18473', pageUrl: 'unit-1', title: 'Unit 1', body: '<p>hi</p>', published: true,
+      courseId: '202020', pageUrl: 'unit-1', title: 'Unit 1', body: '<p>hi</p>', published: true,
     });
     assert.doesNotMatch(canvas.textOf(result), /UNPUBLISHED/);
   });
@@ -73,7 +73,7 @@ test('a slug Canvas renamed is pointed out rather than left to 404', async () =>
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     const result = await canvas.callTool('update-page-content', {
-      courseId: '18473', pageUrl: 'mcp-publish-probe',
+      courseId: '202020', pageUrl: 'mcp-publish-probe',
       title: 'MCP Publish Probe (throwaway)', body: '<p>hi</p>', published: true,
     });
     const text = canvas.textOf(result);
@@ -86,7 +86,7 @@ test('a slug Canvas kept produces no note', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     const result = await canvas.callTool('update-page-content', {
-      courseId: '18473', pageUrl: 'unit-1', title: 'Unit 1', body: '<p>hi</p>', published: true,
+      courseId: '202020', pageUrl: 'unit-1', title: 'Unit 1', body: '<p>hi</p>', published: true,
     });
     assert.doesNotMatch(canvas.textOf(result), /NOTE: Canvas stored/);
   });
@@ -98,7 +98,7 @@ test('notify_of_update is not sent unless asked for', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     await canvas.callTool('update-page-content', {
-      courseId: '18473', pageUrl: 'unit-1', title: 'Unit 1', body: '<p>hi</p>', published: true,
+      courseId: '202020', pageUrl: 'unit-1', title: 'Unit 1', body: '<p>hi</p>', published: true,
     });
     const write = canvas.requests.find(r => r.method !== 'GET');
     assert.equal('notify_of_update' in write.body.wiki_page, false);
@@ -109,7 +109,7 @@ test('notifyOfUpdate reaches Canvas when it is asked for', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     await canvas.callTool('update-page-content', {
-      courseId: '18473', pageUrl: 'unit-1', body: '<p>hi</p>', notifyOfUpdate: true,
+      courseId: '202020', pageUrl: 'unit-1', body: '<p>hi</p>', notifyOfUpdate: true,
     });
     const write = canvas.requests.find(r => r.method !== 'GET');
     assert.equal(write.body.wiki_page.notify_of_update, true);
@@ -122,7 +122,7 @@ test('published on its own is a write, not a no-op', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     const result = await canvas.callTool('update-page-content', {
-      courseId: '18473', pageUrl: 'unit-1', published: true,
+      courseId: '202020', pageUrl: 'unit-1', published: true,
     });
     assert.doesNotMatch(canvas.textOf(result), /nothing was written/);
     assert.ok(canvas.requests.some(r => r.method !== 'GET'), 'must actually write');
@@ -136,7 +136,7 @@ test('a page body gets a spacer so it does not sit flush against the module cont
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     await canvas.callTool('update-page-content', {
-      courseId: '18473', pageUrl: 'unit-1', body: '<p>hi</p>', published: true,
+      courseId: '202020', pageUrl: 'unit-1', body: '<p>hi</p>', published: true,
     });
     const write = canvas.requests.find(r => r.method !== 'GET');
     assert.match(write.body.wiki_page.body, /class="mcp-page-end"/);
@@ -151,7 +151,7 @@ test('the spacer is not added twice on a read-edit-write round trip', async () =
     canvas.setResponse(canvasPages());
     const once = '<p>hi</p>\n<div class="mcp-page-end" style="height: 2rem;" aria-hidden="true"></div>';
     await canvas.callTool('update-page-content', {
-      courseId: '18473', pageUrl: 'unit-1', body: once, published: true,
+      courseId: '202020', pageUrl: 'unit-1', body: once, published: true,
     });
     const write = canvas.requests.find(r => r.method !== 'GET');
     const count = (write.body.wiki_page.body.match(/mcp-page-end/g) || []).length;
@@ -163,7 +163,7 @@ test('page-end spacing can be turned off', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     await canvas.callTool('update-page-content', {
-      courseId: '18473', pageUrl: 'unit-1', body: '<p>hi</p>', pageEndSpacing: false, published: true,
+      courseId: '202020', pageUrl: 'unit-1', body: '<p>hi</p>', pageEndSpacing: false, published: true,
     });
     const write = canvas.requests.find(r => r.method !== 'GET');
     assert.doesNotMatch(write.body.wiki_page.body, /mcp-page-end/);
@@ -174,7 +174,7 @@ test('apply-page-changes spaces the page end too', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     await canvas.callTool('apply-page-changes', {
-      courseId: '18473', pageUrl: 'unit-1', newContent: '<p>revised</p>',
+      courseId: '202020', pageUrl: 'unit-1', newContent: '<p>revised</p>',
     });
     const write = canvas.requests.find(r => r.method !== 'GET');
     assert.match(write.body.wiki_page.body, /mcp-page-end/);
@@ -187,7 +187,7 @@ test('apply-page-changes can publish', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(canvasPages());
     await canvas.callTool('apply-page-changes', {
-      courseId: '18473', pageUrl: 'unit-1', newContent: '<p>revised</p>', published: true,
+      courseId: '202020', pageUrl: 'unit-1', newContent: '<p>revised</p>', published: true,
     });
     const write = canvas.requests.find(r => r.method !== 'GET');
     assert.equal(write.body.wiki_page.published, true);

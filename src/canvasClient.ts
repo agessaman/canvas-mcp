@@ -669,7 +669,7 @@ export class CanvasClient {
   // The validation runs before the serializer, so the parameter is only legal
   // alongside include[]=assessments. Sending it made this endpoint 400 on every
   // rubric in the course — which also broke the readback that create-rubric and
-  // update-rubric depend on. Verified live on gfalls.instructure.com 2026-08-03:
+  // update-rubric depend on. Verified live on example.instructure.com 2026-08-03:
   // without it the rubric comes back with its criteria under `data`, which is
   // always serialized. If assessments are ever added here, `style` becomes legal
   // again, but only in that company.
@@ -747,7 +747,7 @@ export class CanvasClient {
   // --- Grading standards ---
   // A course's grading_standard_id is very often an ACCOUNT standard the course
   // inherited, and the course-scoped path 404s on exactly those: observed live,
-  // /courses/26012/grading_standards/52 is a 404 while the course reports
+  // /courses/101010/grading_standards/52 is a 404 while the course reports
   // grading_standard_id 52. The sub-account path 404s too, because the standard
   // is defined further up the chain. Only /accounts/self resolves it. So this
   // tries all three rather than reading one 404 as "no standard", which silently
@@ -917,7 +917,7 @@ export class CanvasClient {
    * Files in one folder. This needs its own endpoint: /courses/:id/files takes
    * no folder_id, and passing one is silently ignored rather than rejected —
    * you get every file in the course back and nothing says the filter was
-   * dropped. Confirmed live against course 18473.
+   * dropped. Confirmed live against course 202020.
    */
   async listFolderFiles(folderId: string, params: any = {}): Promise<any[]> {
     return this.fetchAllPages<any>(`/api/v1/folders/${folderId}/files`, params);

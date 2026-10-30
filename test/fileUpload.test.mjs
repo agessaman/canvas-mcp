@@ -162,7 +162,7 @@ test('upload walks all three steps and reports the stored file', async () => {
   await withCanvasAndStorage(async harness => {
     const filePath = await sampleFile();
     const result = await harness.callTool('upload-course-file', {
-      courseId: '18473', filePath, folderPath: '/Handouts',
+      courseId: '202020', filePath, folderPath: '/Handouts',
     });
 
     // 1. metadata to Canvas, with the size and guessed content type
@@ -192,7 +192,7 @@ test('upload walks all three steps and reports the stored file', async () => {
 // there would hand a full-access API credential to another host.
 test('the Canvas token is never sent to the storage host', async () => {
   await withCanvasAndStorage(async harness => {
-    await harness.callTool('upload-course-file', { courseId: '18473', filePath: await sampleFile() });
+    await harness.callTool('upload-course-file', { courseId: '202020', filePath: await sampleFile() });
 
     assert.equal(harness.storageRequests.length, 1);
     const sent = JSON.stringify(harness.storageRequests[0].headers);
@@ -209,7 +209,7 @@ test('the Canvas token is never sent to the storage host', async () => {
 // written last is silently dropped and the upload is rejected.
 test('upload_params are written before the file field', async () => {
   await withCanvasAndStorage(async harness => {
-    await harness.callTool('upload-course-file', { courseId: '18473', filePath: await sampleFile() });
+    await harness.callTool('upload-course-file', { courseId: '202020', filePath: await sampleFile() });
 
     const body = harness.storageRequests[0].body;
     assert.ok(body.includes('name="key"'), 'upload_params must be included');
@@ -224,7 +224,7 @@ test('upload_params are written before the file field', async () => {
 test('a 201 from storage is accepted without a finalize round trip', async () => {
   await withCanvasAndStorage(async harness => {
     const result = await harness.callTool('upload-course-file', {
-      courseId: '18473', filePath: await sampleFile(),
+      courseId: '202020', filePath: await sampleFile(),
     });
     assert.ok(!harness.canvasRequests.some(r => r.url.includes('confirm')));
     assert.match(harness.textOf(result), /File ID 77/);
@@ -234,7 +234,7 @@ test('a 201 from storage is accepted without a finalize round trip', async () =>
 test('folderId and folderPath are never sent together', async () => {
   await withCanvasAndStorage(async harness => {
     await harness.callTool('upload-course-file', {
-      courseId: '18473', filePath: await sampleFile(),
+      courseId: '202020', filePath: await sampleFile(),
       folderPath: '/Handouts', folderId: '99',
     });
     const metadata = JSON.parse(
@@ -249,7 +249,7 @@ test('folderId and folderPath are never sent together', async () => {
 test('a missing local file fails before anything is sent to Canvas', async () => {
   await withCanvasAndStorage(async harness => {
     const result = await harness.callTool('upload-course-file', {
-      courseId: '18473', filePath: '/nope/does-not-exist.pdf',
+      courseId: '202020', filePath: '/nope/does-not-exist.pdf',
     });
     assert.match(JSON.stringify(result), /No file at/);
     assert.equal(harness.canvasRequests.length, 0);
@@ -261,7 +261,7 @@ test('a missing local file fails before anything is sent to Canvas', async () =>
 // the whole course comes back. A folder listing must use /folders/:id/files.
 test('listing one folder queries the folder endpoint, not the course', async () => {
   await withCanvasAndStorage(async harness => {
-    await harness.callTool('list-course-files', { courseId: '18473', folderId: '172065' });
+    await harness.callTool('list-course-files', { courseId: '202020', folderId: '172065' });
 
     const listing = harness.canvasRequests.filter(r => r.method === 'GET');
     assert.ok(
@@ -327,11 +327,11 @@ test('scheduled availability is accepted rather than warned about', async () => 
 // "published" after it had been set to link-only.
 test('a file write drops the cached folder and course listings', async () => {
   await withCanvasAndStorage(async harness => {
-    await harness.callTool('list-course-files', { courseId: '18473', folderId: '172065' });
+    await harness.callTool('list-course-files', { courseId: '202020', folderId: '172065' });
     const before = harness.canvasRequests.filter(r => r.method === 'GET').length;
 
     // Same listing again — served from cache, no new request.
-    await harness.callTool('list-course-files', { courseId: '18473', folderId: '172065' });
+    await harness.callTool('list-course-files', { courseId: '202020', folderId: '172065' });
     assert.equal(
       harness.canvasRequests.filter(r => r.method === 'GET').length, before,
       'second identical listing should be cached'
@@ -340,7 +340,7 @@ test('a file write drops the cached folder and course listings', async () => {
     await harness.callTool('set-file-availability', { fileId: '1335119', state: 'link-only' });
 
     // ...and now it must go back to Canvas rather than serve the stale state.
-    await harness.callTool('list-course-files', { courseId: '18473', folderId: '172065' });
+    await harness.callTool('list-course-files', { courseId: '202020', folderId: '172065' });
     assert.ok(
       harness.canvasRequests.filter(r => r.method === 'GET').length > before,
       'the listing must be refetched after a file write'

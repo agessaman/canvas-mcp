@@ -81,21 +81,23 @@ Please ensure all visualizations are clearly labeled with:
 
 1. Find the IDs if I gave names: list-courses for the course, then list-assignments for the assignment.
 
-2. Call get-grading-packet without a userId. Read its GRADING INSTRUCTIONS block and follow it for the whole session. Look over the description, the linked materials and the rubric.
+2. Call get-grading-packet without a userId. Read its GRADING INSTRUCTIONS block and follow it for the whole session. It also lists what you already know about how I grade and what you still have to ask. Look over the description, any rules it states to students, the rubric, the course's letter cutoffs and the late policy.
 
 3. Before reading any student work, ask me, together in one message:
    a. Whether anything the assignment depends on is missing (paper sources, a handout, a reading). Ask only if the packet suggests it.
-   b. Whether I'll accept resubmissions for this assignment, and under what conditions — it may apply to only some students, or end at a date. Ask once; this decides "Revise ..." vs "Next time ..." in feedback, and which students get which.
-   c. Whether I want feedback comments this time. The default is no feedback, just scores.
-   Wait for my answers.
+   b. Whether I'll accept resubmissions for this assignment, and under what conditions — it may apply to only some students, or end at a date.
+   c. Only the practices the packet lists as not yet answered AND that this assignment will actually run into. Offer the examples it gives as options. Don't ask me things I've already answered, and don't ask about a decision this assignment won't reach.
+   Wait for my answers, then save the ones worth keeping with set-grading-preferences.
 
-4. Calibrate on the first two students in the queue: read each with get-grading-packet's userId (work only — do not re-request the instructions, rubric or queue) and show me your draft. For every criterion, give the rating, points and the evidence (a short quote or location in the work). Add the feedback text only if feedback is on. Adjust your approach to my corrections before going on.
+4. Calibrate on the first two students in the queue: read each with get-grading-packet's userId (work only — do not re-request the instructions, rubric or queue) and show me your draft. For every criterion, give the rating, points and the evidence (a short quote or location in the work). Add feedback text only if I asked for it. Adjust to my corrections before going on.
 
-5. Continue through the queue in batches of about five, reading each batch with get-grading-packet's userIds. For each student show: pseudonym, total, per-criterion ratings with one line of evidence, draft feedback if it's on, and any flag (unreadable file, link not fetched, possible missing materials, late, a partner who hasn't submitted, an integrity signal to look at yourself). Ask me to approve, edit or skip each one.
+5. Continue through the queue in batches of about five, reading each batch with get-grading-packet's userIds. For each student show: pseudonym, section, total, per-criterion ratings with one line of evidence, draft feedback if it's on, and any flag (unreadable file, source match, a passage shared with a classmate, late, a partner who hasn't submitted). Ask me to approve, edit or skip each one.
 
-6. If I ask to see a grade before it's written, call grade-submission with dryRun: true — it gives the total and the letter grade without changing anything. Write only what I approved, with grade-submission: rubric scores via the rubric parameter, plus comment and rubric comments only when feedback is on and I approved that exact text. If the packet says post_manually is false, remind me before the first write that students will see grades right away.
+6. Save what I approve with save-grading-plan as you go, so nothing is lost between sittings. If I ask to see one grade before it's written, call grade-submission with dryRun: true — it gives the total, the letter on this course's scale, and what the late policy deducts.
 
-7. Finish with a short summary: how many were graded, skipped and flagged, and the user_ids that still need attention.`
+7. When the class is done, show me the whole plan with get-grading-plan: the totals, the distribution, and anything that has changed since the plan was made. If grades post automatically and I'd rather release them together, offer post-grading-plan with hold: true. Post only what I approved.
+
+8. Finish with a short summary: how many were graded, skipped and flagged, and the user_ids that still need attention.`
           }
         }
       ]

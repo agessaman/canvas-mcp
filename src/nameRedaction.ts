@@ -65,6 +65,11 @@ export interface UnresolvedPartner {
 
 // A name label owns the rest of its line, up to one of these.
 const BOUNDARY_LABEL = /\b(?:period|date|class|hour|block)\b\s*[:\-]/i;
+// The same words with no colon after them. A PDF wraps "Names: ... Period:"
+// so the colon lands on the next line, and the bare word was read as a
+// partner's name — three students in one run acquired a classmate called
+// "Period". A boundary word is never a name, with or without its punctuation.
+const BOUNDARY_WORD = /^(?:period|date|class|hour|block|name|names|partner|partners)$/i;
 // "Name:", "Names:", "Student Name:", "Partner:" at the start of a line or of
 // a table cell. Cells arrive either on their own line or joined by "|".
 const NAME_LABEL_ANCHORED = /(^|[|\t]|\s{2,})[ \t]*((?:student[ \t]+)?names?|partners?)[ \t]*[:\-][ \t]*/gi;
@@ -87,6 +92,10 @@ const PSEUDONYM_TOKEN = /^student$/i;
 const GLUED_PSEUDONYM = /^student(\d+)$/i;
 // A lone initial next to a name, with or without its period.
 const INITIAL = /^\p{L}[.)]?$/u;
+// Written the way a name is written. A token that is not capitalised matched
+// no student by token, by spelling or by section, so it is not a name that was
+// written down — it is a word.
+const NAME_SHAPED = /^[\p{Lu}\p{Lt}]/u;
 // A value that is only underscores, dots or spaces: a blank to be filled in,
 // which in a table means the names are in the next cell.
 const EMPTY_VALUE = /^[\s_.\u2026|-]*$/;
@@ -414,6 +423,14 @@ export function createRedactor(options: RedactorOptions): Redactor {
         i++;
         continue;
       }
+      // A label whose colon wrapped onto this line. Keep the word and move on:
+      // blanking it loses the structure of the sheet, and flagging it invents
+      // a partner.
+      if (BOUNDARY_WORD.test(here)) {
+        out.push(tokens[i]);
+        i++;
+        continue;
+      }
       // The submitter, spelled their own way. Tried before anything else is
       // called unknown, because their name is the one certainly on this sheet.
       const own = matchSubmitter(tokens, i);
@@ -452,9 +469,12 @@ export function createRedactor(options: RedactorOptions): Redactor {
         } else if (peer && 'otherSection' in peer) {
           unresolved.push({ token_index: tokenIndex + i, reason: 'other_section', candidates: peer.otherSection });
           notes.push(`A first name on the name line matches ${peer.otherSection} student(s) in other sections only; left as [name].`);
-        } else {
+        } else if (NAME_SHAPED.test(tokens[i])) {
           unresolved.push({ token_index: tokenIndex + i, reason: 'no_candidates', candidates: 0 });
         }
+        // A lowercase stray that fits no student and no section — the odd
+        // filler word that lands on a name line — is blanked for safety but is
+        // not a partner anybody has to go looking for.
       }
       i++;
     }
@@ -530,6 +550,8 @@ function nameSpanVerdict(line: string): 'continue' | 'stop' | 'empty' {
   const trimmed = line.trim();
   if (!trimmed) return 'empty';
   if (BOUNDARY_LABEL.test(trimmed) || DIRECTIONS_HEADING.test(trimmed)) return 'stop';
+  // "Period" alone, the colon having wrapped to the line after it.
+  if (BOUNDARY_WORD.test(trimmed.replace(/[\s:_.|-]+$/, ''))) return 'stop';
   const words = trimmed.split(/\s+/).filter(w => /\p{L}/u.test(w));
   // Underscores, dots, a rule: part of the blank being filled in, not an end.
   if (words.length === 0) return 'empty';

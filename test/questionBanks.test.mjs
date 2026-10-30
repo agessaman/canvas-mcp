@@ -5,8 +5,8 @@
 // saw nulls and concluded the server could not see the quiz.
 //
 // The two bank shapes are different in the way that matters, so they are tested
-// apart. Fixtures are trimmed copies of live payloads from gfalls.instructure.com
-// (course 26012, quizzes 373386 and 373364), captured 2026-09-17.
+// apart. Fixtures are trimmed copies of live payloads from example.instructure.com
+// (course 101010, quizzes 303030 and 303031), captured 2026-09-17.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { withMockCanvas } from './helpers/mockCanvas.mjs';
@@ -74,7 +74,7 @@ test('a bank draw reports the bank, the pool and how many it pulls', async () =>
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => [BANK_DRAW]);
     const result = await canvas.callTool('list-new-quiz-items', {
-      courseId: '26012', assignmentId: '373386',
+      courseId: '101010', assignmentId: '303030',
     });
 
     const [row] = rowsOf(canvas.textOf(result));
@@ -93,7 +93,7 @@ test('a bank draw says the pool is unreachable, and where to go instead', async 
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => [BANK_DRAW]);
     const result = await canvas.callTool('list-new-quiz-items', {
-      courseId: '26012', assignmentId: '373386',
+      courseId: '101010', assignmentId: '303030',
     });
 
     const text = canvas.textOf(result);
@@ -108,7 +108,7 @@ test('a bank-linked question is unwrapped and shown, not warned about', async ()
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => [BANK_ENTRY]);
     const result = await canvas.callTool('list-new-quiz-items', {
-      courseId: '26012', assignmentId: '373364',
+      courseId: '101010', assignmentId: '303031',
     });
 
     const text = canvas.textOf(result);
@@ -127,7 +127,7 @@ test('plain items are unchanged by the unwrapping', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => [PLAIN_ITEM]);
     const result = await canvas.callTool('list-new-quiz-items', {
-      courseId: '26012', assignmentId: '373386',
+      courseId: '101010', assignmentId: '303030',
     });
 
     const [row] = rowsOf(canvas.textOf(result));
@@ -141,7 +141,7 @@ test('a mixed quiz notes only the draws, and counts them', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => [BANK_DRAW, BANK_ENTRY, PLAIN_ITEM]);
     const result = await canvas.callTool('list-new-quiz-items', {
-      courseId: '26012', assignmentId: '373386',
+      courseId: '101010', assignmentId: '303030',
     });
 
     const text = canvas.textOf(result);
@@ -154,7 +154,7 @@ test('full returns the raw payload, bank nesting and all', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => [BANK_ENTRY]);
     const result = await canvas.callTool('list-new-quiz-items', {
-      courseId: '26012', assignmentId: '373364', full: true,
+      courseId: '101010', assignmentId: '303031', full: true,
     });
 
     const [row] = rowsOf(canvas.textOf(result));
@@ -169,16 +169,16 @@ test('listing banks resolves the context Canvas requires', async () => {
     canvas.setResponse(() => [{
       id: 95446,
       title: 'Chapter_16_The_Reformation_in_Europe_1517_1600',
-      context_code: 'course_18473',
+      context_code: 'course_202020',
       assessment_question_count: 88,
       updated_at: '2025-10-20T03:35:03Z',
     }]);
-    const result = await canvas.callTool('list-question-banks', { courseId: '18473' });
+    const result = await canvas.callTool('list-question-banks', { courseId: '202020' });
 
     const read = canvas.requests.find(r => r.url.startsWith('/api/v1/question_banks'));
     // context_type and context_id are REQUIRED — without both, Canvas answers 400.
     assert.match(read.url, /context_type=Course/);
-    assert.match(read.url, /context_id=18473/);
+    assert.match(read.url, /context_id=202020/);
     assert.match(read.url, /include_question_count=true/);
     assert.match(canvas.textOf(result), /"question_count": 88/);
   });
@@ -198,7 +198,7 @@ test('an account context is sent as Account, not smuggled in as a course', async
 test('giving both contexts, or neither, is refused rather than guessed at', async () => {
   await withMockCanvas(async canvas => {
     canvas.setResponse(() => []);
-    for (const args of [{ courseId: '18473', accountId: '1' }, {}]) {
+    for (const args of [{ courseId: '202020', accountId: '1' }, {}]) {
       const result = await canvas.callTool('list-question-banks', args);
       assert.match(canvas.textOf(result), /exactly one of courseId or accountId/);
     }

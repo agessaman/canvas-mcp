@@ -28,6 +28,8 @@ import {
   sharedTextSignals,
 } from './documentSignals.js';
 import { formatInZone, resolveCourseZone } from './courseTime.js';
+import { ResolvedPreference } from './gradingPreferences.js';
+import { SourceMatch, SourcePage, checkAgainstSources } from './sourceCheck.js';
 
 // What each non-file submission type needs the grader to know
 const EXTERNAL_TYPE_NOTES: Record<string, string> = {
@@ -55,6 +57,8 @@ export interface ReadSubmissionOptions extends ExtractOptions {
   roster?: RosterMember[];
   /** Course time zone for the _local date fields. */
   timeZone?: string;
+  /** Section id to name, so the header can say which class this student is in. */
+  sections?: Map<string, string>;
 }
 
 // The roster is read once per course per process. It only moves when someone
@@ -319,12 +323,18 @@ export async function readSubmissionContent(
   }));
   drain();
 
+  // Which class this student is in. It decides how shared work is read, and
+  // the period written on the sheet was blank or abbreviated too often to use.
+  const sectionNames = options.sections ?? (includePartners ? await getSectionNames(canvas, courseId) : undefined);
+  const ownSections = sectionNames ? sectionsFor(roster.find(m => m.userId === String(s.user_id)), sectionNames) : [];
+
   // --- partners ---
   const namedPartners = includePartners ? redactor.namedPartners() : [];
   const partners: any[] = [];
   for (const { member, match } of namedPartners) {
     try {
       const theirs: any = await canvas.getSubmission(courseId, assignmentId, member.userId, { include: ['user'] });
+      const theirSections = sectionNames ? sectionsFor(member, sectionNames) : [];
       const entry: any = {
         ...(anonymous ? { student: member.pseudonym } : { student: theirs?.user?.name }),
         user_id: Number(member.userId) || member.userId,
@@ -333,6 +343,18 @@ export async function readSubmissionContent(
         match,
         submitted: !!theirs?.submitted_at,
         workflow_state: theirs?.workflow_state,
+        ...(theirSections.length ? { sections: theirSections } : {}),
+        ...(theirSections.length && ownSections.length
+          ? { same_section: theirSections.some(x => ownSections.includes(x)) }
+          : {}),
+        ...(theirs?.submitted_at ? { submitted_at: theirs.submitted_at } : {}),
+        ...(theirs?.submitted_at && attempts[attempts.length - 1]?.submitted_at
+          ? {
+            submitted_first: String(theirs.submitted_at) < String(attempts[attempts.length - 1].submitted_at)
+              ? (anonymous ? member.pseudonym : theirs?.user?.name)
+              : alias,
+          }
+          : {}),
       };
       const agreement = comparePartnerFiles
         ? await comparePartnerWork(canvas, theirs, ownFingerprints, maxFileMB, options)
@@ -369,11 +391,18 @@ export async function readSubmissionContent(
   if (totals.unmatched > 0) {
     warnings.push(`${totals.unmatched} name-like token(s) on a name line matched nobody in the course and were replaced with [name]. Check whether a partner is enrolled in another section, or wrote a nickname.`);
   }
+  if (includePartners && partners.length === 0 && redactor.unresolvedPartners().length === 0) {
+    // Not a finding, and it was read as one: a sheet with an empty name line
+    // was reported to the teacher as "no partner listed" for student after
+    // student. Canvas knows who submitted; the blank says nothing.
+    warnings.push('No classmate is named on this work. That is the ordinary case for individual work and says nothing on its own — Canvas already records who submitted.');
+  }
   if (needsCanvas) warnings.push("@napi-rs/canvas is not installed: this submission has scanned pages or photos that could not be rendered. Run `npm install @napi-rs/canvas`.");
 
   const header = {
     student: alias,
     user_id: s.user_id,
+    ...(ownSections.length ? { sections: ownSections } : {}),
     assignment_id: s.assignment_id,
     workflow_state: s.workflow_state,
     score: s.score,
@@ -431,6 +460,15 @@ async function comparePartnerWork(
   return { same: sameWork(ownFingerprints, theirs), ...textAgreement(ownFingerprints, theirs) };
 }
 
+export interface StudentSourceMatches {
+  student: string;
+  sections?: string[];
+  longest_match: number;
+  matched_share: number;
+  student_words: number;
+  matches: SourceMatch[];
+}
+
 /**
  * Fingerprint the worksheet version each queued student used.
  *
@@ -444,16 +482,35 @@ export async function scanTemplateVariants(
   canvas: CanvasClient,
   courseId: string,
   assignmentId: string,
-  queue: { user_id: any; attempt?: any }[],
-  options: { anonymous: boolean; maxFileMB: number; roster?: RosterMember[]; crossCheck?: boolean },
-): Promise<{ scanned: number; skipped: number; shared_text?: ReturnType<typeof sharedTextSignals> }> {
+  queue: { user_id: any; attempt?: any; submitted_at?: any }[],
+  options: {
+    anonymous: boolean;
+    maxFileMB: number;
+    roster?: RosterMember[];
+    crossCheck?: boolean;
+    /** Section id to name, so a match can say whether the two share a class. */
+    sections?: Map<string, string>;
+    /** Pages to compare each student's work against, already fetched. */
+    sources?: SourcePage[];
+    minMatchWords?: number;
+  },
+): Promise<{
+  scanned: number;
+  skipped: number;
+  shared_text?: ReturnType<typeof sharedTextSignals>;
+  source_matches?: StudentSourceMatches[];
+}> {
   let count = 0;
   let skipped = 0;
   // Only gathered when crossCheck is on; the downloads are the scan's anyway.
   const texts: SubmissionText[] = [];
   // A header row is document text: on a worksheet whose first table row is the
   // name row, it carries names, and these go straight into the packet.
-  const roster = options.anonymous ? (options.roster ?? await getCourseRoster(canvas, courseId)) : [];
+  const wantsSources = !!options.sources?.length;
+  const sourceHits: StudentSourceMatches[] = [];
+  // The roster is needed for sections even when names are not being redacted.
+  const roster = (options.anonymous || options.sections) ? (options.roster ?? await getCourseRoster(canvas, courseId)) : [];
+  const rosterById = new Map(roster.map(m => [m.userId, m]));
   const headerRedactor = options.anonymous ? createRedactor({ roster }) : noopRedactor();
   const clean = (fp: { template_fingerprint: string; template_headers: string; directions_fingerprint?: string }) => ({
     ...fp,
@@ -487,7 +544,7 @@ export async function scanTemplateVariants(
         { maxCharsPerFile: 20000, renderPdfPages: 'never', maxPdfPagesToRender: 0, ocr: false, integritySignals: false },
         new ImageBudget(0),
       );
-      if (options.crossCheck) {
+      if (options.crossCheck || wantsSources) {
         // Redacted first: an excerpt from this text can reach the packet, and
         // the same pass is what says who this student named as a partner.
         const raw = blocks.filter(b => b.type === 'text').map(b => (b as any).text).join('\n');
@@ -495,12 +552,37 @@ export async function scanTemplateVariants(
           ? createRedactor({ roster, submitterId: userId })
           : noopRedactor();
         const redacted = reader.redact(raw);
-        texts.push({
-          student: alias,
-          text: redacted,
-          partners: new Set(reader.namedPartners().map(p => p.member.pseudonym)),
-          directions: directionsBlock(redacted, summary.template_headers)?.text,
-        });
+        const directions = directionsBlock(redacted, summary.template_headers)?.text;
+        const sections = options.sections ? sectionsFor(rosterById.get(userId), options.sections) : [];
+        if (options.crossCheck) {
+          texts.push({
+            student: alias,
+            text: redacted,
+            partners: new Set(reader.namedPartners().map(p => p.member.pseudonym)),
+            directions,
+            ...(sections.length ? { sections } : {}),
+            ...(entry.submitted_at ? { submitted_at: String(entry.submitted_at) } : {}),
+          });
+        }
+        if (wantsSources) {
+          // The worksheet's own words are not this student's to answer for:
+          // without excluding them, every student matches every page that
+          // discusses the subject and the check says nothing.
+          const result = checkAgainstSources(redacted, options.sources!, {
+            minMatchWords: options.minMatchWords,
+            exclude: [directions ?? '', summary.template_headers ?? ''].filter(Boolean),
+          });
+          if (result.matches.length) {
+            sourceHits.push({
+              student: alias,
+              ...(sections.length ? { sections } : {}),
+              longest_match: result.longest_match,
+              matched_share: result.matched_share,
+              student_words: result.student_words,
+              matches: result.matches,
+            });
+          }
+        }
       }
       const fp = summary.template_fingerprint
         ? {
@@ -522,7 +604,14 @@ export async function scanTemplateVariants(
     }
   }
   const shared = options.crossCheck ? sharedTextSignals(texts) : undefined;
-  return { scanned: count, skipped, ...(shared && shared.length ? { shared_text: shared } : {}) };
+  // Worst first: a teacher reading three of these wants the worst three.
+  sourceHits.sort((a, b) => b.longest_match - a.longest_match);
+  return {
+    scanned: count,
+    skipped,
+    ...(shared && shared.length ? { shared_text: shared } : {}),
+    ...(sourceHits.length ? { source_matches: sourceHits } : {}),
+  };
 }
 
 // --- Rubrics ---
@@ -711,18 +800,254 @@ export function letterFor(percentage: number, scheme: GradingScheme): string | u
   return scheme.entries[scheme.entries.length - 1]?.[0];
 }
 
-export const GRADING_INSTRUCTIONS = `GRADING INSTRUCTIONS (follow these for every student in this assignment)
+// The rules every grader on this server follows, whoever the teacher is.
+//
+// Deliberately practice-free: nothing here says how long a comment should be,
+// what copied work is worth, or where the line between a shared phrase and
+// copying falls. Those are the teacher's to set, and they arrive from the
+// preferences store — recorded if they have been asked, listed as open
+// questions if they have not. Baking one teacher's answers in here would hand
+// them to every other teacher silently, which is the one failure mode a
+// grading assistant cannot recover from.
+const GRADING_RULES = `GRADING INSTRUCTIONS (follow these for every student in this assignment)
 
 1. Missing materials. Before grading, check whether the assignment or the students' work depends on materials that are not included here: a paper copy of primary sources, a handout, a reading, textbook pages, a video, a lab or a class discussion. If it looks like something is missing, stop and ask the teacher to provide or describe it. Don't guess what it said.
 
-2. Resubmission policy. Ask the teacher ONCE for this assignment whether resubmissions will be accepted, and under what conditions, unless they have already answered in this conversation. Canvas's allowed_attempts is only a hint. The policy can apply to only some students (for example, only work flagged for copying) and can end at a date. Use "Revise ..." wording for students who are eligible to resubmit, and "Next time ..." for everyone else. When a resubmission window applies, give its end date in the course time zone, using lock_at_local unless the teacher says otherwise.
+2. Resubmission policy. Ask the teacher ONCE for this assignment whether resubmissions will be accepted, and under what conditions, unless they have already answered in this conversation. Canvas's allowed_attempts is only a hint. The policy can apply to only some students and can end at a date; when it does, give that date in the course time zone, using lock_at_local unless the teacher says otherwise.
 
-3. Feedback is OFF by default. Draft scores only, with no comments, unless the teacher turns feedback on. Even when it's on, never post a comment (submission comments or rubric criterion comments) until the teacher has seen the exact text and approved it. Scores and grades also need the teacher's approval before you write them.
+3. Nothing reaches a student without approval. Draft scores and feedback for the teacher first. Never write a score, a grade, a submission comment or a rubric criterion comment until the teacher has seen the exact text and approved it.
 
-4. Feedback style, when it's on: brief (2–3 sentences), actionable, direct and supportive. Speak to the student, name one specific strength, then give one or two concrete next steps tied to the rubric. No generic praise, and don't restate the score.
+4. Evidence. Base every rubric score on the student's work: quote or point to the passage, page or answer that justifies it. If the work can't be fully read (unreadable files, links, recordings, handwriting the OCR got wrong), say so rather than scoring what you can't see.
 
-5. Evidence. Base every rubric score on the student's work: quote or point to the passage, page or answer that justifies it. If the work can't be fully read (unreadable files, links, recordings, handwriting the OCR got wrong), say so rather than scoring what you can't see.
+5. Visibility. If post_manually is false, grades and comments become visible to students as soon as they are written. Say so before writing the first grade.
 
-6. Visibility. If post_manually is false, grades and comments become visible to students as soon as they are written. Remind the teacher of this before writing the first grade.
+6. Integrity signals are not findings. integrity_signals, shared text between students and source matches are excerpts worth a second look — a footnote number left in a sentence, wiki page furniture, a run of words that also appears on a linked page. They are prompts for the teacher, never evidence of copying and never grounds for a lower score on their own. Report what the excerpt is and leave the judgement to the teacher.
 
-7. Integrity signals are not findings. A file's integrity_signals field lists short excerpts worth a second look — footnote numbers left in a sentence, wiki page furniture, an answer that names its own question's subject. They are prompts for the teacher to open the work themselves, never evidence of copying and never grounds for a lower score. Mention them to the teacher plainly, say what the excerpt is, and leave the judgement to them.`;
+7. The assignment's own terms come first. If the description tells students what happens when they copy, or how late work is handled, say so while the plan is being made, and flag any grading decision that departs from what the students were told.
+
+8. Grade the way THIS teacher grades. The practices below are what they have told this server so far. Apply the recorded ones without re-asking. For anything listed as not yet answered, ask when it first matters — one short question at the point of decision, with the examples as options to pick from or talk past — and then record the answer with set-grading-preferences so the next session does not ask again. Never invent an answer, and never carry one teacher's habit to another assignment's teacher.`;
+
+/** The instructions block, with this teacher's recorded practices appended. */
+export function gradingInstructions(preferences: ResolvedPreference[]): string {
+  const answered = preferences.filter(p => p.answer !== undefined);
+  const open = preferences.filter(p => p.answer === undefined);
+  const parts = [GRADING_RULES, '', "--- This teacher's grading practices ---"];
+  if (answered.length) {
+    parts.push('On record (apply these; do not ask again unless the teacher reopens one):');
+    for (const p of answered) {
+      parts.push(`- ${p.key}${p.scope === 'course' ? ' (this course)' : ''}: ${p.answer}`);
+    }
+  } else {
+    parts.push('Nothing on record yet. Everything below is still open.');
+  }
+  if (open.length) {
+    parts.push('', 'Not yet answered — ask when each first matters, then save it:');
+    for (const p of open) {
+      const examples = p.examples?.length ? ` [e.g. ${p.examples.join(' / ')}]` : '';
+      parts.push(`- ${p.key}: ${p.question} (${p.needed_when})${examples}`);
+    }
+  }
+  return parts.join('\n');
+}
+
+// --- Late policy arithmetic ---
+
+export type LatePolicyStatus = 'none' | 'late' | 'missing' | 'extended';
+
+export interface LatePreview {
+  late_policy_status?: string | null;
+  late: boolean;
+  seconds_late?: number;
+  /** Points the course policy takes off this score, as this server computes it. */
+  points_deducted: number;
+  /** The score Canvas should end up showing, entered score minus the deduction. */
+  final_score: number;
+  explanation: string;
+}
+
+const SECONDS = { day: 86400, hour: 3600 } as const;
+
+/**
+ * What the course's late policy will do to a score before a student sees it.
+ *
+ * The dry run used to report the score as entered, which is the number the
+ * teacher typed and not the number Canvas shows: a deduction lands between the
+ * two, silently. Canvas does not expose a preview endpoint, so this recomputes
+ * it from the policy. It is an estimate and is labelled as one — Canvas owns
+ * the real arithmetic, and a policy change between this call and the write
+ * would move it.
+ */
+export function previewLateDeduction(
+  policy: any,
+  assignment: any,
+  submission: any,
+  enteredScore: number,
+  statusOverride?: LatePolicyStatus | null,
+): LatePreview {
+  const points = Number(assignment?.points_possible);
+  const status = statusOverride !== undefined
+    ? statusOverride
+    : (submission?.late_policy_status as LatePolicyStatus | null | undefined);
+  const secondsLate = Number(submission?.seconds_late ?? 0);
+  const isLate = status === 'late' || (status == null && !!submission?.late);
+  const base = {
+    ...(status !== undefined ? { late_policy_status: status ?? null } : {}),
+    late: isLate,
+    ...(secondsLate > 0 ? { seconds_late: secondsLate } : {}),
+  };
+
+  if (status === 'none' || status === 'extended') {
+    return { ...base, points_deducted: 0, final_score: enteredScore, explanation: `Marked "${status}": the late policy does not apply.` };
+  }
+  if (!policy?.late_submission_deduction_enabled) {
+    return { ...base, points_deducted: 0, final_score: enteredScore, explanation: 'The course has no automatic late deduction.' };
+  }
+  if (!isLate || secondsLate <= 0) {
+    return { ...base, points_deducted: 0, final_score: enteredScore, explanation: 'Not marked late, so nothing is deducted.' };
+  }
+  if (!Number.isFinite(points) || points <= 0) {
+    return { ...base, points_deducted: 0, final_score: enteredScore, explanation: 'The assignment has no points possible, so a percentage deduction cannot be computed.' };
+  }
+
+  const interval = policy.late_submission_interval === 'hour' ? 'hour' : 'day';
+  // Canvas charges for a whole interval the moment one is entered.
+  const intervals = Math.ceil(secondsLate / SECONDS[interval]);
+  const perInterval = (Number(policy.late_submission_deduction ?? 0) / 100) * points;
+  let deducted = intervals * perInterval;
+  let floorNote = '';
+  if (policy.late_submission_minimum_percent_enabled) {
+    const floor = (Number(policy.late_submission_minimum_percent ?? 0) / 100) * points;
+    if (enteredScore - deducted < floor) {
+      deducted = Math.max(0, enteredScore - floor);
+      floorNote = ` The deduction stops at the policy floor of ${floor} points.`;
+    }
+  }
+  deducted = Math.max(0, Math.min(deducted, enteredScore));
+  const rounded = Number(deducted.toFixed(2));
+  return {
+    ...base,
+    points_deducted: rounded,
+    final_score: Number((enteredScore - rounded).toFixed(2)),
+    explanation: `${intervals} ${interval}${intervals === 1 ? '' : 's'} late at `
+      + `${Number(policy.late_submission_deduction ?? 0)}% of ${points} points.${floorNote} Estimated from the course policy; Canvas computes the stored value.`,
+  };
+}
+
+/** The letter-grade cutoffs a plan should be read against, for the packet. */
+export function describeScheme(scheme: GradingScheme, pointsPossible?: number) {
+  const points = Number(pointsPossible);
+  return {
+    name: scheme.name,
+    source: scheme.source,
+    ...(scheme.id !== undefined ? { id: scheme.id } : {}),
+    ...(scheme.tried ? { fell_back_because: scheme.tried } : {}),
+    // Cutoffs in points as well as percent: a plan is built in points, and
+    // converting in the grader's head is where an assumed scale slips in.
+    cutoffs: scheme.entries.map(([letter, value]) => ({
+      letter,
+      min_percent: Number((value * 100).toFixed(2)),
+      ...(Number.isFinite(points) && points > 0 ? { min_points: Number((value * points).toFixed(2)) } : {}),
+    })),
+    note: scheme.source === 'default'
+      ? 'This is Canvas\'s built-in scheme, not a scheme this course names. Letters from it may not match what the gradebook shows.'
+      : 'Letters in the plan should come from these cutoffs, not from a standard scale.',
+  };
+}
+
+/**
+ * Criteria where a score sits below the lowest rating the rubric offers.
+ *
+ * Canvas accepts these without complaint and maps them to the lowest rating,
+ * so a zero on a criterion whose lowest rating is worth a point looks, in the
+ * gradebook, exactly like that rating. It may be what the teacher wants; it
+ * should not be something they find out later.
+ */
+export function belowLowestRating(assignment: any, assessment: Record<string, any>): string[] {
+  const out: string[] = [];
+  for (const c of (assignment?.rubric ?? [])) {
+    const scored = assessment?.[c.id];
+    if (!scored || scored.points === undefined) continue;
+    const ratings: any[] = c.ratings ?? [];
+    if (!ratings.length) continue;
+    const lowest = Math.min(...ratings.map((r: any) => Number(r.points)).filter(Number.isFinite));
+    if (Number.isFinite(lowest) && Number(scored.points) < lowest) {
+      out.push(`"${c.description}": ${scored.points} points is below its lowest rating (${lowest}). Canvas will accept it and show the lowest rating.`);
+    }
+  }
+  return out;
+}
+
+// --- Sections ---
+
+const sectionCache = new Map<string, Promise<Map<string, string>>>();
+
+/** Section id to name, read once per course. */
+export async function getSectionNames(canvas: CanvasClient, courseId: string): Promise<Map<string, string>> {
+  let cached = sectionCache.get(courseId);
+  if (!cached) {
+    cached = canvas
+      .listSections(courseId)
+      .then((list: any) => new Map((Array.isArray(list) ? list : []).map((s: any) => [String(s.id), String(s.name ?? s.id)])))
+      .catch(() => new Map<string, string>());
+    sectionCache.set(courseId, cached);
+  }
+  return cached;
+}
+
+export function clearSectionCache(): void {
+  sectionCache.clear();
+}
+
+/**
+ * The sections a student is enrolled in, by name.
+ *
+ * Whether two students share a class period decided how shared work was
+ * graded, and the packet did not say — so the grader asked the teacher, or
+ * guessed, for every pair. The period a student wrote on the worksheet is not
+ * this: it was left blank, abbreviated and miswritten often enough to be
+ * useless, and Canvas already knows.
+ */
+export function sectionsFor(member: RosterMember | undefined, names: Map<string, string>): string[] {
+  return (member?.sectionIds ?? []).map(id => names.get(id) ?? `section ${id}`);
+}
+
+// --- What the assignment told students ---
+
+// Sentences a grading plan should not contradict without the teacher saying so.
+const TERMS_PATTERNS = [
+  /\b(?:copy|copied|copying|plagiar\w*|cheat\w*|word[- ]for[- ]word|your own words)\b/i,
+  /\b(?:zero|no credit|loses? all|forfeit)\b/i,
+  /\b(?:late|past the due date|after the deadline|will not be accepted)\b/i,
+  /\b(?:partner|group|with a classmate|on your own|individually)\b/i,
+];
+
+/**
+ * Pull the assignment's own rules out of its description.
+ *
+ * Students were told something — most often what copying costs — and a plan
+ * built without it can quietly undercut or overshoot what they were promised.
+ * These are sentences from the description, nothing more: they are reported so
+ * the teacher can hold the plan against them.
+ */
+export function assignmentTerms(descriptionText: string): string[] {
+  if (!descriptionText) return [];
+  const sentences = descriptionText
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[.!?])\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length >= 20 && s.length <= 300);
+  const out: string[] = [];
+  for (const sentence of sentences) {
+    if (TERMS_PATTERNS.some(re => re.test(sentence)) && !out.includes(sentence)) out.push(sentence);
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+/** Every link in an assignment description, for a source check. */
+export function descriptionLinks(descriptionHtml: string): { url: string; label?: string }[] {
+  if (!descriptionHtml) return [];
+  return [...descriptionHtml.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)]
+    .filter(m => !/\/files\/\d+/.test(m[1]))
+    .map(m => ({ url: m[1], label: m[2].replace(/<[^>]+>/g, '').trim() || undefined }));
+}

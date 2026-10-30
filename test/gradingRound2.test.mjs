@@ -260,10 +260,18 @@ test('scanTemplates reads the queue and summarises the versions in use', async (
     };
     api.setResponse(router({ baseUrl: api.baseUrl, files, submissions }));
 
-    const withoutScan = JSON.parse(textOf(await api.callTool('get-grading-packet', {
+    // Reading the queue costs a download per student. The cross-check needs
+    // that, and runs by default, so the way out is explicit — and the packet
+    // says it happened either way.
+    const optedOut = JSON.parse(textOf(await api.callTool('get-grading-packet', {
+      courseId: '1', assignmentId: '777', include: ['queue'], scanTemplates: false,
+    })).split('\n').find(l => l.startsWith('{')));
+    assert.equal(optedOut.template_variants, undefined, 'scanTemplates: false reads nothing');
+
+    const byDefault = JSON.parse(textOf(await api.callTool('get-grading-packet', {
       courseId: '1', assignmentId: '777', include: ['queue'],
     })).split('\n').find(l => l.startsWith('{')));
-    assert.equal(withoutScan.template_variants, undefined, 'scanning is opt-in');
+    assert.match(byDefault.scan_note, /download each/, 'a scan the caller did not ask for says so');
 
     const scanned = JSON.parse(textOf(await api.callTool('get-grading-packet', {
       courseId: '1', assignmentId: '777', include: ['queue'], scanTemplates: true,
