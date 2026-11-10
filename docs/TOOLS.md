@@ -121,6 +121,7 @@ Updates due/unlock/lock dates for multiple assignments in one Canvas job.
     - `overrides`: array of `{ override_id, due_at?, unlock_at?, lock_at? }` for existing overrides; unlisted overrides are untouched
 - A date left out keeps its current value (the tool reads it first and sends it back, because Canvas clears any date missing from the set); `null` clears it
 - Canvas wants a bare JSON array of `{ id, all_dates }` here — a wrapped body gets a 400 "expected array"
+- One bad assignment does not sink the batch. An assignment that can't be read, names an override it doesn't have, has no class-wide dates, or would end up with dates out of order (unlock after due, lock before due) is skipped and reported, and the rest are sent. If Canvas still fails the job and names the assignments at fault, those are dropped and the rest retried once
 - The endpoint runs as a background job: the tool waits for it (up to 90s), then re-reads every assignment and reports any date that did not take, plus any assignment whose other overrides still carry their own dates
 
 ## Submissions

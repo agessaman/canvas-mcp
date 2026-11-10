@@ -247,7 +247,7 @@ export function registerAssignmentGroupTools(server: McpServer, canvas: CanvasCl
     "bulk-update-assignment-dates",
     "Bulk update the class-wide due/unlock/lock dates (and optionally existing override dates) for many "
       + "assignments in one Canvas job. Dates you leave out keep their current value; pass null to clear one. "
-      + "Waits for the job and re-reads each assignment, reporting any that did not take.",
+      + "An assignment that can't be updated is skipped and reported; the rest still apply. Waits for the job and re-reads each assignment, reporting any that did not take.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentDates: z.array(z.object({
@@ -270,17 +270,58 @@ export function registerAssignmentGroupTools(server: McpServer, canvas: CanvasCl
       const FIELDS = ['due_at', 'unlock_at', 'lock_at'] as const;
       const sameDate = (a: any, b: any) =>
         (a ?? null) === null || (b ?? null) === null ? (a ?? null) === (b ?? null) : Date.parse(a) === Date.parse(b);
+      // A failed read is recorded per assignment rather than thrown, so one
+      // deleted or mistyped ID does not sink the rest of the batch.
       const fetchAll = async (ids: string[]) => {
-        const out = new Map<string, any>();
+        const out = new Map<string, { a?: any; error?: string }>();
         let next = 0;
         const worker = async () => {
           while (next < ids.length) {
             const id = ids[next++];
-            out.set(id, await canvas.getAssignment(courseId, id, { 'include[]': 'all_dates' }));
+            try {
+              out.set(id, { a: await canvas.getAssignment(courseId, id, { 'include[]': 'all_dates' }) });
+            } catch (e: any) {
+              out.set(id, { error: e?.message ?? String(e) });
+            }
           }
         };
         await Promise.all(Array.from({ length: Math.min(8, ids.length) }, worker));
         return out;
+      };
+      const baseEntry = (a: any) => {
+        const allDates: any[] = a?.all_dates ?? [];
+        return allDates.find(d => d.base) ?? (allDates.length === 0 && !a?.has_overrides ? a : undefined);
+      };
+      const ordered = (d: Record<string, any>): string | undefined => {
+        const t = (f: string) => (d[f] ? Date.parse(d[f]) : undefined);
+        for (const f of FIELDS) {
+          if (d[f] && Number.isNaN(Date.parse(d[f]))) return `${f} "${d[f]}" is not a valid date`;
+        }
+        const [due, un, lock] = [t('due_at'), t('unlock_at'), t('lock_at')];
+        if (un !== undefined && due !== undefined && un > due) return `unlock_at ${d.unlock_at} is after due_at ${d.due_at}`;
+        if (lock !== undefined && due !== undefined && lock < due) return `lock_at ${d.lock_at} is before due_at ${d.due_at}`;
+        if (un !== undefined && lock !== undefined && un > lock) return `unlock_at ${d.unlock_at} is after lock_at ${d.lock_at}`;
+        return undefined;
+      };
+
+      // Canvas runs a bulk update as one job and fails all of it if any item
+      // is invalid, so every check that can be made here is made per
+      // assignment, and the offender is skipped instead.
+      const submit = async (body: any[]) => {
+        const created: any = await canvas.put(`/api/v1/courses/${courseId}/assignments/bulk_update`, body);
+        canvas.invalidateAssignments(courseId);
+        let progress: any = created;
+        const progressId = progress?.id;
+        if (progressId === undefined) {
+          throw new Error(`Canvas did not return a progress job: ${JSON.stringify(created).slice(0, 300)}`);
+        }
+        const deadline = Date.now() + 90_000;
+        while (progress?.workflow_state !== 'completed' && progress?.workflow_state !== 'failed') {
+          if (Date.now() >= deadline) return { progress, timedOut: true };
+          await new Promise(r => setTimeout(r, 1500));
+          progress = await canvas.getProgress(String(progressId));
+        }
+        return { progress, timedOut: false };
       };
 
       try {
@@ -292,66 +333,89 @@ export function registerAssignmentGroupTools(server: McpServer, canvas: CanvasCl
         // The assignment's top-level due_at is the date for the requesting
         // user, not the base date, once overrides exist — all_dates has the base.
         const current = await fetchAll(ids);
-        const body: any[] = [];
-        const expected: { id: string; name: string; entryKey: string; dates: Record<string, any> }[] = [];
+        const skipped: { id: string; name?: string; reason: string }[] = [];
+        let items: { id: string; name: string; body: any; expected: { entryKey: string; dates: Record<string, any> }[] }[] = [];
 
         for (const req of assignmentDates) {
           const id = String(req.assignment_id);
-          const a = current.get(id);
-          const allDates: any[] = a?.all_dates ?? [];
-          const base = allDates.find(d => d.base) ?? (allDates.length === 0 && !a?.has_overrides ? a : undefined);
+          const { a, error } = current.get(id) ?? {};
+          if (!a) { skipped.push({ id, reason: `could not read it: ${error ?? 'not found'}` }); continue; }
+          const allDates: any[] = a.all_dates ?? [];
+          const base = baseEntry(a);
           if (!base) {
-            throw new Error(
-              `Assignment ${id} ("${a?.name}") has no base date entry in all_dates — every student has an override, `
-              + 'so there are no class-wide dates to change. Update its overrides instead.'
-            );
+            skipped.push({
+              id, name: a.name,
+              reason: 'it has no class-wide dates (every student is on an override); change its overrides instead',
+            });
+            continue;
           }
           const baseDates: Record<string, any> = {};
           for (const f of FIELDS) baseDates[f] = req[f] !== undefined ? req[f] : (base[f] ?? null);
           const entries: any[] = [{ base: true, ...baseDates }];
-          expected.push({ id, name: a?.name, entryKey: 'base', dates: baseDates });
+          const expected = [{ entryKey: 'base', dates: baseDates }];
+          let problem = ordered(baseDates);
 
           for (const o of req.overrides ?? []) {
+            if (problem) break;
             const existing = allDates.find(d => !d.base && String(d.id) === String(o.override_id));
             if (!existing) {
-              throw new Error(
-                `Override ${o.override_id} is not on assignment ${id} ("${a?.name}"). `
-                + 'Use list-assignment-overrides to find its overrides, or create-assignment-override to add one.'
-              );
+              const known = allDates.filter(d => !d.base).map(d => `${d.id}${d.title ? ` (${d.title})` : ''}`);
+              problem = `override ${o.override_id} is not on this assignment`
+                + (known.length ? `; its overrides are ${known.join(', ')}` : '; it has no overrides');
+              break;
             }
             const od: Record<string, any> = {};
             for (const f of FIELDS) od[f] = o[f] !== undefined ? o[f] : (existing[f] ?? null);
+            const bad = ordered(od);
+            if (bad) { problem = `override ${o.override_id}: ${bad}`; break; }
             entries.push({ id: Number(o.override_id), ...od });
-            expected.push({ id, name: a?.name, entryKey: String(o.override_id), dates: od });
+            expected.push({ entryKey: String(o.override_id), dates: od });
           }
-          body.push({ id: Number(id), all_dates: entries });
-        }
-
-        // Bare array, JSON — not { assignments: [...] }.
-        const created: any = await canvas.put(`/api/v1/courses/${courseId}/assignments/bulk_update`, body);
-        canvas.invalidateAssignments(courseId);
-
-        let progress: any = created;
-        const progressId = progress?.id;
-        if (progressId === undefined) {
-          throw new Error(`Canvas did not return a progress job: ${JSON.stringify(created).slice(0, 300)}`);
-        }
-        const deadline = Date.now() + 90_000;
-        while (progress?.workflow_state !== 'completed' && progress?.workflow_state !== 'failed') {
-          if (Date.now() >= deadline) {
-            return {
-              content: [{
-                type: "text",
-                text: `Bulk date update queued as progress ${progressId} but still ${progress?.workflow_state ?? 'running'} `
-                  + `(${progress?.completion ?? 0}%) after 90s. Re-check the assignments with get-assignment before retrying.`
-              }]
-            };
-          }
-          await new Promise(r => setTimeout(r, 1500));
-          progress = await canvas.getProgress(String(progressId));
+          if (problem) { skipped.push({ id, name: a.name, reason: problem }); continue; }
+          items.push({ id, name: a.name, body: { id: Number(id), all_dates: entries }, expected });
         }
 
         const lines: string[] = [];
+        const skipLines = () => skipped.length
+          ? [`Skipped ${skipped.length} assignment(s), nothing changed on them:`,
+             ...skipped.map(s => `  ${s.id}${s.name ? ` "${s.name}"` : ''}: ${s.reason}`)]
+          : [];
+        if (!items.length) {
+          throw new Error(['No assignment in the batch could be updated.', ...skipLines()].join('\n'));
+        }
+
+        // Bare array, JSON — not { assignments: [...] }.
+        let { progress, timedOut } = await submit(items.map(i => i.body));
+
+        // If Canvas still rejects the job and names the assignments at fault,
+        // drop those and try the rest once more.
+        if (!timedOut && progress.workflow_state === 'failed') {
+          const results = Array.isArray(progress.results) ? progress.results : [];
+          const failedIds = new Set(results.filter((r: any) => r?.errors).map((r: any) => String(r.assignment_id)));
+          const rest = items.filter(i => !failedIds.has(i.id));
+          if (failedIds.size && rest.length && rest.length < items.length) {
+            for (const i of items.filter(i => failedIds.has(i.id))) {
+              const r = results.find((x: any) => String(x.assignment_id) === i.id);
+              skipped.push({ id: i.id, name: i.name, reason: `Canvas rejected it: ${JSON.stringify(r?.errors)}` });
+            }
+            items = rest;
+            ({ progress, timedOut } = await submit(items.map(i => i.body)));
+          }
+        }
+
+        if (timedOut) {
+          return {
+            content: [{
+              type: "text",
+              text: [
+                `Bulk date update queued as progress ${progress?.id} but still ${progress?.workflow_state ?? 'running'} `
+                  + `(${progress?.completion ?? 0}%) after 90s. Re-check the assignments with get-assignment before retrying.`,
+                ...skipLines(),
+              ].join('\n'),
+            }]
+          };
+        }
+
         if (progress.workflow_state === 'failed') {
           lines.push(`Canvas reported the bulk update FAILED: ${progress.message ?? 'no message'}.`);
           const results = Array.isArray(progress.results) ? progress.results : [];
@@ -359,27 +423,30 @@ export function registerAssignmentGroupTools(server: McpServer, canvas: CanvasCl
             if (r?.errors) lines.push(`  assignment ${r.assignment_id}: ${JSON.stringify(r.errors)}`);
           }
           if (!results.length && progress.results) lines.push(`  details: ${JSON.stringify(progress.results).slice(0, 500)}`);
-          lines.push('Canvas applies bulk updates all-or-nothing per job; re-reading to confirm what was stored:');
+          lines.push('Re-reading to confirm what was stored:');
         }
 
         // Verify against what Canvas now holds.
-        const after = await fetchAll(ids);
+        const sentIds = items.map(i => i.id);
+        const after = await fetchAll(sentIds);
         const mismatches: string[] = [];
-        for (const exp of expected) {
-          const a = after.get(exp.id);
+        for (const item of items) {
+          const a = after.get(item.id)?.a;
           const allDates: any[] = a?.all_dates ?? [];
-          const entry = exp.entryKey === 'base'
-            ? (allDates.find(d => d.base) ?? (allDates.length === 0 && !a?.has_overrides ? a : undefined))
-            : allDates.find(d => !d.base && String(d.id) === exp.entryKey);
-          const label = `${exp.id} "${exp.name}"${exp.entryKey === 'base' ? '' : ` override ${exp.entryKey}`}`;
-          if (!entry) { mismatches.push(`${label}: date entry missing after update`); continue; }
-          const bad = FIELDS.filter(f => !sameDate(exp.dates[f], entry[f]))
-            .map(f => `${f} expected ${exp.dates[f] ?? 'none'}, stored ${entry[f] ?? 'none'}`);
-          if (bad.length) mismatches.push(`${label}: ${bad.join('; ')}`);
+          for (const exp of item.expected) {
+            const entry = exp.entryKey === 'base'
+              ? baseEntry(a)
+              : allDates.find(d => !d.base && String(d.id) === exp.entryKey);
+            const label = `${item.id} "${item.name}"${exp.entryKey === 'base' ? '' : ` override ${exp.entryKey}`}`;
+            if (!entry) { mismatches.push(`${label}: date entry missing after update`); continue; }
+            const bad = FIELDS.filter(f => !sameDate(exp.dates[f], entry[f]))
+              .map(f => `${f} expected ${exp.dates[f] ?? 'none'}, stored ${entry[f] ?? 'none'}`);
+            if (bad.length) mismatches.push(`${label}: ${bad.join('; ')}`);
+          }
         }
 
         if (progress.workflow_state === 'completed' && !mismatches.length) {
-          lines.push(`Bulk date update completed for ${ids.length} assignment(s) in course ${courseId}; every date verified.`);
+          lines.push(`Bulk date update completed for ${items.length} assignment(s) in course ${courseId}; every date verified.`);
         } else if (!mismatches.length) {
           lines.push('All requested dates are nonetheless stored as asked.');
         } else {
@@ -388,16 +455,18 @@ export function registerAssignmentGroupTools(server: McpServer, canvas: CanvasCl
           }
           lines.push(...mismatches.map(m => `  ${m}`));
         }
-        const withOverrides = ids.filter(id => {
-          const req = assignmentDates.find(a => String(a.assignment_id) === id);
-          const extra = (after.get(id)?.all_dates ?? []).filter((d: any) => !d.base);
+        lines.push(...skipLines());
+
+        const withOverrides = items.filter(item => {
+          const req = assignmentDates.find(a => String(a.assignment_id) === item.id);
+          const extra = (after.get(item.id)?.a?.all_dates ?? []).filter((d: any) => !d.base);
           const touched = new Set((req.overrides ?? []).map((o: any) => String(o.override_id)));
           return extra.some((d: any) => !touched.has(String(d.id)));
         });
         if (withOverrides.length) {
           lines.push(
             `Note: ${withOverrides.length} assignment(s) have overrides that were left unchanged and still carry their own dates: `
-            + withOverrides.map(id => `${id} "${after.get(id)?.name}"`).join(', ')
+            + withOverrides.map(i => `${i.id} "${i.name}"`).join(', ')
             + '. Pass them in `overrides` (or use update-assignment-override) if they should move too.'
           );
         }
