@@ -629,7 +629,7 @@ export class CanvasClient {
    * verification warn about an attachment that had in fact worked. Third time
    * this pattern has bitten this server (files 1.6.2, calendar 1.10.0).
    */
-  private invalidateAssignments(courseId: string): void {
+  invalidateAssignments(courseId: string): void {
     this.cache.invalidatePrefix(`/api/v1/courses/${courseId}/assignments`);
   }
 

@@ -78,6 +78,7 @@ Updates an existing assignment.
   - `assignmentId`: string
 - Optional parameters: same as `create-assignment`
 - `description` replaces the entire body rather than merging into it, so fetch the current one with `get-assignment` and edit that
+- `due_at`, `unlock_at` and `lock_at` set the class-wide dates (pass `null` to clear one); overrides keep their own dates
 
 ### delete-assignment
 Deletes (archives) an assignment from a course.
@@ -113,10 +114,14 @@ Creates a new assignment group in a course.
   - `name`, `position`, `group_weight`, `sis_source_id`, `rules`
 
 ### bulk-update-assignment-dates
-Updates due/unlock/lock dates for multiple assignments in one call.
+Updates due/unlock/lock dates for multiple assignments in one Canvas job.
 - Required parameters:
   - `courseId`: string
-  - `assignmentDates`: array of `{ assignment_id, due_at?, unlock_at?, lock_at? }`
+  - `assignmentDates`: array of `{ assignment_id, due_at?, unlock_at?, lock_at?, overrides? }`
+    - `overrides`: array of `{ override_id, due_at?, unlock_at?, lock_at? }` for existing overrides; unlisted overrides are untouched
+- A date left out keeps its current value (the tool reads it first and sends it back, because Canvas clears any date missing from the set); `null` clears it
+- Canvas wants a bare JSON array of `{ id, all_dates }` here — a wrapped body gets a 400 "expected array"
+- The endpoint runs as a background job: the tool waits for it (up to 90s), then re-reads every assignment and reports any date that did not take, plus any assignment whose other overrides still carry their own dates
 
 ## Submissions
 

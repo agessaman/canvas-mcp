@@ -219,7 +219,11 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
         + "current one with get-assignment first and edit that — sending a fresh body discards whatever "
         + "was there."
       ),
-      due_at: z.string().optional(),
+      due_at: z.string().nullable().optional().describe("Class-wide due date (ISO 8601); null clears it"),
+      unlock_at: z.string().nullable().optional().describe("Class-wide available-from date (ISO 8601); null clears it"),
+      lock_at: z.string().nullable().optional().describe(
+        "Class-wide available-until date (ISO 8601); null clears it. Overrides keep their own dates."
+      ),
       points_possible: z.number().optional(),
       submission_types: z.array(z.string()).optional(),
       published: z.boolean().optional(),
@@ -237,7 +241,7 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
       try {
         const a = await canvas.updateAssignment(courseId, assignmentId, { assignment: fields }) as any;
         return {
-          content: [{ type: "text", text: `Assignment updated: id=${a.id}, name="${a.name}", points=${a.points_possible}, published=${a.published}${attemptsNote(a)}` }]
+          content: [{ type: "text", text: `Assignment updated: id=${a.id}, name="${a.name}", points=${a.points_possible}, published=${a.published}, due_at=${a.due_at ?? 'none'}, unlock_at=${a.unlock_at ?? 'none'}, lock_at=${a.lock_at ?? 'none'}${attemptsNote(a)}` }]
         };
       } catch (error: any) {
         if (error instanceof Error) {

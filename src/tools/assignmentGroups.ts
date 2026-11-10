@@ -235,30 +235,173 @@ export function registerAssignmentGroupTools(server: McpServer, canvas: CanvasCl
   );
 
   // Tool: bulk-update-assignment-dates
+  //
+  // Canvas's bulk_update endpoint is unlike the rest of the v1 API: the body is
+  // a BARE JSON ARRAY (wrapping it in an object gets a 400 "expected array"),
+  // each item is { id, all_dates: [...] }, and the base dates live in the
+  // all_dates entry flagged base:true. Any date left out of that entry is
+  // cleared, so the current values are read first and carried forward. The
+  // call returns a Progress, not the assignments, so the job is polled and each
+  // assignment re-read: a 200 here only means "queued".
   server.tool(
     "bulk-update-assignment-dates",
-    "Bulk update due/unlock/lock dates for assignments in a course.",
+    "Bulk update the class-wide due/unlock/lock dates (and optionally existing override dates) for many "
+      + "assignments in one Canvas job. Dates you leave out keep their current value; pass null to clear one. "
+      + "Waits for the job and re-reads each assignment, reporting any that did not take.",
     {
       courseId: z.string().describe("The ID of the course"),
       assignmentDates: z.array(z.object({
         assignment_id: z.string().describe("The ID of the assignment"),
-        due_at: z.string().optional().describe("New due date (ISO 8601)"),
-        unlock_at: z.string().optional().describe("New unlock date (ISO 8601)"),
-        lock_at: z.string().optional().describe("New lock date (ISO 8601)")
-      })).describe("Array of assignment date updates")
+        due_at: z.string().nullable().optional().describe("New class-wide due date (ISO 8601); null clears it; omit to keep"),
+        unlock_at: z.string().nullable().optional().describe("New class-wide available-from date (ISO 8601); null clears; omit to keep"),
+        lock_at: z.string().nullable().optional().describe("New class-wide available-until date (ISO 8601); null clears; omit to keep"),
+        overrides: z.array(z.object({
+          override_id: z.string().describe("ID of an EXISTING override on this assignment (see list-assignment-overrides)"),
+          due_at: z.string().nullable().optional(),
+          unlock_at: z.string().nullable().optional(),
+          lock_at: z.string().nullable().optional(),
+        })).optional().describe(
+          "Date changes for existing overrides (student/section-specific dates). Overrides not listed are left as they are."
+        ),
+      })).min(1).describe("Array of assignment date updates")
     },
     { idempotentHint: true },
     async ({ courseId, assignmentDates }: { courseId: string; assignmentDates: any[] }) => {
-      try {
-        // Note: A specific client method for this bulk update could be added to CanvasClient
-        // For now, using the generic put method directly.
-        await canvas.put(
-          `/api/v1/courses/${courseId}/assignments/bulk_update`,
-          { assignment_dates: assignmentDates }
-        );
-        return {
-          content: [{ type: "text", text: `Bulk date update applied to ${assignmentDates.length} assignment(s) in course ${courseId}.` }]
+      const FIELDS = ['due_at', 'unlock_at', 'lock_at'] as const;
+      const sameDate = (a: any, b: any) =>
+        (a ?? null) === null || (b ?? null) === null ? (a ?? null) === (b ?? null) : Date.parse(a) === Date.parse(b);
+      const fetchAll = async (ids: string[]) => {
+        const out = new Map<string, any>();
+        let next = 0;
+        const worker = async () => {
+          while (next < ids.length) {
+            const id = ids[next++];
+            out.set(id, await canvas.getAssignment(courseId, id, { 'include[]': 'all_dates' }));
+          }
         };
+        await Promise.all(Array.from({ length: Math.min(8, ids.length) }, worker));
+        return out;
+      };
+
+      try {
+        const ids = assignmentDates.map(a => String(a.assignment_id));
+        const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
+        if (dupes.length) throw new Error(`assignment_id listed more than once: ${[...new Set(dupes)].join(', ')}`);
+
+        // Read current dates so nothing we don't mean to change is cleared.
+        // The assignment's top-level due_at is the date for the requesting
+        // user, not the base date, once overrides exist — all_dates has the base.
+        const current = await fetchAll(ids);
+        const body: any[] = [];
+        const expected: { id: string; name: string; entryKey: string; dates: Record<string, any> }[] = [];
+
+        for (const req of assignmentDates) {
+          const id = String(req.assignment_id);
+          const a = current.get(id);
+          const allDates: any[] = a?.all_dates ?? [];
+          const base = allDates.find(d => d.base) ?? (allDates.length === 0 && !a?.has_overrides ? a : undefined);
+          if (!base) {
+            throw new Error(
+              `Assignment ${id} ("${a?.name}") has no base date entry in all_dates — every student has an override, `
+              + 'so there are no class-wide dates to change. Update its overrides instead.'
+            );
+          }
+          const baseDates: Record<string, any> = {};
+          for (const f of FIELDS) baseDates[f] = req[f] !== undefined ? req[f] : (base[f] ?? null);
+          const entries: any[] = [{ base: true, ...baseDates }];
+          expected.push({ id, name: a?.name, entryKey: 'base', dates: baseDates });
+
+          for (const o of req.overrides ?? []) {
+            const existing = allDates.find(d => !d.base && String(d.id) === String(o.override_id));
+            if (!existing) {
+              throw new Error(
+                `Override ${o.override_id} is not on assignment ${id} ("${a?.name}"). `
+                + 'Use list-assignment-overrides to find its overrides, or create-assignment-override to add one.'
+              );
+            }
+            const od: Record<string, any> = {};
+            for (const f of FIELDS) od[f] = o[f] !== undefined ? o[f] : (existing[f] ?? null);
+            entries.push({ id: Number(o.override_id), ...od });
+            expected.push({ id, name: a?.name, entryKey: String(o.override_id), dates: od });
+          }
+          body.push({ id: Number(id), all_dates: entries });
+        }
+
+        // Bare array, JSON — not { assignments: [...] }.
+        const created: any = await canvas.put(`/api/v1/courses/${courseId}/assignments/bulk_update`, body);
+        canvas.invalidateAssignments(courseId);
+
+        let progress: any = created;
+        const progressId = progress?.id;
+        if (progressId === undefined) {
+          throw new Error(`Canvas did not return a progress job: ${JSON.stringify(created).slice(0, 300)}`);
+        }
+        const deadline = Date.now() + 90_000;
+        while (progress?.workflow_state !== 'completed' && progress?.workflow_state !== 'failed') {
+          if (Date.now() >= deadline) {
+            return {
+              content: [{
+                type: "text",
+                text: `Bulk date update queued as progress ${progressId} but still ${progress?.workflow_state ?? 'running'} `
+                  + `(${progress?.completion ?? 0}%) after 90s. Re-check the assignments with get-assignment before retrying.`
+              }]
+            };
+          }
+          await new Promise(r => setTimeout(r, 1500));
+          progress = await canvas.getProgress(String(progressId));
+        }
+
+        const lines: string[] = [];
+        if (progress.workflow_state === 'failed') {
+          lines.push(`Canvas reported the bulk update FAILED: ${progress.message ?? 'no message'}.`);
+          const results = Array.isArray(progress.results) ? progress.results : [];
+          for (const r of results) {
+            if (r?.errors) lines.push(`  assignment ${r.assignment_id}: ${JSON.stringify(r.errors)}`);
+          }
+          if (!results.length && progress.results) lines.push(`  details: ${JSON.stringify(progress.results).slice(0, 500)}`);
+          lines.push('Canvas applies bulk updates all-or-nothing per job; re-reading to confirm what was stored:');
+        }
+
+        // Verify against what Canvas now holds.
+        const after = await fetchAll(ids);
+        const mismatches: string[] = [];
+        for (const exp of expected) {
+          const a = after.get(exp.id);
+          const allDates: any[] = a?.all_dates ?? [];
+          const entry = exp.entryKey === 'base'
+            ? (allDates.find(d => d.base) ?? (allDates.length === 0 && !a?.has_overrides ? a : undefined))
+            : allDates.find(d => !d.base && String(d.id) === exp.entryKey);
+          const label = `${exp.id} "${exp.name}"${exp.entryKey === 'base' ? '' : ` override ${exp.entryKey}`}`;
+          if (!entry) { mismatches.push(`${label}: date entry missing after update`); continue; }
+          const bad = FIELDS.filter(f => !sameDate(exp.dates[f], entry[f]))
+            .map(f => `${f} expected ${exp.dates[f] ?? 'none'}, stored ${entry[f] ?? 'none'}`);
+          if (bad.length) mismatches.push(`${label}: ${bad.join('; ')}`);
+        }
+
+        if (progress.workflow_state === 'completed' && !mismatches.length) {
+          lines.push(`Bulk date update completed for ${ids.length} assignment(s) in course ${courseId}; every date verified.`);
+        } else if (!mismatches.length) {
+          lines.push('All requested dates are nonetheless stored as asked.');
+        } else {
+          if (progress.workflow_state === 'completed') {
+            lines.push(`Canvas reported the job complete, but ${mismatches.length} date set(s) did not match:`);
+          }
+          lines.push(...mismatches.map(m => `  ${m}`));
+        }
+        const withOverrides = ids.filter(id => {
+          const req = assignmentDates.find(a => String(a.assignment_id) === id);
+          const extra = (after.get(id)?.all_dates ?? []).filter((d: any) => !d.base);
+          const touched = new Set((req.overrides ?? []).map((o: any) => String(o.override_id)));
+          return extra.some((d: any) => !touched.has(String(d.id)));
+        });
+        if (withOverrides.length) {
+          lines.push(
+            `Note: ${withOverrides.length} assignment(s) have overrides that were left unchanged and still carry their own dates: `
+            + withOverrides.map(id => `${id} "${after.get(id)?.name}"`).join(', ')
+            + '. Pass them in `overrides` (or use update-assignment-override) if they should move too.'
+          );
+        }
+        return { content: [{ type: "text", text: lines.join('\n') }] };
       } catch (error: any) {
         if (error instanceof Error) {
           throw new Error(`Failed to bulk update assignment dates: ${error.message}`);
