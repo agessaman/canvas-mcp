@@ -61,7 +61,8 @@ Fetches a single assignment, body included.
 - Required parameters:
   - `courseId`: string
   - `assignmentId`: string
-- Returns `description` — the HTML body students read, `null` when the assignment has none — plus due date, points, grading type, submission types, rubric presence, attempt limit, and publish state
+- Returns `description` — the HTML body students read, `null` when the assignment has none — plus due date, points, grading type, submission types, attempt limit, and publish state
+- Returns `rubric` — the attached rubric's `id`, `title`, `points_possible` and `use_rubric_for_grading`, or `null` when there is none. Pass the `id` to `get-rubric` for the criteria
 - Read the body here before changing it with `update-assignment`, which replaces it wholesale
 
 ### create-assignment

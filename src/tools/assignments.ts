@@ -3,6 +3,24 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CanvasClient } from "../canvasClient.js";
 
 /**
+ * The rubric attached to an assignment, as the IDs a caller needs to act on it:
+ * get-rubric to read the criteria, attach-rubric-to-assignment to reuse it.
+ * Canvas reports it in `rubric_settings` (falling back to `rubric_id` on older
+ * instances); `use_rubric_for_grading` says whether its scores set the grade.
+ */
+export function describeAttachedRubric(a: any) {
+  const settings = a?.rubric_settings ?? {};
+  const id = settings.id ?? a?.rubric_id;
+  if (id == null) return null;
+  return {
+    id: String(id),
+    title: settings.title ?? null,
+    points_possible: settings.points_possible ?? null,
+    use_rubric_for_grading: !!a.use_rubric_for_grading,
+  };
+}
+
+/**
  * Say what the attempt limit ended up as.
  *
  * Canvas stores "unlimited" as -1, which reads as a bug if it is printed raw
@@ -140,6 +158,14 @@ export function registerAssignmentTools(server: McpServer, canvas: CanvasClient)
           workflow_state: a.workflow_state,
           assignment_group_id: a.assignment_group_id,
           has_rubric: !!(a.rubric_id || a.rubric),
+          // Which rubric, not just whether there is one. Canvas sends the attached
+          // rubric's ID and title in rubric_settings, and dropping them left callers
+          // guessing from list-rubrics titles to find the rubric an assignment is
+          // graded with. The ID is what get-rubric and attach-rubric-to-assignment
+          // take. Criteria stay out of this summary: get-rubric returns them in full.
+          // Null rather than absent when there is no rubric, for the same reason
+          // as description below.
+          rubric: describeAttachedRubric(a),
           // Settable through create/update-assignment and load-bearing for
           // extend-assignment-attempts, so it has to be readable too — a
           // setting you can write and not see is how you end up granting an

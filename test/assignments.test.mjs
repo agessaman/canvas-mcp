@@ -72,3 +72,55 @@ test('a body read from get-assignment can be edited and written back', async () 
     assert.match(put.body.assignment.description, /three<\/strong> questions/);
   });
 });
+
+// The attached rubric.
+//
+// get-assignment reported only has_rubric, so finding the rubric an assignment
+// is graded with meant guessing from list-rubrics titles. These pin the ID and
+// title into the response and the no-rubric case to null.
+
+test('get-assignment names the attached rubric by ID and title', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => assignment({
+      rubric: [{ id: '_2527', description: 'Mechanics', points: 6, ratings: [] }],
+      rubric_settings: { id: 41291, title: 'DBQ Project Writing Rubric', points_possible: 32 },
+      use_rubric_for_grading: true,
+    }));
+    const summary = summaryFrom(canvas, await canvas.callTool('get-assignment', {
+      courseId: '1', assignmentId: '371866',
+    }));
+
+    assert.equal(summary.has_rubric, true);
+    assert.deepEqual(summary.rubric, {
+      id: '41291',
+      title: 'DBQ Project Writing Rubric',
+      points_possible: 32,
+      use_rubric_for_grading: true,
+    });
+  });
+});
+
+test('an assignment with no rubric reports rubric as null', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => assignment());
+    const summary = summaryFrom(canvas, await canvas.callTool('get-assignment', {
+      courseId: '1', assignmentId: '371866',
+    }));
+
+    assert.equal(summary.has_rubric, false);
+    assert.ok('rubric' in summary, 'an absent field cannot be told from an unreadable one');
+    assert.equal(summary.rubric, null);
+  });
+});
+
+test('a rubric reported only by rubric_id still comes back with its ID', async () => {
+  await withMockCanvas(async canvas => {
+    canvas.setResponse(() => assignment({ rubric_id: 40469 }));
+    const summary = summaryFrom(canvas, await canvas.callTool('get-assignment', {
+      courseId: '1', assignmentId: '371866',
+    }));
+
+    assert.equal(summary.rubric.id, '40469');
+    assert.equal(summary.rubric.title, null);
+  });
+});
