@@ -62,7 +62,7 @@
 - **Prompts** — `grade-assignment` for a guided grading session; `analyze-rubric-statistics` for multi-assignment rubric visualizations
 - **Performance** — ETag-based response caching to reduce API load and token use
 
-**134 tools** and **2 prompts** in total, plus **8 opt-in tools** for New Quizzes item banks and stimuli (see [below](#new-quizzes-item-banks-opt-in)). See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
+**135 tools** and **2 prompts** in total, plus **8 opt-in tools** for New Quizzes item banks and stimuli (see [below](#new-quizzes-item-banks-opt-in)). See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference.
 
 ## Prerequisites
 
@@ -273,7 +273,7 @@ This server includes **privacy-first anonymization** for student data. By defaul
 List all students in course 123, but show their actual names and emails
 ```
 
-**Affected tools:** `list-students`, `list-assignments` (with submission data), `list-assignment-submissions`, `list-section-submissions`, `list-rubric-assessments`, `get-submission-documents`, `get-submission-content`, `get-grading-packet`
+**Affected tools:** `list-students`, `list-assignments` (with submission data), `list-assignment-submissions`, `list-section-submissions`, `list-rubric-assessments`, `get-submission-documents`, `get-submission-content`, `get-grading-packet`, `get-peer-reviews`
 
 Each affected tool accepts an `anonymous` parameter (default: `true`). Your AI assistant sets `anonymous: false` when you ask for real names.
 
@@ -334,7 +334,7 @@ If you need full anonymization including staff, you can modify the logic in [`sr
 | Assignments | 6 | `list-assignments`, `get-assignment`, `create-assignment`, `update-assignment`, `delete-assignment`, `duplicate-assignment` |
 | Assignment Groups | 3 | `list-assignment-groups`, `create-assignment-group`, `bulk-update-assignment-dates` |
 | Grading | 7 | `get-grading-packet`, `get-grading-preferences`, `set-grading-preferences`, `save-grading-plan`, `get-grading-plan`, `post-grading-plan`, `delete-grading-plan` |
-| Submissions | 7 | `list-assignment-submissions`, `grade-submission`, `post-submission-comment`, `get-submission-content`, `get-submission-documents`, `get-submission-file-info`, `download-submission-file` |
+| Submissions | 8 | `list-assignment-submissions`, `grade-submission`, `post-submission-comment`, `get-submission-content`, `get-submission-documents`, `get-submission-file-info`, `download-submission-file`, `get-peer-reviews` |
 | Sections | 2 | `list-sections`, `list-section-submissions` |
 | Rubrics | 8 | `list-rubrics`, `get-rubric`, `create-rubric`, `update-rubric`, `set-rubric-criterion-outcome`, `get-rubric-statistics`, `list-rubric-assessments`, `attach-rubric-to-assignment` |
 | Outcomes | 7 | `list-outcomes`, `get-outcome`, `create-outcome`, `update-outcome`, `create-outcome-group`, `link-outcome`, `unlink-outcome` |

@@ -800,6 +800,16 @@ export class CanvasClient {
     const data = await this.fetchAllPages<any>(`/api/v1/courses/${courseId}/assignments/${assignmentId}/submissions`, params);
     return options.anonymous !== false ? DataAnonymizer.anonymizeSubmissions(data, courseId) : data;
   }
+  // Raw (un-anonymized): each pair's submission_comments are every comment on
+  // the reviewee's submission, not only the reviewer's, and the author objects
+  // carry no role — so the generic anonymizer can't tell whom to rewrite. The
+  // caller filters and pseudonymizes (see peerReviews.ts).
+  async listPeerReviews(courseId: string, assignmentId: string) {
+    return this.fetchAllPages<any>(`/api/v1/courses/${courseId}/assignments/${assignmentId}/peer_reviews`, {
+      include: ['submission_comments'],
+      per_page: 100,
+    });
+  }
   async gradeSubmission(courseId: string, assignmentId: string, userId: string, data: any) {
     return this.put(`/api/v1/courses/${courseId}/assignments/${assignmentId}/submissions/${userId}`, data);
   }

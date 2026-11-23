@@ -117,6 +117,16 @@ export const PREFERENCE_QUESTIONS: PreferenceQuestion[] = [
     examples: ['yes, zero is allowed', 'no, never below the lowest rating', 'ask me each time'],
   },
   {
+    key: 'peer_review_success',
+    question: 'What makes a peer review count — a completed rubric, a comment, a minimum length? And how should an inaccurate review (every criterion at the top, or far from your own score) count?',
+    needed_when: 'Before peer reviews are tallied for a grade.',
+    examples: [
+      'rubric fully scored and at least one comment',
+      'rubric fully scored and comments of 25 words or more',
+      'rubric and comment; a review within 15% of my score counts, one with every criterion at the top does not',
+    ],
+  },
+  {
     key: 'late_handling',
     question: 'What should happen to a late marker while grading — keep the deduction, or clear it?',
     needed_when: 'Before the first grade on a submission Canvas has marked late.',

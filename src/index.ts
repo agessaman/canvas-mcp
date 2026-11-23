@@ -39,6 +39,7 @@ import { registerCourseCopyTools } from './tools/courseCopy.js';
 import { registerCalendarTools } from './tools/calendar.js';
 import { registerLatePolicyTools } from './tools/latePolicy.js';
 import { registerAssignmentExtensionTools } from './tools/assignmentExtensions.js';
+import { registerPeerReviewTools } from './tools/peerReviews.js';
 import { NewQuizzesLtiClient } from './newQuizzesLti.js';
 import { registerNewQuizItemBankTools } from './tools/newQuizItemBanks.js';
 // Load environment variables
@@ -165,6 +166,7 @@ registerCourseCopyTools(server, canvas);
 registerCalendarTools(server, canvas);
 registerLatePolicyTools(server, canvas);
 registerAssignmentExtensionTools(server, canvas);
+registerPeerReviewTools(server, canvas);
 
 // New Quizzes item banks — registered only when the operator opts in, because
 // they are the one part of this server that calls a private, undocumented

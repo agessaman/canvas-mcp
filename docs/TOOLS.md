@@ -178,6 +178,32 @@ Gets all student submissions for a specific assignment.
 - Returns submission details, grades, and comments
 - **Privacy**: Student data is anonymized by default
 
+### get-peer-reviews
+Reads the peer reviews on an assignment: who reviews whom, whether each review is done, each reviewer's comments and rubric scores, and — given the teacher's rules — whether each review counts.
+- Required parameters:
+  - `courseId`: string
+  - `assignmentId`: string
+- Optional parameters:
+  - `userId`: string — only reviews of this student's submission (the feedback they received)
+  - `assessorId`: string — only reviews this student wrote
+  - `requireRubric`: boolean — success rule: every rubric criterion scored
+  - `requireComment`: boolean — success rule: the reviewer left a comment
+  - `minCommentWords`: number — success rule: the reviewer's comments total at least this many words
+  - `countRubricComments`: boolean (default: true) — whether comments typed into the rubric count toward the comment rules
+  - `maxDifferencePct`: number — success rule: the review's total is within this % of the rubric's points of the teacher's own rubric score for the paper (applies only to papers the teacher has rubric-scored)
+  - `rejectUniformRatings`: boolean — success rule: every criterion at the top (or bottom) rating fails, unless the teacher's score of that paper agrees
+  - `detail`: `"full"` (default) or `"summary"` — summary leaves out comment text and per-criterion rubric scores, keeping each review's total, checks, flags and verdict; about a third of the size, for tallying a grade
+  - `anonymous`: boolean (default: true) — pseudonyms for reviewers and reviewees, and names scrubbed from comment and rubric-comment text. User IDs are kept
+- Returns:
+  - `assignment.rubric.criteria` — the rubric legend, sent once (full detail only): each criterion's id, name, points and ratings
+  - `summary` — assigned, completed, successful (when rules are given), students with reviews outstanding, papers the teacher has rubric-scored
+  - `by_student` — per student: reviews written (assigned, completed, successful, and `accuracy`: all-top/all-bottom counts, `same_scores_every_review`, mean absolute difference from the other reviewers of the same papers, and — once the teacher has rubric-scored papers — signed and absolute mean difference from the teacher) and reviews received (with the average peer score)
+  - `reviews` — each with `assessor_id`, `checks` (criteria scored, comment count and words, rubric comment words), `comments`, `rubric_assessments` (score, attempt, a `points` array in the order of `assignment.rubric.criteria`, and rubric `comments` keyed by criterion id where written), `accuracy` (`flags` for all-top or all-bottom ratings, and `vs_teacher` once the teacher has scored that paper), and `successful` / `unmet` when rules are given
+- Canvas's "completed" only means the reviewer did something; success is judged from the content. With no rules passed, nothing is marked successful and the note points to the teacher's recorded `peer_review_success` practice, or says to ask
+- Only the reviewer's own comments are included. Canvas attaches every comment on the reviewee's submission to each review pair, including the teacher's; those stay in `list-assignment-submissions`
+- Rubric scores come from the rubric's assessments. A rubric saved twice for one attempt is reported once (the newest). If the rubric can't be read, comments are still returned with a note
+- **Privacy**: Student data is anonymized by default
+
 ### get-submission-content
 Reads one student's submitted work in a form the model can grade from. The lightweight per-student reader: use it rather than `get-submission-documents`, which only lists attachments.
 - Required parameters:
